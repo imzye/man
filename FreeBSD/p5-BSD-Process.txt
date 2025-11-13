@@ -1,0 +1,719 @@
+Process(3)            User Contributed Perl Documentation           Process(3)
+
+
+NAME
+       BSD::Process - Information about running processes on BSD platforms
+
+VERSION
+       This document describes version 0.07 of BSD::Process, released
+       2013-06-22.
+
+SYNOPSIS
+         use BSD::Process;
+
+         my $proc = BSD::Process->new;
+         print $proc->rssize, " resident set size\n"; # as a method
+         print "This process has made $proc->{minflt} page reclaims\n";
+
+         print $proc->time, " seconds spent on the CPU (user+system)\n";
+         $proc->refresh;
+         print "And now $proc->{time} seconds\n"; # as an attribute
+
+         # oneliner shortcut
+         perl -MBSD::Process=P -le 'print P->ppid, " is my parent"';
+
+DESCRIPTION
+       "BSD::Process" creates Perl objects that render the information the BSD
+       kernel maintains about current processes.  These may then be queried,
+       extracted and reported upon. This allows a more natural style of
+       programming (as opposed to scraping the output of ps(1)).
+
+       The information is retrieved via the "kvm" subsystem, and will thus
+       work even if the /proc filesystem is not mounted.
+
+FUNCTIONS
+       new Creates a new "BSD::Process" object. Takes an optional numeric
+           value to specify the pid of the target process, otherwise the
+           current process is assumed.
+
+           A second optional parameter, a reference to a hash, supplies
+           additional information governing the creation of the object.
+
+           Currently, one key is available:
+
+           resolve - indicates whether uids and gids should be resolved to
+           their symbolic equivalents (for instance, 0 becomes "root").
+
+           Passing the hash reference as the only parameter works as may be
+           expected: the pid of the current process will be used implicitly.
+
+             my $init = BSD::Process->new(1); # get info about init
+             print "children of init have taken $init->{childtime} seconds\n";
+
+             # get process info of process's parent, resolving ids
+             my $parent = BSD::Process->new(
+               BSD::Process->new->parent_pid,
+               {resolve => 1},
+             );
+
+           Once the object has been created, the various process attributes
+           can be examined via method calls or as hash keys, see below.
+
+           At the current time "new" is implemented in terms of "info" (see
+           below), but may in the future be implemented in terms of lazy
+           fetching.
+
+       P   Stashes a global BSD::Process variable, for use in one-liners. By
+           default, the current process is referenced, but any process may be
+           specified via its process id.
+
+             print P->rssize, "\n"; # resident set size of running process
+             P(P->ppid);            # now refer to parent
+             print P->rssize, "\n"; # rss of parent
+             P(1);                  # talking about init(8)
+
+           But more likely:
+
+             perl -MBSD::Process=P -le 'print P->rssize';
+
+           As this function is implemented in terms of a global private
+           variable, it is adequate for oneliners. It should not be used in a
+           threaded program, use objects instead.
+
+       info, process_info
+           Returns the entire set of process attributes and their values, as
+           specified by a process identifier (or pid).
+
+           The input value is numified. Thus, if a some random string is
+           passed in, it will be coerced to 0, and you will receive the
+           process information of process 0 (the swapper). If no parameter is
+           passed, the pid of the running process is assumed.
+
+           A hash reference may be passed as an optional second parameter, see
+           "new" for a list of what is available.
+
+             my $proc = BSD::Process::info( $$, {resolve => 1} );
+             print $proc->{uid};
+             # on my system, prints 'david', rather than 1001
+
+           A reference to a hash is returned, which is basically a
+           "BSD::Process" object, without all the object-oriented fluff around
+           it. The keys are documented below in the METHODS section, however,
+           only the short names are available, the longer descriptive names
+           are not defined.
+
+           If the pid does not (or does no longer) correspond to process,
+           undef is returned.
+
+           The routine "info" is not exportable (since many programs will no
+           doubt already have a routine named "info"). Instead, it is
+           exportable under the name "process_info".
+
+       list, process_list
+           Returns an (unsorted) array of pids of all the running processes on
+           the system. Note: fleet-footed processes may have disappeared
+           between the time the snapshot is taken and the time the code
+           subsequently gets around to asking for more information about them.
+           On the other hand, getting this list is very fast. If you want the
+           set of current processes on the system decoded as "BSD::Process"
+           objects, you should be looking at the "all" meta-constructor.
+
+           The routine "list" is not exportable. It may be exported under the
+           name "process_info".
+
+             my @pid = BSD::Process::list;
+             for my $p (@pid) {
+               my $proc =  BSD::Process::info($p);
+               print "$p $proc->{ppid}\n"; # print each pid and its parent pid
+             }
+
+           The set of processes may be restricted by specifying a condition,
+           defined as a key/value pair to list(). The following restrictions
+           are available:
+
+           uid, effective_user_id
+               Return the list of pids that are owned by the specified
+               effective user id. The uid may be specified in the symbolic or
+               numeric form.
+
+                 my @uid_pid  = BSD::Process::list(uid => 1001);
+                 my @root_pid = BSD::Process::list(uid => 'root');
+
+           pgid, process_group_id
+               Return the processes that belong to the specified process
+               group.
+
+                 my @pgid_pid = BSD::Process::list(process_group_id => 378);
+
+           sid, process_session_id
+               Return the processes that belong to the specified process
+               session.
+
+       all Return a references to a hash of "BSD::Process" objects
+           representing the current running processes. The hash keys are the
+           process pids.  The following program prints out the 10 processes
+           that consume the most physical memory.
+
+             use BSD::Process;
+
+             my $all = BSD::Process::all;
+             my $want = 10;
+             for my $pid (
+               sort {$all->{$b}{rssize} <=> $all->{$a}{rssize}}
+               keys %$all
+             ) {
+               my $proc = $all->{$pid};
+               print $proc->command_name, ' ',  $proc->resident_set_size,
+                 "Kb owned by $proc->{login}\n";
+               last unless --$want;
+             }
+
+           This routine runs more slowly than list(), since it has to
+           instantiate the process objects. It may help to think of all() as a
+           meta-new constructor, since it creates many new BSD::Process
+           objects in one fell swoop.
+
+           This routine accepts the same parameters as list(). Thus, one is
+           able to restrict the set of objects returned. In addition, it also
+           accepts the "resolve" parameter, to indicate that uids and gids
+           should be represented as symbolic names rather than numeric values.
+
+             my @own = BSD::Process::all(uid => 1000);
+
+             my @session = BSD::Process::all(sid => 632, resolve => 1);
+
+       attr
+           Returns the list of available attributes of a "BSD::Process"
+           object. You can use this to pretty-print an object:
+
+             my $self = BSD::Process->new;
+             for my $attr (BSD::Process::attr) {
+               printf "%11s %s\n", $attr, $self->{$attr};
+             }
+
+       attr_len
+           The problem with the above program is that on different platforms
+           and operating system versions, the length of the longest attribute
+           might not be 11.  In this case, one may employ "attr_len" to obtain
+           the length of the longest attribute name. The above program then
+           becomes:
+
+             my $len = BSD::Process::attr_len;
+             my $self = BSD::Process->new;
+             for my $attr (BSD::Process::attr) {
+               printf "%*s %s\n", $len, $attr, $self->{$attr};
+             }
+
+       attr_alias
+           Returns the list of long aliases of the attributes.
+
+       max_kernel_groups
+           Returns the maximum number of groups to which a process may belong.
+           This is probably not of direct importance to the average Perl
+           programmer, but it eases calculating the number of regression tests
+           to be run in a cross-platform manner.
+
+METHODS
+       refresh
+           Refreshes the information of a "BSD::Process" object. For instance,
+           the following snippet shows a very accurate way of measuring
+           elapsed CPU time:
+
+             my $proc  = BSD::Process->new;
+             my $begin = $proc->runtime; # microseconds
+             lengthy_calculation();
+
+             $proc->refresh;
+             my $elapsed = $proc->runtime - $begin;
+             print "that took $elapsed microseconds of CPU time\n";
+
+           The method may be chained:
+
+             my $runtime = $proc->refresh->runtime;
+
+           It may also be used with the "P" shortcut.
+
+             P; # to initialise
+             lengthy_calculation();
+             P->refresh;
+
+       resolve
+           Switches symbolic resolution on or off.
+
+             my $proc = BSD::Process->new;
+             print "$proc->{uid}\n";
+             $proc->resolve;
+             print "$proc->{uid}\n";
+
+           Note that changing the resolve setting will result in the object
+           being "refresh"ed.
+
+PROCESS ATTRIBUTES
+       The following methods may be called on a "BSD::Process" object.  Each
+       process attribute may be accessed via two methods, a longer, more
+       descriptive name, or a terse name (following the member name in the
+       underlying "kinfo_proc" C struct).
+
+       Furthermore, you may also interpolate the attribute (equivalent to the
+       terse method name) directly into a string. This can lead to simpler
+       code. The following three statements are equivalent:
+
+         print "rss=", $p->resident_set_size;
+         print "rss=", $p->rssize;
+         print "rss=$p->{rssize};
+
+       A modification of a value in the underlying hash of the object has no
+       corresponding effect on the system process it represents.
+
+       Older kernels do not track as many process attributes as more modern
+       kernels. In these cases, the value -1 will be returned.
+
+       In the following list, the key F5+ means that the method returns
+       something useful in FreeBSD 5.x or better. The key F6 means the method
+       returns something useful for FreeBSD 6.x and beyond.
+
+       process_args, args
+           The command with all its arguments as a string. When the process
+           args are unavailable, the name of the executable in brackets is
+           returned (same as in the ps program). This may happen when the
+           length of the arguments exceeds the kernel limit set with the
+           "kern.ps_arg_cache_limit" kernel setting. This is usually 256, for
+           more information check the manual page for the sysctl program.
+
+           If you have the companion "BSD::Sysctl" module installed, you can
+           check this with "print sysctl("kern.ps_arg_cache_limit");" or else
+           with the sysctl(8) command.
+
+       process_pid, pid
+           The identifier that identifies a process in a unique manner. No two
+           process share the same pid (process id).
+
+       parent_pid, ppid
+           The pid of the parent process that spawned the current process.
+           Many processes may share the same parent pid. Processes whose
+           parents exit before they do are reparented to init (pid 1).
+
+       process_group_id, pgid
+           A number of processes may belong to the same group (for instance,
+           all the processes in a shell pipeline). In this case they share the
+           same pgid.
+
+       tty_process_group_id, tpgid
+           Similarly, a number of processes belong to the same tty process
+           group. This means that they were all originated from the same
+           console login session or terminal window. F5+
+
+       process_session_id, sid
+           Processes also belong to a session, identified by the process
+           session id. F5+
+
+       terminal_session_id, tsid
+           A process that has belongs to a tty process group will also have a
+           terminal session id.
+
+       job_control_counter, jobc
+           The job control counter of a process. (purpose?) F5+
+
+       effective_user_id, uid
+           The user id under which the process is running. A program with the
+           setuid bit set can be launched by any user, and the effective user
+           id will be that of the program itself, rather than that of the
+           user.
+
+           The symbolic name of the uid will be returned if the constructor
+           had the "resolve" attribute set. F5+
+
+       real_user_id, ruid
+           The user id of the user that launched the process. F5+
+
+       saved_effective_user_id, svuid
+           The saved effective user id of the process. (purpose?) F5+
+
+       real_group_id, rgid
+           The primary group id of the user that launched the process.
+
+           The symbolic name of the gid will be returned if the constructor
+           had the "resolve" attribute set. F5+
+
+       saved_effective_group_id, svgid
+           The saved effective group id of the process. (purpose?) F5+
+
+       number_of_groups, ngroups
+           The number of groups to which the process belongs. F5+
+
+       group_list, groups
+           A reference to an array of group ids (gids) to which the process
+           belongs. F5+
+
+       virtual_size, size
+           The size (in bytes) of virtual memory occupied by the process. F5+
+
+       resident_set_size, rssize
+           The size (in kilobytes) of physical memory occupied by the process.
+
+       rssize_before_swap, swrss
+           The resident set size of the process before the last swap.
+
+       text_size, tsize
+           Text size (in pages) of the process.
+
+       data_size, dsize
+           Data size (in pages) of the process. F5+
+
+       stack_size, ssize
+           Stack size (in pages) of the process. F5+
+
+       exit_status, xstat
+           Exit status of the process (usually zero).
+
+       accounting_flags, acflag
+           Process accounting flags (TODO: decode them).
+
+       percent_cpu, pctcpu
+           Percentage of CPU time used by the process (for the duration of
+           swtime, see below).
+
+       estimated_cpu, estcpu
+           Time averaged value of ki_cpticks. (as per the comment in user.h,
+           purpose?)
+
+       sleep_time, slptime
+           Number of seconds since the process was last blocked.
+
+       time_last_swap, swtime
+           Number of seconds since the process was last swapped in or out.
+
+       elapsed_time, runtime
+           Real time used by the process, in microseconds.
+
+       start_time, start
+           Epoch time of the creation of the process. F5+
+
+       children_time, childtime
+           Amount of real time used by the children processes (if any) of the
+           process. F5+
+
+       process_flags, flag
+           A bitmap of process flags (decoded in the following methods as 0 or
+           1).
+
+       posix_advisory_lock, advlock
+           Flag indicating whether the process holds a POSIX advisory lock.
+           F5+
+
+       has_controlling_terminal, controlt
+           Flag indicating whether the process has a controlling terminal (if
+           true, the terminal session id is stored in the "tsid" attribute).
+           F5+
+
+       is_kernel_thread, kthread
+           Flag indicating whether the process is a kernel thread. F5+
+
+       no_loadavg_calc, noload
+           Flag indicating whether the process contributes to the load average
+           calculations of the system. F5+
+
+       parent_waiting, ppwait
+           Flag indicating whether the parent is waiting for the process to
+           exit. F5+
+
+       started_profiling, profil
+           Flag indicating whether the process has started profiling. F5+
+
+       stopped_profiling, stopprof
+           Flag indicating whether the process has a thread that has
+           requesting profiling to stop. F5+
+
+       process_had_threads, hadthreads
+           Flag indicating whether the process has had thresds. F6+
+
+       id_privs_set, sugid
+           Flag indicating whether the process has set id privileges since
+           last exec. F5+
+
+       system_process, system
+           Flag indicating whether the process is a system process. F5+
+
+       single_exit_not_wait, single_exit
+           Flag indicating that threads that are suspended should exit, not
+           wait. F5+
+
+       traced_by_debugger, traced
+           Flag indicating that the process is being traced by a debugger. F5+
+
+       waited_on_by_other, waited
+           Flag indicating that another process is waiting for the process.
+           F5+
+
+       working_on_exiting, wexit
+           Flag indicating that the process is working on exiting. F5+
+
+       process_called_exec, exec
+           Flag indicating that the process has called exec. F5+
+
+       kernel_session_flag, kiflag
+           A bitmap described kernel session status of the process, described
+           via the following attributes. F5+
+
+       is_locked, locked
+           Flag indicating that the process is waiting on a lock (whose name
+           may be obtained from the "lock" attribute). F5+
+
+             if ($p->is_locked) {
+               print "$p->{comm} is waiting on lock $p->{lockname}\n";
+             }
+             else {
+               print "not waiting on a lock\n";
+             }
+
+       controlling_tty_active, isctty
+           Flag indicating that the vnode of the controlling tty is active.
+           F5+
+
+       is_session_leader, issleader
+           Flag indicating that the process is a session leader. F5+
+
+       process_status, stat
+           Numeric value indicating the status of the process, decoded via the
+           following attibutes. F5+
+
+       is_being_forked, stat_1
+           Status indicates that the process is being forked. F5+
+
+       is_runnable, stat_2
+           Status indicates the process is runnable. F5+
+
+       is_sleeping_on_addr, stat_3
+           Status indicates the process is sleeping on an address. F5+
+
+       is_stopped, stat_4
+           Status indicates the process is stopped, either suspended or in a
+           debugger. F5+
+
+       is_a_zombie, stat_5
+           Status indicates the process is a zombie. It is waiting for its
+           parent to collect its exit code. F5+
+
+       is_waiting_on_intr, stat_6
+           Status indicates the process is waiting for an interrupt. F5+
+
+       is_blocked, stat_7
+           Status indicates the process is blocked by a lock. F5+
+
+       nice_priority, nice
+           The nice value of the process. The more positive the value, the
+           nicer the process (that is, the less it seeks to sit on the CPU).
+
+       process_lock_count, lock
+           Process lock count. If locked, swapping is prevented.
+
+       run_queue_index, rqindex
+           When multiple processes are runnable, the run queue index shows the
+           order in which the processes will be scheduled to run on the CPU.
+
+       current_cpu, oncpu
+           Identifies which CPU the process is running on.
+
+       last_cpu, lastcpu
+           Identifies the last CPU on which the process was running.
+
+       old_command_name, ocomm
+           The old command name. F5+
+
+       wchan_message, wmesg
+           wchan message. (purpose?)
+
+       setlogin_name, login
+           Name of the user login process that launched the command.
+
+       name_of_lock, lockname
+           Name of the lock that the process is waiting on (if the process is
+           waiting on a lock). F5+
+
+       command_name, comm
+           Name of the command.
+
+       emulation_name, emul
+           Name of the emulation. F6+
+
+       process_jail_id, jid
+           The process jail identifier F6+
+
+       number_of_threads, numthreads
+           Number of threads in the process. F6+
+
+       priority_scheduling_class, pri_class
+       priority_level, pri_level
+       priority_native, pri_native
+       priority_user, pri_user
+           The parameters pertaining to the scheduling of the process. F6+
+
+       user_time, utime
+           Process resource usage information. The amount of time spent by the
+           process in userland. F5+
+
+       system_time, stime
+           Process resource usage information. The amount of time spent by the
+           process in the kernel (system calls). F5+
+
+       total_time, time
+           The sum of the user and system times of the process.
+
+           Process resource usage information. The amount of time spent by the
+           process in the kernel (system calls). F5+
+
+       max_resident_set_size, maxrss
+           Process resource usage information. The maximum resident set size
+           (the high-water mark of physical memory used) of the process. F5+
+
+       shared_memory_size, ixrss
+           Process resource usage information. The size of shared memory. F5+
+
+       unshared_data_size, idrss
+           Process resource usage information. The size of unshared memory.
+           F5+
+
+       unshared_stack_size, isrss
+           Process resource usage information. The size of unshared stack. F5+
+
+       page_reclaims, minflt
+           Process resource usage information. Minor page faults, the number
+           of page reclaims. F5+
+
+       page_faults, majflt
+           Process resource usage information. Major page faults, the number
+           of page faults. F5+
+
+       number_of_swaps, nswap
+           Process resource usage information. The number of swaps the process
+           has undergone. F5+
+
+       block_input_ops, inblock
+           Process resource usage information. Total number of input block
+           operations performed by the process. F5+
+
+       block_output_ops, oublock
+           Process resource usage information. Total number of output block
+           operations performed by the process. F5+
+
+       messages_sent, msgsnd
+           Process resource usage information. Number of messages sent by the
+           process. F5+
+
+       messages_received, msgrcv
+           Process resource usage information. Number of messages received by
+           the process. F5+
+
+       signals_received, nsignals
+           Process resource usage information. Number of signals received by
+           the process. F5+
+
+       voluntary_context_switch, nvcsw
+           Process resource usage information. Number of voluntary context
+           switches performed by the process. F5+
+
+       involuntary_context_switch, nivcsw
+           Process resource usage information. Number of involuntary context
+           switches performed by the process. F5+
+
+       user_time_ch, utime_ch
+       system_time_ch, stime_ch
+       total_time_ch, time_ch
+       max_resident_set_size_ch, maxrss_ch
+       shared_memory_size_ch, ixrss_ch
+       unshared_data_size_ch, idrss_ch
+       unshared_stack_size_ch, isrss_ch
+       page_reclaims_ch, minflt_ch
+       page_faults_ch, majflt_ch
+       number_of_swaps_ch, nswap_ch
+       block_input_ops_ch, inblock_ch
+       block_output_ops_ch, oublock_ch
+       messages_sent_ch, msgsnd_ch
+       messages_received_ch, msgrcv_ch
+       signals_received_ch, nsignals_ch
+       voluntary_context_switch_ch, nvcsw_ch
+       involuntary_context_switch_ch => nivcsw_ch
+           These attributes (only available in FreeBSD 6.x) store the resource
+           usage of the child processes spawned by this process. Currently,
+           the kernel only fills in the information for the the "utime_ch" and
+           "stime_ch" fields (and hence the "time_ch" value is derived from
+           them).
+
+           In theory (and in practice as far as I can tell) "time_ch" is equal
+           to "childtime".
+
+DIAGNOSTICS
+       kern.proc.pid is corrupt: a "can't happen" error when attempting to
+       retrieve the information of a process. If this occurs, I'd like to know
+       how you managed it.
+
+       kvm error in all()/list(): another "can't happen" error when asking the
+       system to return the information about a process.
+
+       kvm error in list(): proc size mismatch (nnn total, nnn chunks): you
+       have upgraded a system across major versions, for instance 4.x to 5.x,
+       but the published system header files belong to the previous version.
+
+NOTES
+       Currently, FreeBSD versions 4 through 8 are supported. Support for
+       NetBSD and OpenBSD may be added in future versions.
+
+SEE ALSO
+       BSD::Sysctl
+           Read and write kernel variables. With these two modules, there
+           should be much less need for writing shell scripts that scrape the
+           output of ps(1) and sysctl(8).
+
+       Proc::ProcessTable
+           Seems to be a fairly wide cross-platform module. Goes into a fair
+           amount of depth, but not as much as "BSD::Process" does in its own
+           particular niche. Also, FreeBSD has moved away from the /proc
+           filesystem.
+
+           Definitely the module to use if you need to go multi-platform.
+
+       Solaris::Procfs
+           Information about processes on the Solaris platform. The
+           documentation indicates that it is not finished, however, it does
+           not appear to have been updated since 2003.
+
+       Win32::Process::Info
+           Information about current processes on the Win32 platform.
+
+BUGS
+       Not all of the ps(1) keywords are implemented. At the worst, this
+       (currently) means that you could not rewrite it in Perl.  This may be
+       addressed in a future release.
+
+       Please report all bugs at
+       <http://rt.cpan.org/NoAuth/Bugs.html?Dist=BSD-Process|rt.cpan.org>
+
+       Make sure you include the output from the following two commands:
+
+         perl -MBSD::Process -le 'print $BSD::Process::VERSION'
+         perl -V
+
+       I also accept pull requests on Github. See
+       <https://github.com/dland/BSD-Process>
+
+ACKNOWLEDGEMENTS
+       The FreeBSD Ports team, for their work on keeping this module up to
+       date on the ports tree. Their efforts are greatly appreciated.
+
+       Thanks also to az5112 on Github (I've lost their name), who implemented
+       the "args" method.
+
+AUTHOR
+       David Landgren, copyright (C) 2006-2013. All rights reserved.
+
+       http://www.landgren.net/perl/
+
+       If you (find a) use this module, I'd love to hear about it. If you want
+       to be informed of updates, send me a note. You know my first name, you
+       know my domain. Can you guess my e-mail address?
+
+LICENSE
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2013-06-22                        Process(3)

@@ -1,0 +1,455 @@
+()                                                                          ()
+
+zirmed/?????????????????????????????????????????????????????????????????????????????????????????????0040755?0000000?0000000?00000000000?10505302617?011051?
+5????????????????????????????????????????????????????????????????????????????????????????????????????ustar
+?root????????????????????????????root???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????zirmed/zirmed.php???????????????????????????????????????????????????????????????????????????????????0100644?0000000?0000000?00000047772?10505302223?013063?
+0????????????????????????????????????????????????????????????????????????????????????????????????????ustar
+?root????????????????????????????root???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????<?
+include ('./interface/globals.php'); ?> <?  //CONSTANTS $ZIRMED_ACCOUNT_NUMBER
+= '18195'; $SPECIALTY = 'Family Practice'; $today = date("m/d/y"); $sql_today
+= date("Y-m-d"); ?> <html> <head> <title> Zirmed Claims Generator - In Pipe
+Format </title> </head> <body> <h1>Zirmed Claims Generator</h1> <form
+name=selector method=POST>
+  start date<input type=text name=start_date value=<? echo
+($_POST['start_date'] ? $_POST['start_date'] : $sql_today) ?>><br><br>
+  end date<input type=text name=end_date value =<? echo ($_POST['end_date'] ?
+$_POST['end_date'] : $sql_today) ?>><br><br>
+  patient id (optional) <input type=text name=pat_id><br><br>
+  plan name (optional) <input type=text name=plan_name><br><br>
+  <input type=submit name=submit> </form> <hr> <pre> <?  function getData
+($sql_query) {
+  include('./library/sqlconf.php');
+  $return = array();
+  $database_connection =  mysql_connect("$host:$port",$login,$pass);
+  if (!$database_connection) {
+   die('could not connect: ' . mysql_error());
+  }
+  if (!(mysql_select_db($dbase,$database_connection))) {
+   die("could not switch to ".$dbase." because of: ".mysql_error());
+  }
+
+  $query = mysql_query($sql_query, $database_connection) or
+   die ("could not do query " . mysql_error());
+  return $query; } ?> <?  $enc_date; $enc_id; $patient_name; $pid;
+$primary_plan_name; $cpt4 = ''; $user_id = ''; $facility_id = '';//facility
+id, see below $facility_name = ''; $pos_code = ''; //default $print_this_one =
+FALSE; $plan_name = ''; $start_date = $sql_today; $end_date = $sql_today;
+$user_defined_pid = ""; $number_of_encounters_displayed = 0; if
+($_POST['submit']) {
+  $start_date = $_POST['start_date'];
+  $end_date = $_POST['end_date'];
+  if (trim($_POST['pat_id']) != '') {$user_defined_pid = 'and
+pid='.$_POST['pat_id'];}
+  if (trim($_POST['plan_name']) != '') {$plan_name = $_POST['plan_name'];} }
+
+//HERE BEGINS THE MAIN LOOP THROUGH ENCOUNTERS //HERE we get the pid and the
+encounter (number) for each record in form_encounter which meets the criteria
+of the query //(date range etc...).  Any queries which depend on an encounter
+number to relate them to the encounter (i.e. billing table records) //must be
+queried by encounter AND pid because encounter numbers are not guaranteed to
+be unique, especially on older systems.  $enc_query = getData("select * from
+form_encounter where date(date) >= '"
+  .$start_date."' and date(date) <= '".$end_date."' ".$user_defined_pid."
+order by date"); while ($enc_results = mysql_fetch_array($enc_query,
+MYSQL_ASSOC)) {
+  $pid = $enc_results['pid'];
+  $enc = $enc_results['encounter'];
+  $enc_date = fix_date($enc_results['date']);
+  $facility_name = $enc_results['facility'];
+  // In the main loop now... set all of the field variables
+  //Set Zirmed field variables in array to ''
+  for ($i=1;$i<=299;$i++) {
+    $field[$i] = '';
+  } //initialized!
+
+  $field[290] = $ZIRMED_ACCOUNT_NUMBER;
+  $field[291] = $ZIRMED_ACCOUNT_NUMBER;
+  $field[298] = $SPECIALTY;
+
+  $field[264] = $pid;
+  //LET THE QUERIES BEGIN...
+  //get pos code for box24B pos_code and facility id and others.
+  //there will be sql errors if the facility name captured above does not
+match a facility name in the facility table
+  //I had this problem and fixed my data to fix it. fix your data.
+  $facility_query = getData("select * from facility where name like
+'".$facility_name."'");
+  if ($facility_results = mysql_fetch_array($facility_query, MYSQL_ASSOC)) {
+    $pos_code = $facility_results['pos_code'];
+    $facility_id = $facility_results['id'];
+    $field[70] = $facility_results['name'];
+    $field[261] = $facility_results['federal_ein'];
+    $field[263] = 'x';
+    $field[270] = $facility_results['name'];
+    $field[271] = $today;
+    $field[272] = $facility_results['name'];
+    $field[273] = $facility_results['street'];
+    $field[274] = $facility_results['city'];
+    $field[275] = fix_state($facility_results['state']);
+    $field[276] = $facility_results['postal_code'];
+    $field[277] = $facility_results['phone'];
+    $field[278] = $facility_results['name'];
+    $field[279] = $facility_results['street'];
+    $field[280] = $facility_results['city'];
+    $field[281] = fix_state($facility_results['state']);
+    $field[282] = $facility_results['postal_code'];
+  }
+  // get icd9 codes.
+  $icd9_query = getData("select code from billing where activity = 1 and
+code_type like 'ICD9' and encounter = "
+    .$enc." and pid=".$pid);
+  $i = 0;
+  //there can only be four ICD9 codes counted in a HCFA 1500
+  while ($icd9_results = mysql_fetch_array($icd9_query, MYSQL_ASSOC)) {
+    $i++;
+    if ($i == 1) {$field[78] = $icd9_results['code'];}
+    if ($i == 2) {$field[79] = $icd9_results['code'];}
+    if ($i == 3) {$field[80] = $icd9_results['code'];}
+    if ($i == 4) {$field[81] = $icd9_results['code'];}
+  }
+  if ($i == 0) {continue;} //skip this record if no icd9 codes
+  //end of get icd9 codes
+
+  //handle the infamous Box 24.  this is where there may be many issues that
+  //need to be addressed in the future, particularly for different kinds of
+  //practitioners/providers who have different needs.
+
+  $fee_total = 0;  //to total up all of the fees below...
+  //hardcoded variables
+  $place_of_service = $pos_code;
+  $days_or_units = 1;
+
+
+  $cpt4_query = getData("select * from billing where activity = 1 and
+code_type like 'CPT4' and encounter = ".$enc." and pid=".$pid);
+  $i = 0;
+  $j = 0;
+  $user_id = 0;
+  while ($cpt4_results = mysql_fetch_array($cpt4_query, MYSQL_ASSOC)) {
+     $user_id = $cpt4_results['user'];
+     // pick up the user id from the billing table.  hopefully the CPT4s have
+     // been entered by the physician seeing the patient.  If not, you are
+screwed here.  fix your data.
+    //Zirmed allows for a total of 11 billable items under box 24 as opposed
+to the 6 items
+    //in the HCFA 1500 form in front of me.
+    $j = $i*16;
+    $field[85+$j] = $enc_date;
+    $field[86+$j] = $enc_date;
+    $field[87+$j] = $place_of_service;
+    $field[88+$j] = '';
+    $field[89+$j] = $cpt4_results['code'];
+    $field[90+$j] = '';  //I have not used modifiers yet so I will leave these
+blank for now
+    $field[91+$j] = '';
+    $field[92+$j] = '';
+    $field[93+$j] = '';
+    $field[94+$j] = dc_calc($cpt4_results['justify'], $field);
+    $field[95+$j] = $cpt4_results['fee'];
+    $field[96+$j] = $days_or_units;
+    $field[97+$j] = ''; //I have no idea, leave the next 4 blank
+    $field[98+$j] = '';
+    $field[99+$j] = '';
+    $field[100+$j] = '';
+    $fee_total += $cpt4_results['fee'];
+    $i++;
+  }
+  if ($i == 0) {continue;} //skip this record if no cpt codes
+  //end of handle the infamous Box 24.
+  //Get data from users table now that we have picked up the user id from the
+billing table cpt4 entries
+  $user_query = getData("select * from users where id = ".$user_id);
+  if ($user_results = mysql_fetch_array($user_query, MYSQL_ASSOC)) {
+    $field[71] = $user_results['upin'];
+    $field[293] = $user_results['lname'];
+    $field[294] = $user_results['fname'];
+    $field[295] = $user_results['mname'];
+  }
+  //figure out the money now...
+  $copay_total = 0;
+  $copay_query = getData("select code from billing where activity = 1 and
+code_type like 'COPAY' and encounter = "
+   .$enc." and pid=".$pid);
+  while ($copay_results = mysql_fetch_array($copay_query, MYSQL_ASSOC)) {
+    $copay_total += $copay_results['code'];
+  }
+  //following 3 boxes are for the money the patient owes
+  $field[267] = $copay_total;
+  $field[268] = $fee_total;
+  $field[269] = $fee_total - $copay_total;
+
+  //Some of the hardcoded fields.  Check the specs and see if you need to
+handle these differently for your practice
+  $field[265] = 'x'; //accept assignment yes/no ?
+  $field[76] = 'x';
+
+  //get patient_data
+  $patient_query = getData("select * from patient_data where pid = ".$pid);
+  if ($patient_results = mysql_fetch_array($patient_query, MYSQL_ASSOC)) {
+    $field[9] = $patient_results['lname'];
+    $field[10] = $patient_results['fname'];
+    $field[11] = $patient_results['mname'];
+    $field[12] = fix_date($patient_results['DOB']);
+    if ($patient_results['sex'] == 'Male') {
+      $field[13] = 'x';$field[14] = '';
+    } else {
+      $field[13] = '';$field[14] = 'x';
+    }
+    $field[18] = $patient_results['street'];
+    $field[19] = $patient_results['city'];
+    $field[20] = fix_state($patient_results['state']);
+    $field[21] = $patient_results['postal_code'];
+    $field[22] = $patient_results['phone_home'];
+
+    if ($patient_results['status'] == 'single') {
+      $field[32] = 'x'; $field[33] = ''; $field[34] = '';
+    } elseif ($patient_results['status'] == 'married') {
+      $field[32] = ''; $field[33] = 'x'; $field[34] = '';
+    } else {
+      $field[32] = ''; $field[33] = ''; $field[34] = 'x';
+    }
+  }
+  // FILL IN FIELDS FROM PATIENT_DATA END
+
+  // FILL IN FIELDS FROM EMPLOYER_DATA BEGIN
+  $employer_query = getData("select * from employer_data where pid = ".$pid);
+  if ($employer_results = mysql_fetch_array($employer_query, MYSQL_ASSOC)) {
+    if (stristr($employer_results['name'], 'student')) {
+      if (stristr($employer_results['name'], 'pt')) {
+        $field[35] = ''; $field[36] = ''; $field[37] = 'x';
+      } else {
+        $field[35] = ''; $field[36] = 'x'; $field[37] = '';
+      }
+    } else {
+      $field[35] = 'x'; $field[36] = ''; $field[37] = '';
+    }
+  }
+  // FILL IN FIELDS FROM EMPLOYER_DATA END
+  // FILL IN FIELDS FROM INSURANCE_DATA BEGIN
+  // DEAL WITH PRINTING IN THE 'WHILE' LOOP BELOW UNDER
+  // THE QUERY FOR INSURANCE_DATA BECAUSE WE WANT TO PRINT FOR
+  // PRIMARY, SECONDARY, TERTIARY...
+  $insurance_query = getData("select * from insurance_data where pid =
+".$pid);
+  while ($insurance_results = mysql_fetch_array($insurance_query,
+MYSQL_ASSOC)) {
+    $field[8] = $insurance_results['policy_number'];
+    $field[55] = $insurance_results['group_number'];
+    if (trim($insurance_results['plan_name']) != '') {$print_this_one = TRUE;}
+    if (trim($plan_name) != '') {
+      if (!stristr($insurance_results['plan_name'],trim($plan_name))) {
+        $print_this_one = FALSE;
+      }
+    }
+    if (stristr($insurance_results['plan_name'], 'Medicare')) {
+      $field[1] = 'x';$field[2] = '';$field[3] = '';$field[4] = '';
+      $field[5] = '';$field[6] = '';$field[7] = '';
+    } elseif (stristr($insurance_results['plan_name'], 'Medicaid')) {
+      $field[1] = '';$field[2] = 'x';$field[3] = '';$field[4] = '';
+      $field[5] = '';$field[6] = '';$field[7] = '';
+    } else {
+      $field[1] = '';$field[2] = '';$field[3] = '';$field[4] = '';
+      $field[5] = '';$field[6] = '';$field[7] = 'x';
+    }
+    $field[15] = $insurance_results['subscriber_lname'];
+    $field[16] = $insurance_results['subscriber_fname'];
+    $field[17] = $insurance_results['subscriber_mname'];
+    $field[56] = fix_date($insurance_results['subscriber_DOB']);
+    if ($insurance_results['subscriber_sex'] == 'Male') {
+      $field[57] = 'x';$field[58] = '';
+    } else {
+      $field[57] = '';$field[58] = 'x';
+    }
+    $field[59] = $insurance_results['subscriber_employer'];
+    $field[60] = $insurance_results['plan_name'];
+    if ($insurance_results['subscriber_relationship'] == 'self') {
+      $field[23] = 'x'; $field[24] = ''; $field[25] = ''; $field[26] = '';
+    } elseif ($insurance_results['subscriber_relationship'] == 'spouse') {
+      $field[23] = ''; $field[24] = 'x'; $field[25] = ''; $field[26] = '';
+    } elseif ($insurance_results['subscriber_relationship'] == 'child') {
+      $field[23] = ''; $field[24] = ''; $field[25] = 'x'; $field[26] = '';
+    } elseif ($insurance_results['subscriber_relationship'] == 'other') {
+      $field[23] = ''; $field[24] = ''; $field[25] = ''; $field[26] = 'x';
+    }
+    $field[63] =  "Signature On File";
+    $field[65] = "Signature On File";
+    $field[64] = $today;
+    $field[27] = $insurance_results['subscriber_street'];
+    $field[28] = $insurance_results['subscriber_city'];
+    $field[29] = fix_state($insurance_results['subscriber_state']);
+    $field[30] = $insurance_results['subscriber_postal_code'];
+    $field[31] = $insurance_results['subscriber_phone'];
+    // fields 47 through 53 go with box 10 on the hcfa 1500
+    // results will be hardcoded here but may need to be filled in
+    // differently by other practitioners.
+    $field[47] = '';$field[48] = 'x';$field[49] = '';$field[50] =
+'x';$field[51] = '';$field[52] = '';$field[53] = 'x';
+
+    $field[286] = $insurance_results['plan_name'];
+    $insurance_type = $insurance_results['type']; //to carry over to below
+before $insurance_results stomped on again
+    $insurance_id = $insurance_results['provider']; //same reason
+
+    // FILL IN FIELDS FROM INSURANCE_NUMBERS BEGIN
+    if ($insurance_id) {
+      $insurance_numbers_query = getData("select * from insurance_numbers
+where insurance_company_id = ".$insurance_id);
+      if ($insurance_numbers_results =
+mysql_fetch_array($insurance_numbers_query, MYSQL_ASSOC)) {
+        $field[284] = $insurance_numbers_results['provider_number'];
+        $field[285] = $insurance_numbers_results['group_number'];
+      }
+    }
+    // FILL IN FIELDS FROM INSURANCE_NUMBERS END
+
+    // FILL IN FIELDS FROM ADRESSES BEGIN
+    if ($insurance_id) {
+      $addresses_query = getData("select * from addresses where foreign_id =
+".$insurance_id);
+      if ($addresses_results = mysql_fetch_array($addresses_query,
+MYSQL_ASSOC)) {
+        $field[287] = $addresses_results['line1'];
+        $field[288] = $addresses_results['line2'];
+        $zip = $addresses_results['zip'];
+        if ($addresses_results['plus_four'] != '') {
+          $zip = $zip.'-'.$addresses_results['plus_four'];
+        }
+        $field[289] = $addresses_results['city'].',
+'.fix_state($addresses_results['state'])
+          .' '.$zip.', '.$addresses_results['country'];
+      }
+    }
+    // FILL IN FIELDS FROM ADDRESSES END
+
+    //answer 'no, there is not another health plan for box 11
+    //if there is one, it will be handled shortly below...
+    $field[61] = ''; $field[62] = 'x';
+    //DEAL WITH SECONDARY INS INFO IF THIS IS PRIMARY
+    if ($insurance_type == 'primary') {
+      $insurance_type_query = getData("select * from insurance_data where pid
+= ".$pid." and type like 'secondary'");
+      if ($insurance_type_results = mysql_fetch_array($insurance_type_query,
+MYSQL_ASSOC)) {
+        //if query successful, there is a secondary to the primary
+        //so fill in Box 11 to say 'yes, there is another health plan'
+        $field[61] = 'x'; $field[62] = '';
+        $field[38] = $insurance_type_results['subscriber_lname'];
+        $field[39] = $insurance_type_results['subscriber_fname'];
+        $field[40] = $insurance_type_results['subscriber_mname'];
+        $field[41] = $insurance_type_results['group_number'];
+        $field[42] = fix_date($insurance_type_results['subscriber_DOB']);
+        if ($insurance_type_results['subscriber_sex'] == 'Male') {
+          $field[43] = 'x';$field[44] = '';
+        } else {
+          $field[43] = '';$field[44] = 'x';
+        }
+        $field[45] = $insurance_type_results['subscriber_employer'];
+        $field[46] = $insurance_type_results['plan_name'];
+      }
+    } //end of dealing with filling in secondary ins boxes (9)
+
+    $field[54] = ''; //RESERVED FOR LOCAL USE
+
+    if ($print_this_one) {
+      printline($field);
+      $number_of_encounters_displayed++;
+      $print_this_one = FALSE;
+    }
+  }
+  // FILL IN FIELDS FROM INSURANCE_DATA END } echo
+"</pre><hr><p>$number_of_encounters_displayed encounters displayed here.</p>0;
+echo "</body></html>";
+
+//FUNCTIONS
+
+function fix_date($date_string) {
+  if (strlen($date_string) < 10) {return '00-00-0000';}
+  return
+substr($date_string,5,2).'/'.substr($date_string,8,2).'/'.substr($date_string,0,4);
+} function fix_state($state) {
+  $return_string = $state;
+  $return_string = strtoupper($return_string);
+  $return_string = str_replace('.','',$return_string);
+  if (strlen($return_string) == 2) {return $return_string;} //assume that if 2
+letters only it is correct
+  if ($return_string == 'SOUTH CAROLINA') {$return_string = 'SC';}
+  if ($return_string == 'LOUISIANA') {$return_string = 'LA';}
+  if ($return_string == 'NORTH CAROLINA') {$return_string = 'NC';}
+  if ($return_string == 'MISSISSIPPI') {$return_string = 'MS';}
+  if ($return_string == 'GUAM') {$return_string = 'GU';}
+  if ($return_string == 'OKLAHOMA') {$return_string = 'OK';}
+  if ($return_string == 'NEW YORK') {$return_string = 'NY';}
+  if ($return_string == 'VIRGINIA') {$return_string = 'VA';}
+  if ($return_string == 'HAWAII') {$return_string = 'HI';}
+  if ($return_string == 'PENNSYLVANIA') {$return_string = 'PA';}
+  if ($return_string == 'NEBRASKA') {$return_string = 'NE';}
+  if ($return_string == 'SOUTH DAKOTA') {$return_string = 'SD';}
+  if ($return_string == 'PUERTO RICO') {$return_string = 'PR';}
+  if ($return_string == 'DISTRICT OF COLUMBIA') {$return_string = 'DC';}
+  if ($return_string == 'OHIO') {$return_string = 'OH';}
+  if ($return_string == 'WEST VIRGINIA') {$return_string = 'WV';}
+  if ($return_string == 'WISCONSIN') {$return_string = 'WI';}
+  if ($return_string == 'NEW MEXICO') {$return_string = 'NM';}
+  if ($return_string == 'MISSOURI') {$return_string = 'MO';}
+  if ($return_string == 'MARSHALL ISLANDS') {$return_string = 'MH';}
+  if ($return_string == 'NEW HAMPSHIRE') {$return_string = 'NH';}
+  if ($return_string == 'ARIZONA') {$return_string = 'AZ';}
+  if ($return_string == 'MASSACHUSETTS') {$return_string = 'MA';}
+  if ($return_string == 'MONTANA') {$return_string = 'MT';}
+  if ($return_string == 'MINNESOTA') {$return_string = 'MN';}
+  if ($return_string == 'NORTHERN MARIANA ISLANDS') {$return_string = 'MP';}
+  if ($return_string == 'TEXAS') {$return_string = 'TX';}
+  if ($return_string == 'MAINE') {$return_string = 'ME';}
+  if ($return_string == 'NEW JERSEY') {$return_string = 'NJ';}
+  if ($return_string == 'WYOMING') {$return_string = 'WY';}
+  if ($return_string == 'NEVADA') {$return_string = 'NV';}
+  if ($return_string == 'WASHINGTON') {$return_string = 'WA';}
+  if ($return_string == 'OREGON') {$return_string = 'OR';}
+  if ($return_string == 'PALAU') {$return_string = 'PW';}
+  if ($return_string == 'IDAHO') {$return_string = 'ID';}
+  if ($return_string == 'FEDERATED STATES OF MICRONESIA') {$return_string =
+'FM';}
+  if ($return_string == 'RHODE ISLAND') {$return_string = 'RI';}
+  if ($return_string == 'ALABAMA') {$return_string = 'AL';}
+  if ($return_string == 'UTAH') {$return_string = 'UT';}
+  if ($return_string == 'TENNESSEE') {$return_string = 'TN';}
+  if ($return_string == 'KANSAS') {$return_string = 'KS';}
+  if ($return_string == 'NORTH DAKOTA') {$return_string = 'ND';}
+  if ($return_string == 'FLORIDA') {$return_string = 'FL';}
+  if ($return_string == 'CONNECTICUT') {$return_string = 'CT';}
+  if ($return_string == 'AMERICAN SAMOA') {$return_string = 'AS';}
+  if ($return_string == 'MARYLAND') {$return_string = 'MD';}
+  if ($return_string == 'CALIFORNIA') {$return_string = 'CA';}
+  if ($return_string == 'DELAWARE') {$return_string = 'DE';}
+  if ($return_string == 'IOWA') {$return_string = 'IA';}
+  if ($return_string == 'COLORADO') {$return_string = 'CO';}
+  if ($return_string == 'MICHIGAN') {$return_string = 'MI';}
+  if ($return_string == 'VIRGIN ISLANDS') {$return_string = 'VI';}
+  if ($return_string == 'VERMONT') {$return_string = 'VT';}
+  if ($return_string == 'ARKANSAS') {$return_string = 'AR';}
+  if ($return_string == 'INDIANA') {$return_string = 'IN';}
+  if ($return_string == 'GEORGIA') {$return_string = 'GA';}
+  if ($return_string == 'ALASKA') {$return_string = 'AK';}
+  if ($return_string == 'ILLINOIS') {$return_string = 'IL';}
+  if ($return_string == 'KENTUCKY') {$return_string = 'KY';}
+  return $return_string; } function dc_calc($justify_list, $field) {
+  if ($justify_list == '') return '';
+  $diagnosis_code = array();
+  if (($field[78]) && (strstr($justify_list,$field[78])))
+{array_push($diagnosis_code,'1');}
+  if (($field[79]) && (strstr($justify_list,$field[79])))
+{array_push($diagnosis_code,'2');}
+  if (($field[80]) && (strstr($justify_list,$field[80])))
+{array_push($diagnosis_code,'3');}
+  if (($field[81]) && (strstr($justify_list,$field[81])))
+{array_push($diagnosis_code,'4');}
+  return join(',',$diagnosis_code); } // PRINTLINE function printline($field)
+{
+  $return = '|';
+  foreach($field as $each) {
+    $return .= $each.'|';
+  }
+  print $return."0; //could have returned it and printed at function call
+instead } ?> </body> </html>
+
+                                                                            ()

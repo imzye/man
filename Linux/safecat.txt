@@ -1,0 +1,125 @@
+safecat(1)                                                                                General Commands Manual                                                                                safecat(1)
+
+NAME
+       safecat - safely write data to a file
+
+SYNOPSIS
+       safecat tempdir destdir
+
+INTRODUCTION
+       safecat  is  a  program  which implements Professor Daniel Bernstein's maildir algorithm to copy stdin safely to a file in a specified directory.  With safecat, the user is offered two assurances.
+       First, if safecat returns a successful exit status, then all data is guaranteed to be saved in the destination directory.  Second, if a file exists in the destination directory,  placed  there  by
+       safecat, then the file is guaranteed to be complete.
+
+       When  saving  data  with  safecat,  the user specifies a destination directory, but not a file name.  The file name is selected by safecat to ensure that no filename collisions occur, even if many
+       safecat processes and other programs implementing the maildir algorithm are writing to the directory simultaneously.  If particular filenames are desired, then the user should rename the file  af‐
+       ter safecat completes.  In general, when spooling data with safecat, a single, separate process should handle naming, collecting, and deleting these files.  Examples of such a process are daemons,
+       cron jobs, and mail readers.
+
+RELIABILITY ISSUES
+       A  machine may crash while data is being written to disk.  For many programs, including many mail delivery agents, this means that the data will be silently truncated.  Using Professor Bernstein's
+       maildir algorithm, every file is guaranteed complete or nonexistent.
+
+       Many people or programs may write data to a common "spool" directory.  Systems like mh-mail store files using numeric names in a directory.  Incautious writing to files can result in a  collision,
+       in which one write succeeds and the other appears to succeed but fails.  Common strategies to resolve this problem involve creation of lock files or other synchronizing mechanisms, but such mecha‐
+       nisms  are subject to failure.  Anyone who has deleted $HOME/.netscape/lock in order to start netscape can attest to this.  The maildir algorithm is immune to this problem because it uses no locks
+       at all.
+
+THE MAILDIR ALGORITHM
+       As described in maildir(5), safecat applies the maildir algorithm by writing data in six steps.  First, it stat()s the two directories tempdir and destdir, and exits unless both directories  exist
+       and  are  writable.   Second,  it stat()s the name tempdir/time.pid.host, where time is the number of seconds since the beginning of 1970 GMT, pid is the program's process ID, and host is the host
+       name.  Third, if stat() returned anything other than ENOENT, the program sleeps for two seconds, updates time, and tries the stat() again, a limited number of times.  Fourth, the  program  creates
+       tempdir/time.pid.host.   Fifth, the program NFS-writes the message to the file.  Sixth, the program link()s the file to destdir/time.pid.host.  At that instant the data has been successfully writ‐
+       ten.
+
+       In addition, safecat starts a 24-hour timer before creating tempdir/time.pid.host, and aborts the write if the timer expires.  Upon error, timeout, or normal completion, safecat  attempts  to  un‐
+       link() tempdir/time.pid.host.
+
+EXIT STATUS
+       An  exit status of 0 (success) implies that all data has been safely committed to disk.  A non-zero exit status should be considered to mean failure, though there is an outside chance that safecat
+       wrote the data successfully, but didn't think so.
+
+       Note again that if a file appears in the destination directory, then it is guaranteed to be complete.
+
+       If safecat completes successfully, then it will print the name of the newly created file (without its path) to standard output.
+
+SUGGESTED APPLICATIONS
+       Exciting uses for safecat abound, obviously, but a word may be in order to suggest what they are.
+
+       If you run Linux and use qmail instead of sendmail, you should consider converting your inbox to maildir for its superior reliability.  If your home directory is NFS mounted, qmail forces  you  to
+       use maildir.
+
+       If  you write CGI applications to collect data over the World Wide Web, you might find safecat useful.  Web applications suffer from two major problems.  Their performance suffers from every stop‐
+       page or bottleneck in the internet; they cannot afford to introduce performance problems of their own.  Additionally, web applications should NEVER leave the server and database in an inconsistent
+       state.  This is likely, however, if CGI scripts directly frob some database--particularly if the database is overloaded or slow.  What happens when users get bored  and  click  "Stop"  or  "Back"?
+       Maybe the database activity completes.  Maybe the CGI script is killed, leaving the DB in an inconsistent state.
+
+       Consider  the following strategy.  Make your CGI script dump its request to a spool directory using safecat.  Immediately return a receipt to the browser.  Now the browser has a complete guarantee
+       that their submission is received, and the perceived performance of your web application is optimal.
+
+       Meanwhile, a spooler daemon notices the fresh request, snatches it and updates the database.  Browsers can be informed that their request will be fulfilled in X minutes.   The  result  is  optimal
+       performance despite a capricious internet.  In addition, users can be offered nearly 100% reliability.
+
+EXAMPLES
+       To convince sendmail to use maildir for message delivery, add the following line to your .forward file:
+
+       |SAFECAT HOME/Maildir/tmp HOME/Maildir/new || exit 75 #USERNAME
+
+       where SAFECAT is the complete path of the safecat program, HOME is the complete path to your home directory, and USERNAME is your login name. Making this change is likely to pay off; many campuses
+       and companies mount user home directories with NFS.  Using maildir to deliver to your inbox folder helps ensure that your mail will not be lost due to some NFS error.  Of course, if you are a Sys‐
+       tem Administrator, you should consider switching to qmail.
+
+       To run a program and catch its output safely into some directory, you can use a shell script like the following.
+
+       #!/bin/bash
+
+       MYPROGRAM=cat              # The program you want to run
+       TEMPDIR=/tmp               # The name of a temporary directory
+       DESTDIR=$HOME/work/data    # The directory for storing information
+
+       try() { $* 2>/dev/null || echo NO 1>&2 }
+
+       set `( try $MYPROGRAM | try safecat $TEMPDIR $DESTDIR ) 2>&1`
+       test "$?" = "0"  || exit -1
+       test "$1" = "NO" && { rm -f $DESTDIR/$2; exit -1; }
+
+       This script illustrates the pitfalls of writing secure programs with the shell.  The script assumes that your program might generate some output, but then fail to complete.  There is no way for
+       safecat to know whether your program completed successfully or not, because of the semantics of the shell.  As a result, safecat might create a file in the data directory which is "complete" but
+       not useful.  The shell script deletes the file in that case.
+
+       More generally, the safest way to use safecat is from within a C program which invokes safecat with fork() and execve().  The parent process can the simply kill() the safecat process if any prob‐
+       lems develop, and optionally can try again.  Whether to go to this trouble depends upon how serious you are about protecting your data.  Either way, safecat will not be the weak link in your data
+       flow.
+
+BUGS
+       In order to perform the last step and link() the temporary file into the destination directory, both directories must reside in the same file system.  If they do not, safecat will quietly fail
+       every time.  In Professor Bernstein's implementation of maildir, the temporary and destination directories are required to belong to the same parent directory, which essentially avoids this prob‐
+       lem.  We relax this requirement to provide some flexibility, at the cost of some risk.  Caveat emptor.
+
+       Although safecat cleans up after itself, it may sometimes fail to delete the temporary file located in tempdir.  Since safecat times out after 24 hours, you may freely delete any temporary files
+       older than 36 hours.  Files newer than 36 hours should be left alone.  A system of data flow involving safecat should include a cron job to clean up temporary files, or should obligate consumers
+       of the data to do the cleanup, or both.  In the case of qmail, mail readers using maildir are expected to scan and clean up the temporary directory.
+
+       The guarantee of safe delivery of data is only "as certain as UNIX will allow."  In particular, a disk hardware failure could result in safecat concluding that the data was safe, when it was not.
+       Similarly, a successful exit status from safecat is of no value if the computer, its disks and backups all explode at some subsequent time.
+
+       In other words, if your data is vital to you, then you won't just use safecat.  You'll also invest in good equipment (possibly including a RAID disk), a UPS for the server and drives, a regular
+       backup schedule, and competent system administration.  For many purposes, however, safecat can be considered 100% reliable.
+
+       Also note that safecat was designed for spooling email messages; it is not the right tool for spooling large files--files larger than 2GB, for example. Some operating systems have a bug which
+       causes safecat to fail silently when spooling files larger than 2GB. When building safecat, you can take advantage of conditional support for large files on Linux; see conf-cc for further informa‐
+       tion.
+
+CREDITS
+       The maildir algorithm was devised by Professor Daniel Bernstein, the author of qmail.  Parts of this manpage borrow directly from maildir(5) by Professor Bernstein.  In particular, the section
+       "THE MAILDIR ALGORITHM" transplants his explanation of the maildir algorithm in order to illustrate that safecat complies with it.
+
+       The original code for safecat was written by the present author, but was since augmented with heavy borrowings from qmail code.  However, under no circumstances should the author of qmail be con‐
+       tacted concerning safecat bugs; all are the fault, and the responsibility, of the present author.
+
+       Copyright (c) 2000, Len Budney. All rights reserved.
+
+SEE ALSO
+       mbox(5), qmail-local(8), maildir(5)
+
+                                                                                                                                                                                                 safecat(1)

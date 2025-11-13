@@ -1,0 +1,183 @@
+ZAP(1)                  FreeBSD General Commands Manual                 ZAP(1)
+
+NAME
+     zap – maintain and replicate ZFS snapshots
+
+SYNOPSIS
+     zap snap|snapshot [-DLSv] TTL [[-r] dataset]...
+     zap rep|replicate [-CDFLSv] [-h host] [[[user@]host:]parent_dataset [-r]
+         dataset [[-r] dataset]...]
+     zap destroy [-Dlsv] [host[,host]...]
+     zap -v|-version|--version
+
+DESCRIPTION
+     zap automates the management of zfs snapshots.  With a few simple crontab
+     entries, it can be used to create a comprehensive zfs backup system.
+     There are no configuration files.  All parameters are supplied on the
+     command line or in zfs properties and all snapshot information is stored
+     in snapshot names.
+
+     zap will not interfere with manually created snapshots or snapshots from
+     other tools.  It will only operate on snapshots it creates.
+
+     If the pool is in a DEGRADED state, then snapshots will still be created,
+     replicated, and destroyed unless -D is used.  If the pool is being
+     resilvered or scrubbed, then snapshots will still created and replicated,
+     but not destroyed.  Use -L, -l, -S, and -s to change this behaviour.
+
+SUBCOMMANDS
+   snap|snapshot
+     Use the snap subcommand to create snapshots that will expire after TTL
+     (time to live) has elapsed.  An expired snapshot will be destroyed the
+     next time zap destroy is run.  TTL takes the form [0-9]{1,4}[dwmy].  That
+     is, one to four digits followed by a character to represent the time unit
+     (day, week, month, or year). If datasets are not not supplied on the
+     command line, snapshots will be created for datasets with the property
+     zap:snap set to on.
+
+   rep|replicate
+     Use the rep subcommand to replicate datasets.  If a destination and
+     datasets are not supplied on the command line, datasets with a
+     destination set in the zap:rep user property are replicated.  If the
+     destination does not contain a host, or if the supplied host is
+     localhost, 127.x.x.x, or ::1, then any user@ is ignored and ssh is not
+     used.  If the canmount property of the local dataset is set to on, after
+     replication an attempt is made to set canmount to noauto on the remote
+     side.  This is done to prevent mountpoint collisions. By default,
+     snapshots originating from the local host (as returned by hostname -s)
+     are replicated, but -h host can be used to replicate snapshots
+     originating from host.  Set the ZAP_FILTER environment variable to a
+     command to filter the transfer.  For example, ZAP_FILTER="mbuffer -s 128k
+     -m 10M" will filter the transfer through mbuffer.  Note that the filter
+     command must be available on both the sending and receiving hosts.
+
+   destroy
+     Use the destroy subcommand to destroy expired snapshots.  By default,
+     only snapshots originating from the local host are destroyed.  If a comma
+     separated list of hosts are specified, then only destroy snapshots
+     originating from those hosts. Hosts are specified without any domain
+     information, that is, as returned by hostname -s.
+
+OPTIONS
+     -C        Do not supply -c to zfs send.  This option is unsupported on
+               some systems, such as Debian 9 and NetBSD 9.
+
+     -D        Do not operate on snapshots when the pool is in a DEGRADED
+               state.
+
+     -F        Supply -F to zfs receive, which destroys remote changes that do
+               not exist on the sending side.
+
+     -h host   Replicate snapshots originating from host instead of those
+               originating from the local host (as returned by hostname -s).
+
+     -L        Do not operate on snapshots if the pool has a resilver in
+               progress.  This is the default for the destroy subcommand.
+
+     -l        Operate on snapshots, even if the pool has a resilver in
+               progress.  This is the default for the snap and rep
+               subcommands.
+
+     -S        Do not operate on snapshots if the pool is being scrubbed.
+               This is the default for the destroy subcommand.
+
+     -s        Operate on snapshots, even if the pool is being scrubbed.  This
+               is the default for the snap and rep subcommands.
+
+     -r        Recursively create or replicate snapshots of all descendants.
+
+     -v        Be verbose.
+
+ENVIRONMENT
+     The following environment variable affects the execution of zap:
+
+     ZAP_FILTER      Filter rep through the command contained in the variable.
+                     For example, a value of "mbuffer -s 128k -m 10M" will
+                     filter the transfer through mbuffer.  Note that the
+                     filter command must be available on both the sending and
+                     receiving hosts.
+
+EXAMPLES
+     Create snapshots that will expire after three weeks.
+
+           zfs set zap:snap=on zroot/usr/home/nox zroot/var/
+           zfs set zap:snap=off zroot/var/crash zroot/var/tmp zroot/var/mail
+           zap snap 3w
+
+     Create snapshots specifying the datasets on the command line.
+
+           zap snap 3w zroot/usr/home/nox -r zroot/var
+
+     Recursively create snapshots that will expire after one day.  Be verbose.
+
+           zfs set zap:snap=on zroot/usr/home
+           zap snap -v 1d
+
+     Replicate datasets to the remote host bravo, under the zback/phe dataset.
+     If you use a non-default ssh port, specify it in ~/.ssh/config.
+
+           zfs set zap:rep='zap@bravo:zback/phe' zroot/ROOT zroot/usr/home/jrm
+           zap rep -v
+
+     Replicate datasets (recursively for zroot/ROOT) to the remote host bravo,
+     under the rback/phe dataset, but this time specify the datasets on the
+     command line. If you use a non-default ssh port, specify it in
+     ~/.ssh/config.
+
+           zap rep zap@bravo:rback/phe -r zroot/ROOT zroot/usr/home/jrm
+
+     Replicate datasets originating from awarnach to the remote host bravo,
+     under the zback/phe dataset. If you use a non-default ssh port, specify
+     it in ~/.ssh/config.  Filter the transfer through mbuffer by setting the
+     ZAP_FILTER environment variable.  Note that mbuffer must be available on
+     both the sending and receiving hosts.
+
+           zfs set zap:rep='zap@bravo:zback/phe' zroot/ROOT zroot/usr/home/jrm
+           zap rep -v -h awarnach
+
+     Destroy expired snapshots.  Be verbose.
+
+           zap destroy -v
+
+     Destroy expired snapshots that originated on either the host awarnach or
+     the host gly. Be verbose.
+
+           zap destroy -v awarnach,gly
+
+     Example crontab entries for rolling snapshots and remote replication.
+     Taking snapshots is normally cheap, so do it often. Destroying snapshots
+     can thrash disks, so only do it every 24 hours.
+
+           #minute hour    mday    month   wday    command
+
+           # take snapshots
+           */5     *       *       *       *       zap snap 1d
+           14      */4     *       *       *       zap snap 1w
+           14      00      *       *       1       zap snap 1m
+
+           # destroy snapshots
+           44      04      *       *       *       zap destroy
+
+           # replicate datasets
+           54      */1     *       *       *       zap rep -v
+
+SEE ALSO
+     GitHub Page: http://github.com/jehops/zap
+     Replication strategy: http://ftfl.ca/blog/2016-12-27-zfs-replication.html
+     Related tool: http://www.zfsnap.org/
+     crontab(5), zfs(8), zpool(8)
+
+AUTHOR AND CONTRIBUTORS
+     Joseph Mingrone jrm@ftfl.ca
+     Tobias Kortkamp t@tobik.me
+     David Samms dsamms@nw-ds.com
+     Victor Naumov vicnaumov@gmail.com
+     Dries Michiels driesm.michiels@gmail.com
+     Louis Kowolowski louisk@cryptomonkeys.org
+     Maxime Soulé
+     sevmonster
+
+BUGS
+     Issue tracker: http://github.com/jehops/zap/issues
+
+FreeBSD 14.1-RELEASE             July 25, 2021            FreeBSD 14.1-RELEASE

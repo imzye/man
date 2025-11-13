@@ -1,0 +1,299 @@
+interimap(1)                                                                                                                                                                                   interimap(1)
+
+NAME
+       InterIMAP - Fast bidirectional synchronization for QRESYNC-capable IMAP servers
+
+SYNOPSIS
+       interimap [OPTION ...]  [COMMAND] [MAILBOX ...]
+
+DESCRIPTION
+       interimap  performs  stateful synchronization between two IMAP4rev1 servers.  Such synchronization is made possible by the QRESYNC IMAP extension; for convenience reasons servers must also support
+       the LIST-EXTENDED, LIST-STATUS (or NOTIFY) and UIDPLUS IMAP extensions.  See also the supported extensions section below.
+
+       Stateful synchronization is only possible for mailboxes supporting persistent message Unique Identifiers (UID) and persistent storage of mod-sequences  (MODSEQ);  any  non-compliant  mailbox  will
+       cause  interimap  to abort.  Furthermore, because UIDs are allocated not by the client but by the server, interimap needs to keep track of associations between local and remote UIDs for each mail‐
+       box.  The synchronization state of a mailbox consists of its UIDNEXT and HIGHESTMODSEQ values on each server; it is then assumed that each message with UID smaller than UIDNEXT  have  been  repli‐
+       cated  to  the other server, and that the metadata (such as flags) of each message with MODSEQ at most HIGHESTMODSEQ have been synchronized.  Conceptually, the synchronization algorithm is derived
+       from RFC 4549 with the RFC 7162 (sec. 6) amendments, and works as follows:
+
+       1. SELECT (on both servers) a mailbox the current UIDNEXT or HIGHESTMODSEQ values of which differ from the values found in the database (for either server).  Use the QRESYNC SELECT parameter  from
+          RFC 7162 to list changes (vanished messages and flag updates) since HIGHESTMODSEQ to messages with UID smaller than UIDNEXT.
+
+       2. Propagate these changes onto the other server: get the corresponding UIDs from the database, then:
+
+           a. issue a UID STORE command, followed by UID EXPUNGE, to remove messages that have not already been deleted on both servers; and
+
+           b. issue some UID STORE commands to propagate flag updates (send a single command for each flag list in order the reduce the number of round trips).
+
+           (Conflicts  may  occur  if the metadata of a message has been updated on both servers with different flag lists; in that case, interimap issues a warning and updates the message on each server
+           with the union of both flag lists.)  Repeat this step if the server sent some updates in the meantime.  Otherwise, update the HIGHESTMODSEQ value in the database.
+
+       3. Process new messages (if the current UIDNEXT value of the mailbox differs from the one found in the database) by issuing a UID FETCH command; process each received message on-the-fly by issuing
+          an APPEND command with the message’s RFC822 body, FLAGS and INTERNALDATE.  Repeat this step if the server received new messages in the meantime.  Otherwise, update  the  UIDNEXT  value  in  the
+          database.  Go back to step 2 if the server sent some metadata (such as flag) updates in the meantime.
+
+       4. Go back to step 1 to proceed with the next unsynchronized mailbox.
+
+COMMANDS
+       By  default,  interimap  synchronizes  each mailbox listed by the LIST "" "*" IMAP command; the list-mailbox, list-select-opts and ignore-mailbox options from the configuration file can be used to
+       shrink that list and save bandwidth.  However if some extra argument are provided on the command line, interimap ignores these options and synchronizes the given MAILBOXes instead.  Note that each
+       MAILBOX is taken “as is”; in particular, it must be UTF-7 encoded, unquoted, and the list wildcards `*' and `%' are passed verbatim to the IMAP server.  If the local and remote hierarchy delimiter
+       differ, then within the MAILBOX names the local delimiter should be used (it is transparently substituted for remote commands and responses).
+
+       If the synchronization was interrupted during a previous run while some messages were being replicated (but before the UIDNEXT or HIGHESTMODSEQ values have  been  updated),  interimap  performs  a
+       “full synchronization” on theses messages: downloading the whole UID and flag lists on each servers allows interimap to detect messages that have been removed or for which their flags have changed
+       in the meantime.  Finally, after propagating the offline changes for these messages, interimap resumes the synchronization for the rest of the mailbox.
+
+       Specifying one of the commands below makes interimap perform an action other than the default QRESYNC-based synchronization.
+
+       --repair [MAILBOX ...]
+              List  the  database anomalies and try to repair them.  (Consider only the given MAILBOXes if non-optional arguments are provided.)  This is done by performing a so-called “full synchroniza‐
+              tion”, namely: 1/ download all UIDs along with their flag list both from the local and remote servers; 2/ ensure that each entry in the database corresponds to an existing UID; and  3/  en‐
+              sure  that  both flag lists match.  Any message found on a server but not in the database is replicated on the other server (which in the worst case, might yield a message duplicate).  Flag
+              conflicts are solved by updating each message to the union of both lists.
+
+       --delete MAILBOX [MAILBOX ...]
+              Delete the given MAILBOXes on each target (by default each server plus the database, unless --target specifies otherwise) where it exists.  Note that per the IMAP4rev1 standard deletion  is
+              not recursive.  Thus MAILBOX’s children are not deleted.
+
+       --rename SOURCE DEST
+              Rename the mailbox SOURCE to DEST on each target (by default each server plus the database, unless --target specifies otherwise) where it exists.  interimap aborts if DEST already exists on
+              either target.  Note that per the IMAP4rev1 standard renaming is recursive.  Thus SOURCE’s children are moved to become DEST’s children instead.
+
+OPTIONS
+       --config=FILE
+              Specify an alternate configuration file.  Relative paths start from $XDG_CONFIG_HOME/interimap, or ~/.config/interimap if the XDG_CONFIG_HOME environment variable is unset.
+
+       --target={local,remote,database}
+              Limit the scope of a --delete or --rename command to the given target.  Can be repeated to act on multiple targets.  By default all three targets are considered.
+
+       --watch[=seconds]
+              Don’t  exit  after  a  successful  synchronization.  Instead, keep synchronizing forever.  Sleep for the given number of seconds (by default 1 minute if --notify is unset, and 15 minutes if
+              --notify is set) between two synchronizations.  Setting this options enables SO_KEEPALIVE on the socket for types other than tunnel.
+
+       --notify
+              Whether to use the IMAP NOTIFY extension to instruct the server to automatically send updates to the client.  (Both local and remote servers must support RFC 5465 for this to  work.)   This
+              greatly  reduces  IMAP  traffic  since  interimap can rely on server notifications instead of manually polling for updates.  If the connection remains idle for 15 minutes (configurable with
+              --watch), then interimap sends a NOOP command to avoid being logged out for inactivity.
+
+       -q, --quiet
+              Try to be quiet.
+
+       --debug
+              Turn on debug mode.  Debug messages, which includes all IMAP traffic besides literals, are written to the given logfile.  The LOGIN and AUTHENTICATE commands are however redacted (in  order
+              to avoid disclosing authentication credentials) unless the --debug flag is set multiple times.
+
+       -h, --help
+              Output a brief help and exit.
+
+       --version
+              Show the version number and exit.
+
+CONFIGURATION FILE
+       Unless told otherwise by the --config=FILE command-line option, interimap reads its configuration from $XDG_CONFIG_HOME/interimap/config (or ~/.config/interimap/config if the XDG_CONFIG_HOME envi‐
+       ronment  variable  is  unset) as an INI file.  The syntax of the configuration file is a series of OPTION=VALUE lines organized under some [SECTION]; lines starting with a `#' or `;' character are
+       ignored as comments.  The [local] and [remote] sections define the two IMAP servers to synchronize.  Valid options are:
+
+       database
+              SQLite version 3 database file to use to keep track of associations between local and remote UIDs, as well as the UIDVALIDITY, UIDNEXT and  HIGHESTMODSEQ  of  each  known  mailbox  on  both
+              servers.   Relative  paths start from $XDG_DATA_HOME/interimap, or ~/.local/share/interimap if the XDG_DATA_HOME environment variable is unset.  This option is only available in the default
+              section.  (Default: HOST.db, where HOST is taken from the [remote] or [local] sections, in that order.)
+
+       list-reference
+              An optional “reference name” to use for the initial LIST command, indicating the context in which the MAILBOXes are interpreted.  For instance, by specifying  list-reference=perso/  in  the
+              [local] section, MAILBOX names are interpreted relative to perso/ on the local server; in other words the remote mailbox hierarchy is mapped to the perso/ sub-hierarchy on the local server.
+              This  is useful for synchronizing multiple remote servers against different namespaces belonging to the same local IMAP server (using a different interimap instance for each local namespace
+              ↔ remote synchronization).
+
+              (Note that if the reference name is not a level of mailbox hierarchy and/or does not end with the hierarchy delimiter, by RFC 3501 its interpretation  by  the  IMAP  server  is  implementa‐
+              tion-dependent.)
+
+       list-mailbox
+              A  space  separated list of mailbox patterns to use when issuing the initial LIST command (overridden by the MAILBOXes given as command-line arguments).  Names containing special characters
+              such as spaces or brackets need to be enclosed in double quotes.  Within double quotes C-style backslash escape sequences can be used (`\t' for an horizontal tab, `\n' for a new line,  `\\'
+              for  a  backslash,  etc.), as well as hexadecimal escape sequences `\xHH'.  Furthermore, non-ASCII names must be UTF-7 encoded.  Two wildcards are available, and passed verbatim to the IMAP
+              server: a `*' character matches zero or more characters, while a `%' character matches zero or more characters up to the hierarchy delimiter.  Hard-coding the hierarchy  delimiter  in  this
+              setting is not advised because the server might silently change it at some point.  A null character should be used instead.  For instance, if list-mailbox is set "foo\x00bar" then, assuming
+              the hierarchy delimiter is `/', only the mailbox named foo/bar is considered for synchronization.
+
+              This option is only available in the default section.  (The default pattern, *, matches all visible mailboxes on the server.)
+
+       list-select-opts
+              An  optional  space  separated  list of selectors for the initial LIST command.  (Requires a server supporting the LIST-EXTENDED IMAP extension.)  Useful values are SUBSCRIBED (to list only
+              subscribed mailboxes), REMOTE (to also list remote mailboxes on a server supporting mailbox referrals), and RECURSIVEMATCH (to list parent mailboxes with children matching one of the  above
+              list-mailbox patterns).  This option is only available in the default section.
+
+       ignore-mailbox
+              An  optional Perl Compatible Regular Expressions (PCRE) covering mailboxes to exclude: any (UTF-7 encoded and unquoted) mailbox listed in the initial LIST responses is ignored if it matches
+              the given expression after trimming the reference names and substituting the hierarchy delimiter with the null character.  For instance, specifying ^virtual(?:\x00|$) excludes  the  mailbox
+              named  “virtual”  as  well  as its descendants.  Note that the MAILBOXes given as command-line arguments bypass the check and are always considered for synchronization.  This option is only
+              available in the default section.
+
+       logfile
+              A file name to use to log debug and informational messages.  (By default these messages are written to the error output.)  This option is only available in the default section.
+
+       log-prefix
+              A printf(3)-like format string to use as prefix for each log message.  Interpreted sequences are %n and %m, expanding respectively to the component name (local/remote) and to  the  name  of
+              the  mailbox  relevant  for  the  log entry.  Conditions on a specifier %X can be obtained with %?X?then? or %?X?then&else?, which expands to then if the %X specifier expands to a non-empty
+              string, and to else (or the empty string if there is no else condition) if it doesn’t.  Literal % characters need to be escaped as %%, while &, ? and \  characters  need  to  be  \-escaped.
+              (Default: %?n?%?m?%n(%m)&%n?: ?.)
+
+       type   One  of imap, imaps or tunnel.  type=imap and type=imaps are respectively used for IMAP and IMAP over SSL/TLS connections over an INET socket.  type=tunnel causes interimap to create an un‐
+              named pair of connected sockets for inter-process communication with a command instead of opening a network socket.  Note that specifying type=tunnel in the [remote] section makes  the  de‐
+              fault database to be localhost.db.  (Default: imaps.)
+
+       host   Server  hostname  or IP address, for type=imap and type=imaps.  The value can optionally be enclosed in square brackets to force its interpretation as an IP literal (hence skip name resolu‐
+              tion).  (Default: localhost.)
+
+       port   Server port.  (Default: 143 for type=imap, 993 for type=imaps.)
+
+       proxy  Optional SOCKS proxy to use for TCP connections to the IMAP server (type=imap and type=imaps only), formatted as PROTOCOL://[USER:PASSWORD@]PROXYHOST[:PROXYPORT].  If PROXYPORT is  omitted,
+              it  is  assumed  at  port 1080.  Only SOCKSv5 is supported (with optional username/password authentication), in two flavors: socks5:// to resolve hostname locally, and socks5h:// to let the
+              proxy resolve hostname.
+
+       command
+              Command to use for type=tunnel.  Must speak the IMAP4rev1 protocol on its standard output, and understand it on its standard input.  The value is passed to `/bin/sh -c` if it contains shell
+              metacharacters; otherwise it is split into words and the resulting list is passed to execvp(3).
+
+       STARTTLS
+              Whether to use the STARTTLS directive to upgrade to a secure connection.  Setting this to YES for a server not advertising the STARTTLS capability causes interimap to immediately abort  the
+              connection.  (Ignored for types other than imap.  Default: YES.)
+
+       auth   Space-separated  list of preferred authentication mechanisms.  interimap uses the first mechanism in that list that is also advertised (prefixed with AUTH=) in the server’s capability list.
+              Supported authentication mechanisms are PLAIN and LOGIN.  (Default: PLAIN LOGIN.)
+
+       username, password
+              Username and password to authenticate with.  Can be required for non pre-authenticated connections, depending on the chosen authentication mechanism.
+
+       compress
+              Whether to use the IMAP COMPRESS extension for servers advertising it.  (Default: NO for the [local] section, YES for the [remote] section.)
+
+       null-stderr
+              Whether to redirect command’s standard error to /dev/null for type=tunnel.  This option is ignored when the --debug flag is set.  (Default: NO.)
+
+       SSL_protocols
+              Space-separated list of SSL/TLS protocol versions to explicitly enable (or disable if prefixed with an exclamation mark !).  Potentially known protocols are SSLv2,  SSLv3,  TLSv1,  TLSv1.1,
+              TLSv1.2, and TLSv1.3, depending on the OpenSSL version used.  Enabling a protocol is a short-hand for disabling all other protocols.
+
+              DEPRECATED: Use SSL_protocol_min and/or SSL_protocol_max instead.
+
+       SSL_protocol_min, SSL_protocol_max
+              Set  minimum resp.  maximum SSL/TLS protocol version to use for the connection.  Potentially recognized values are SSLv3, TLSv1, TLSv1.1, TLSv1.2, and TLSv1.3, depending on the OpenSSL ver‐
+              sion used.
+
+       SSL_cipherlist, SSL_ciphersuites
+              Sets the TLSv1.2 and below cipher list resp.  TLSv1.3 cipher suites.  The combination of these lists is sent to the server, which then determines which cipher to  use  (normally  the  first
+              supported one from the list sent by the client).  The default suites depend on the OpenSSL version and its configuration, see ciphers(1ssl) for more information.
+
+       SSL_fingerprint
+              Space-separated  list  of acceptable fingerprints for the server certificate’s Subject Public Key Info, in the form [ALGO$]DIGEST_HEX where ALGO is the digest algorithm (by default sha256).
+              Attempting to connect to a server with a non-matching certificate SPKI fingerprint causes interimap to abort the connection during the SSL/TLS handshake.  The following command can be  used
+              to compute the SHA-256 digest of a certificate’s Subject Public Key Info:
+
+                     $ openssl x509 -in /path/to/server/certificate.pem -pubkey \
+                         | openssl pkey -pubin -outform DER \
+                         | openssl dgst -sha256
+
+              Specifying  multiple  digest  values  can be useful in key rollover scenarios and/or when the server supports certificates of different types (for instance a dual-cert RSA/ECDSA setup).  In
+              that case the connection is aborted when none of the specified digests matches.
+
+       SSL_verify
+              Whether to 1/ verify the server certificate chain; and 2/ match its Subject Alternative Name (SAN) or Subject CommonName (CN) against the value of the host option.  (Default: YES.)
+
+              Note that using SSL_fingerprint to specify the fingerprint of the server certificate provides an independent server authentication measure as it pins directly its key  material  and  ignore
+              its chain of trust.
+
+       SSL_CAfile
+              File containing trusted certificates to use during server certificate verification when SSL_verify=YES.
+
+              Trusted CA certificates are loaded from the default system locations unless one (or both) of SSL_CAfile or SSL_CApath is set.
+
+       SSL_CApath
+              Directory to use for server certificate verification when SSL_verify=YES.  This directory must be in “hash format”, see verify(1ssl) for more information.
+
+              Trusted CA certificates are loaded from the default system locations unless one (or both) of SSL_CAfile or SSL_CApath is set.
+
+       SSL_hostname
+              Name  to  use  for  the TLS SNI (Server Name Indication) extension.  The default value is taken from the host option when it is a hostname, and to the empty string when it is an IP literal.
+              Setting SSL_hostname to the empty string explicitly disables SNI.
+
+SUPPORTED EXTENSIONS
+       interimap takes advantage of servers supporting the following extensions to the IMAP4rev1 protocol (those marked as “recommended” give the most significant performance gain):
+
+       • LITERAL+ (RFC 2088, recommended);
+
+       • MULTIAPPEND (RFC 3502, recommended);
+
+       • COMPRESS=DEFLATE (RFC 4978, recommended);
+
+       • NOTIFY (RFC 5465);
+
+       • SASL-IR (RFC 4959); and
+
+       • UNSELECT (RFC 3691).
+
+KNOWN BUGS AND LIMITATIONS
+       • Using interimap on two identical servers with a non-existent or empty database will duplicate each message due to the absence of local ↔ remote UID association.  (Should they arise, an  external
+         tool such as doveadm-deduplicate(1) can be used to weed them out.)  Hence one needs to manually empty the mail store on one end when migrating to interimap from another synchronization solution.
+
+       • interimap  is single threaded and doesn’t use IMAP command pipelining.  Synchronization could be boosted up by sending independent commands (such as the initial LIST and STATUS commands) to both
+         servers in parallel, and for a given server, by sending independent commands (such as flag updates) in a pipeline.
+
+       • Because the IMAP protocol doesn’t have a specific response code for when a message is moved to another mailbox (either using the MOVE command from RFC 6851, or via COPY + STORE + EXPUNGE),  mov‐
+         ing a message causes interimap to believe that it was deleted while another one (which is replicated again) was added to the other mailbox in the meantime.
+
+       • Because  the  IMAP protocol doesn’t provide a way for clients to determine whether a disappeared mailbox was deleted or renamed, interimap aborts when a known mailbox disappeared from one server
+         but not the other.  The --delete (resp.  --rename) command should be used instead to delete (resp.  rename) the mailbox on both servers as well as within interimap’s internal database.
+
+       • PLAIN and LOGIN are the only authentication mechanisms currently supported.
+
+       • interimap will probably not work with non RFC-compliant servers.  In particular, no work-around is currently implemented beside the tunables  in  the  configuration  file.   Moreover,  few  IMAP
+         servers have been tested so far.
+
+STANDARDS
+       • M. Leech, M. Ganis, Y. Lee, R. Kuris, D. Koblas and L. Jones, SOCKS Protocol Version 5, RFC 1928, March 1996.
+
+       • M. Leech, Username/Password Authentication for SOCKS V5, RFC 1929, March 1996.
+
+       • J. Myers, IMAP4 non-synchronizing literals, RFC 2088, January 1997.
+
+       • D. Goldsmith and M. Davis, A Mail-Safe Transformation Format of Unicode, RFC 2152, May 1997.
+
+       • C. Newman, Using TLS with IMAP, POP3 and ACAP, RFC 2595, June 1999.
+
+       • M. Crispin, Internet Message Access Protocol - Version 4rev1, RFC 3501, March 2003.
+
+       • M. Crispin, Internet Message Access Protocol (IMAP) - MULTIAPPEND Extension, RFC 3502, March 2003.
+
+       • A. Melnikov, Internet Message Access Protocol (IMAP) UNSELECT command, RFC 3691, February 2004.
+
+       • M. Crispin, Internet Message Access Protocol (IMAP) - UIDPLUS extension, RFC 4315, December 2005.
+
+       • A. Melnikov, Synchronization Operations for Disconnected IMAP4 Clients, RFC 4549, June 2006.
+
+       • A. Gulbrandsen, The IMAP COMPRESS Extension, RFC 4978, August 2007.
+
+       • R. Siemborski and A. Gulbrandsen, IMAP Extension for Simple Authentication and Security Layer (SASL) Initial Client Response, RFC 4959, September 2007.
+
+       • A. Gulbrandsen and A. Melnikov, The IMAP ENABLE Extension, RFC 5161, March 2008.
+
+       • B. Leiba and A. Melnikov, Internet Message Access Protocol version 4 - LIST Command Extensions, RFC 5258, June 2008.
+
+       • A. Gulbrandsen, C. King and A. Melnikov, The IMAP NOTIFY Extension, RFC 5465, February 2009.
+
+       • A. Melnikov and T. Sirainen, IMAP4 Extension for Returning STATUS Information in Extended LIST, RFC 5819, March 2010.
+
+       • A. Gulbrandsen and N. Freed, Internet Message Access Protocol (IMAP) - MOVE Extension, RFC 6851, January 2013.
+
+       • A. Melnikov and D. Cridland, IMAP Extensions: Quick Flag Changes Resynchronization (CONDSTORE) and Quick Mailbox Resynchronization (QRESYNC), RFC 7162, May 2014.
+
+BUGS AND FEEDBACK
+       Bugs or feature requests for interimap should be filed with the Debian project’s bug tracker at <https://www.debian.org/Bugs/>.
+
+SEE ALSO
+       A getting started guide is available locally at <file:///usr/share/doc/interimap/getting-started.md.gz>, and online at <https://guilhem.org/interimap/getting-started.html>.
+
+AUTHORS
+       Guilhem Moulin
+
+                                                                                                 July 2015                                                                                     interimap(1)

@@ -1,0 +1,314 @@
+FCGI::ProcManager(3)  User Contributed Perl Documentation FCGI::ProcManager(3)
+
+
+NAME
+        FCGI::ProcManager - functions for managing FastCGI applications.
+
+SYNOPSIS
+        # In Object-oriented style.
+        use CGI::Fast;
+        use FCGI::ProcManager;
+        my $proc_manager = FCGI::ProcManager->new({
+           n_processes => 10
+        });
+        $proc_manager->pm_manage();
+        while (my $cgi = CGI::Fast->new()) {
+          $proc_manager->pm_pre_dispatch();
+          # ... handle the request here ...
+          $proc_manager->pm_post_dispatch();
+        }
+
+        # This style is also supported:
+        use CGI::Fast;
+        use FCGI::ProcManager qw(pm_manage pm_pre_dispatch
+                     pm_post_dispatch);
+        pm_manage( n_processes => 10 );
+        while (my $cgi = CGI::Fast->new()) {
+          pm_pre_dispatch();
+          #...
+          pm_post_dispatch();
+        }
+
+DESCRIPTION
+       FCGI::ProcManager is used to serve as a FastCGI process manager.  By
+       re-implementing it in perl, developers can more finely tune performance
+       in their web applications, and can take advantage of copy-on-write
+       semantics prevalent in UNIX kernel process management.  The process
+       manager should be invoked before the caller''s request loop
+
+       The primary routine, "pm_manage", enters a loop in which it maintains a
+       number of FastCGI servers (via fork(2)), and which reaps those servers
+       when they die (via wait(2)).
+
+       "pm_manage" provides too hooks:
+
+        C<managing_init> - called just before the manager enters the manager loop.
+        C<handling_init> - called just before a server is returns from C<pm_manage>
+
+       It is necessary for the caller, when implementing its request loop, to
+       insert a call to "pm_pre_dispatch" at the top of the loop, and then
+       7"pm_post_dispatch" at the end of the loop.
+
+   Signal Handling
+       FCGI::ProcManager attempts to do the right thing for proper shutdowns
+       now.
+
+       When it receives a SIGHUP, it sends a SIGTERM to each of its children,
+       and then resumes its normal operations.
+
+       When it receives a SIGTERM, it sends a SIGTERM to each of its children,
+       sets an alarm(3) "die timeout" handler, and waits for each of its
+       children to die.  If all children die before this timeout, process
+       manager exits with return status 0.  If all children do not die by the
+       time the "die timeout" occurs, the process manager sends a SIGKILL to
+       each of the remaining children, and exists with return status 1.
+
+       In order to get FastCGI servers to exit upon receiving a signal, it is
+       necessary to use its FAIL_ACCEPT_ON_INTR.  See FCGI's description of
+       FAIL_ACCEPT_ON_INTR.  Unfortunately, if you want/need to use CGI::Fast,
+       it is currently necessary to run the latest (at the time of writing)
+       development version of FCGI.pm. (>= 0.71_02)
+
+       Otherwise, if you don't, there is a loop around accept(2) which
+       prevents os_unix.c OS_Accept() from returning the necessary error when
+       FastCGI servers blocking on accept(2) receive the SIGTERM or SIGHUP.
+
+       FCGI::ProcManager uses POSIX::sigaction() to override the default
+       SA_RESTART policy used for perl's %SIG behavior.  Specifically, the
+       process manager never uses SA_RESTART, while the child FastCGI servers
+       turn off SA_RESTART around the accept(2) loop, but reinstate it
+       otherwise.
+
+       The desired (and implemented) effect is to give a request as big a
+       chance as possible to succeed and to delay their exits until after
+       their request, while allowing the FastCGI servers waiting for new
+       requests to die right away.
+
+METHODS
+   new
+        class or instance
+        (ProcManager) new([hash parameters])
+
+       Constructs a new process manager.  Takes an option has of initial
+       parameter values, and assigns these to the constructed object HASH,
+       overriding any default values.  The default parameter values currently
+       are:
+
+        role         => manager
+        start_delay  => 0
+        die_timeout  => 60
+        pm_title => 'perl-fcgi-pm'
+
+Manager methods
+   pm_manage
+        instance or export
+        (int) pm_manage([hash parameters])
+
+       DESCRIPTION:
+
+       When this is called by a FastCGI script to manage application servers.
+       It defines a sequence of instructions for a process to enter this
+       method and begin forking off and managing those handlers, and it
+       defines a sequence of instructions to intialize those handlers.
+
+       If n_processes < 1, the managing section is subverted, and only the
+       handling sequence is executed.
+
+       Either returns the return value of pm_die() and/or pm_abort() (which
+       will not ever return in general), or returns 1 to the calling script to
+       begin handling requests.
+
+   managing_init
+        instance
+        () managing_init()
+
+       DESCRIPTION:
+
+       Overrideable method which initializes a process manager.  In order to
+       handle signals, manage the PID file, and change the process name
+       properly, any method which overrides this should call
+       SUPER::managing_init().
+
+   pm_die
+        instance or export
+        () pm_die(string msg[, int exit_status])
+
+       DESCRIPTION:
+
+       This method is called when a process manager receives a notification to
+       shut itself down.  pm_die() attempts to shutdown the process manager
+       gently, sending a SIGTERM to each managed process, waiting
+       die_timeout() seconds to reap each process, and then exit gracefully
+       once all children are reaped, or to abort if all children are not
+       reaped.
+
+   pm_wait
+        instance or export
+        (int pid) pm_wait()
+
+       DESCRIPTION:
+
+       This calls wait() which suspends execution until a child has exited.
+       If the process ID returned by wait corresponds to a managed process,
+       pm_notify() is called with the exit status of that process.  pm_wait()
+       returns with the return value of wait().
+
+   pm_write_pid_file
+        instance or export
+        () pm_write_pid_file([string filename])
+
+       DESCRIPTION:
+
+       Writes current process ID to optionally specified file.  If no filename
+       is specified, it uses the value of the "pid_fname" parameter.
+
+   pm_remove_pid_file
+        instance or export
+        () pm_remove_pid_file()
+
+       DESCRIPTION:
+
+       Removes optionally specified file.  If no filename is specified, it
+       uses the value of the "pid_fname" parameter.
+
+   sig_sub
+        instance
+        () sig_sub(string name)
+
+       DESCRIPTION:
+
+       The name of this method is passed to POSIX::sigaction(), and handles
+       signals for the process manager.  If $SIG_CODEREF is set, then the
+       input arguments to this are passed to a call to that.
+
+   sig_manager
+        instance
+        () sig_manager(string name)
+
+       DESCRIPTION:
+
+       Handles signals of the process manager.  Takes as input the name of
+       signal being handled.
+
+Handler methods
+   handling_init
+        instance or export
+        () handling_init()
+
+       DESCRIPTION:
+
+   pm_pre_dispatch
+        instance or export
+        () pm_pre_dispatch()
+
+       DESCRIPTION:
+
+   pm_post_dispatch
+        instance or export
+        () pm_post_dispatch()
+
+       DESCRIPTION:
+
+   sig_handler
+        instance or export
+        () sig_handler()
+
+       DESCRIPTION:
+
+Common methods and routines
+   self_or_default
+        private global
+        (ProcManager, @args) self_or_default([ ProcManager, ] @args);
+
+       DESCRIPTION:
+
+       This is a helper subroutine to acquire or otherwise create a singleton
+       default object if one is not passed in, e.g., a method call.
+
+   pm_change_process_name
+        instance or export
+        () pm_change_process_name()
+
+       DESCRIPTION:
+
+   pm_received_signal
+        instance or export
+        () pm_received signal()
+
+       DESCRIPTION:
+
+parameters
+   pm_parameter
+        instance or export
+        () pm_parameter()
+
+       DESCRIPTION:
+
+   n_processes
+   no_signals
+   pid_fname
+   die_timeout
+   role
+   start_delay
+       DESCRIPTION:
+
+notification and death
+   pm_warn
+        instance or export
+        () pm_warn()
+
+       DESCRIPTION:
+
+   pm_notify
+        instance or export
+        () pm_notify()
+
+       DESCRIPTION:
+
+   pm_exit
+        instance or export
+        () pm_exit(string msg[, int exit_status])
+
+       DESCRIPTION:
+
+   pm_abort
+        instance or export
+        () pm_abort(string msg[, int exit_status])
+
+       DESCRIPTION:
+
+BUGS
+       No known bugs, but this does not mean no bugs exist.
+
+SEE ALSO
+       FCGI.
+
+MAINTAINER
+       Gareth Kirwan <gbjk@thermeon.com>
+
+AUTHOR
+       James E Jurach Jr.
+
+COPYRIGHT
+        FCGI-ProcManager - A Perl FCGI Process Manager
+        Copyright (c) 2000, FundsXpress Financial Network, Inc.
+
+        This library is free software; you can redistribute it and/or
+        modify it under the terms of the GNU Lesser General Public
+        License as published by the Free Software Foundation; either
+        version 2 of the License, or (at your option) any later version.
+
+        BECAUSE THIS LIBRARY IS LICENSED FREE OF CHARGE, THIS LIBRARY IS
+        BEING PROVIDED "AS IS WITH ALL FAULTS," WITHOUT ANY WARRANTIES
+        OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING, WITHOUT
+        LIMITATION, ANY IMPLIED WARRANTIES OF TITLE, NONINFRINGEMENT,
+        MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, AND THE
+        ENTIRE RISK AS TO SATISFACTORY QUALITY, PERFORMANCE, ACCURACY,
+        AND EFFORT IS WITH THE YOU.  See the GNU Lesser General Public
+        License for more details.
+
+        You should have received a copy of the GNU Lesser General Public
+        License along with this library; if not, write to the Free Software
+        Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+
+perl v5.40.2                      2017-02-28              FCGI::ProcManager(3)

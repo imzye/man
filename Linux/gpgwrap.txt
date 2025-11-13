@@ -1,0 +1,203 @@
+
+gpgwrap(1)                                                                                  General Commands Manual                                                                                  gpgwrap(1)
+
+NAME
+       gpgwrap - a small wrapper for gpg
+
+SYNOPSIS
+       gpgwrap -V
+
+       gpgwrap -P [-v] [-i] [-a] [-p <file>]
+
+       gpgwrap -F [-v] [-i] [-a] [-c] [-p <file>] [-o <name>] [--] <file> [<file> ... ]
+
+       gpgwrap [-v] [-i] [-a] [-p <file>] [-o <name>] [--] gpg [gpg options]
+
+DESCRIPTION
+       The GNU Privacy Guard (gpg) supplies the option --passphrase-fd. This instructs gpg to read the passphrase from the given file descriptor. Usually this file descriptor is opened before gpg is executed
+       via execvp(3). Exactly that is what gpgwrap is doing. The passphrase may be passed to gpgwrap in 4 ways:
+
+              * as file path, whereat the passphrase is stored as plain text in the file
+
+              * it is piped from another program to the stdin of gpgwrap
+
+              * through the GPGWRAP_PASSPHRASE environment variable
+
+              * gpgwrap prompts for it
+
+       With no precautions the first point undermines the secure infrastructure gpg provides. But in pure batch oriented environments this may be what  you  want.  Otherwise  if  you  are  willing  to  enter
+       passphrases  once  and  don't  want  them  to  be  stored  as  plain  text in a file gpg-agent is what you are looking for. Another security objection could be the use of the environment variable GPG‐
+       WRAP_PASSPHRASE which contains the passphrase and may be read by other processes of the same user.
+
+OPTIONS
+       -V, --version
+               Print out version and exit.
+
+       -P, --print
+               Get the passphrase and print it mangled to stdout.
+
+       -F, --file
+               Read gpg commands from the given files. If <file> is - it is read from stdin. Exactly one command per line is expected. The given line is handled in the following way:
+
+               * In the first place the passphrase is mangled. This means that unusual characters are replaced by their backslash escaped octal numbers.
+
+               * Secondly the mangled passphrase is stored in the environment variable GPGWRAP_PASSPHRASE.
+
+               * "exec gpgwrap -- " is prepended to each line, before the result is passed as argument to "sh -c".
+
+       -h, --help
+               Print out usage information.
+
+       -v, --verbose
+               Increase verbosity level.
+
+       -i, --interactive
+               Always prompt for passphrase (ignores -p and the environment variable).
+
+       -a, --ask-twice
+               Ask twice if prompting for a passphrase.
+
+       -c, --check-exit-code
+               While reading gpg commands from a file, gpgwrap ignores per default the exit code of its child processes. This option enables the check of the exit code. If a child terminates abnormal or with
+               an exit code not equal 0 gpgwrap stops immediately and does return with this exit code. See also section BUGS.
+
+       -p <file>, --passphrase-file <file>
+               Read  passphrase from <file>. If <file> is - it is read from stdin. The passphrase is expected to be in plain text. If this option is not given the passphrase will be taken either from the en‐
+               vironment variable GPGWRAP_PASSPHRASE or it will be prompted on the controlling tty if the environment variable is not set.
+
+       -o <name>, --option-name <name>
+               Specify the name of the "--passphrase-fd" option understood by the program to be executed. This is useful if you want to use gpgwrap in combination with other programs than gpg.
+
+LIMITATIONS
+       The given passphrase is subject to several limitations depending on the way it was passed to gpgwrap:
+
+              * There is a size limitation: the passphrase should be not larger than some kilobytes (examine the source code for the exact limit).
+
+              * gpgwrap allows you to use all characters in a passphrase even \000, but this does not mean that gpg will accept it. gpg may reject your passphrase or may only read a part of it,  if  it  con‐
+                tains characters like \012 (in C also known as \n).
+
+              * If  you  set  the  environment  variable GPGWRAP_PASSPHRASE you should take special care with the backslash character, because gpgwrap uses backslash to escape octal numbers, (see option -F).
+                Therefore write backslash itself as octal number: \134.
+
+EXAMPLES
+       1.
+               gpgwrap -p /path/to/a/secret/file  \
+               gpg -c -z 0 --batch --no-tty  \
+                   --cipher-algo blowfish < infile > outfile
+
+               Read passphrase from /path/to/a/secret/file and execute gpg to do symmetric encryption of infile and write it to outfile.
+
+       2.
+               gpgwrap -i -a  \
+               gpg -c -z 0 --batch --no-tty  \
+                   --cipher-algo blowfish < infile > outfile
+
+               Same as above except that gpgwrap prompts twice for the passphrase.
+
+       3.
+               gpgwrap -F -i - <<EOL
+               gpg --decrypt --batch --no-tty < "$HOME/infile1" > "$HOME/outfile1"
+               gpg --decrypt --batch --no-tty < "$HOME/infile2" > "$HOME/outfile2"
+               gpg --decrypt --batch --no-tty < "$HOME/infile3" > "$HOME/outfile3"
+               gpg --decrypt --batch --no-tty < "$HOME/infile4" > "$HOME/outfile4"
+               EOL
+
+               gpgwrap prompts for the passphrase and executes four instances of gpg to decrypt the given files.
+
+       4.
+               GPGWRAP_PASSPHRASE="mysecretpassphrase"
+               export GPGWRAP_PASSPHRASE
+               gpgwrap -F -c -v /tmp/cmdfile1 - /tmp/cmdfile2 <<EOL
+               gpg --decrypt --batch --no-tty < "$HOME/infile1" > "$HOME/outfile1"
+               gpg --decrypt --batch --no-tty < "$HOME/infile2" > "$HOME/outfile2"
+               gpg --decrypt --batch --no-tty < "$HOME/infile3" > "$HOME/outfile3"
+               gpg --decrypt --batch --no-tty < "$HOME/infile4" > "$HOME/outfile4"
+               EOL
+
+               Same as above except that gpgwrap gets the passphrase via the environment variable, reads commands additionally from other files and checks the exit code of every gpg instance. This  means  if
+               one gpg command has a non zero exit code, no further commands are executed. Furthermore gpgwrap produces verbose output.
+
+       5.
+               GPGWRAP_PASSPHRASE="$(gpgwrap -P -i -a)"
+               export GPGWRAP_PASSPHRASE
+
+               find . -maxdepth 1 -type f |
+               while read FILE; do
+                   FILE2="$FILE.bz2.gpg"
+                   bzip2 -c "$FILE" |
+                   gpgwrap gpg -c -z 0 --batch --no-tty  \
+                       --cipher-algo blowfish > "$FILE2" &&
+                   touch -r "$FILE" "$FILE2" &&
+                   rm -f "$FILE"
+               done
+
+               Read in passphrase, compress all files in the current directory, encrypt them and keep date from original file.
+
+       6.
+               find . -maxdepth 1 -type f -name '*.bz2.gpg' |
+               awk '{
+                   printf("gpg --decrypt --batch --no-tty --quiet ");
+                   printf("--no-secmem-warning < %s\n", $0);
+                   }' |
+               gpgwrap -F -i -c - |
+               bzip2 -d -c - |
+               grep -i 'data'
+
+               Decrypt all *.bz2.gpg files in the current directory, decompress them and print out all occurrences of data. If you pipe the result to less you get into trouble because gpgwrap and less try to
+               read from the TTY at the same time. In such a case it is better to use the environment variable to give the passphrase (the example above shows how to do this).
+
+       7.
+               GPGWRAP_PASSPHRASE="$(gpgwrap -P -i -a)"
+               export GPGWRAP_PASSPHRASE
+
+               gpgwrap -P |
+               ssh -C -x -P -l user host "
+                   GPGWRAP_PASSPHRASE=\"\$(cat)\"
+                   ...
+                   "
+
+               Prompt for a passphrase twice and write it to the GPGWRAP_PASSPHRASE environment variable.
+
+       8.
+               echo -n "Passphrase: "
+               stty -echo
+               read GPGWRAP_PASSPHRASE
+               echo
+               stty echo
+               export GPGWRAP_PASSPHRASE
+
+               Another way to prompt manually for the passphrase. It was needed in combination with older versions of gpgwrap, because they did not upport -P. Be aware that with this method no automatic con‐
+               version to backslash escaped octal numbers takes place.
+
+       9.
+               echo "mysecretpassphrase" |
+               gpg --batch --no-tty --passphrase-fd 0  \
+                   --output outfile --decrypt infile
+
+               Cheap method to give passphrase to gpg without gpgwrap. Note that you can't use stdin to pass a file to gpg, because stdin is already used for the passphrase.
+
+       10.
+               gpg --batch --no-tty  \
+                   --passphrase-fd 3 3< /path/to/a/secret/file  \
+                   < infile > outfile
+
+               This is a more advanced method to give the passphrase, it is equivalent to Option -p of gpgwrap. This example should at least work with the bash.
+
+       11.
+               gpg --batch --no-tty --passphrase-fd 3  \
+                   3< <(echo "mysecretpassphrase")  \
+                   < infile > outfile
+
+               Like above, but the passphrase is given directly. This example should at least work with the bash.
+
+BUGS
+       In  version  0.02  of  gpgwrap the exit code of gpg was only returned if gpgwrap read the passphrase from a file. Since version 0.03, only -F omits exit code checking by default, but it can be enabled
+       with -c.
+
+SEE ALSO
+       gpg, gpg-agent
+
+AUTHOR
+       Karsten Scheibler
+
+                                                                                                  gpgwrap 0.04                                                                                       gpgwrap(1)

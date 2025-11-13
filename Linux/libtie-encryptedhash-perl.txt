@@ -1,0 +1,135 @@
+Tie::EncryptedHash(3pm)                                                             User Contributed Perl Documentation                                                             Tie::EncryptedHash(3pm)
+
+NAME
+       Tie::EncryptedHash - Hashes (and objects based on hashes) with encrypting fields.
+
+SYNOPSIS
+           use Tie::EncryptedHash;
+
+           my %s = ();
+           tie %s, Tie::EncryptedHash, 'passwd';
+
+           $s{foo}  = "plaintext";     # Normal field, stored in plaintext.
+           print $s{foo};              # (plaintext)
+
+           $s{_bar} = "signature";     # Fieldnames that begin in single
+                                       # underscore are encrypted.
+           print $s{_bar};             # (signature)  Though, while the password
+                                       # is set, they behave like normal fields.
+           delete $s{__password};      # Delete password to disable access
+                                       # to encrypting fields.
+           print $s{_bar};             # (Blowfish NuRVFIr8UCAJu5AWY0w...)
+
+           $s{__password} = 'passwd';  # Restore password to gain access.
+           print $s{_bar};             # (signature)
+
+           $s{_baz}{a}{b} = 42;        # Refs are fine, we encrypt them too.
+
+DESCRIPTION
+       Tie::EncryptedHash augments Perl hash semantics to build secure, encrypting containers of data.  Tie::EncryptedHash introduces special hash fields that are coupled with encrypt/decrypt routines to
+       encrypt assignments at STORE() and decrypt retrievals at FETCH().  By design, encrypting fields are associated with keys that begin in single underscore.  The remaining keyspace is used for
+       accessing normal hash fields, which are retained without modification.
+
+       While the password is set, a Tie::EncryptedHash behaves exactly like a standard Perl hash.  This is its transparent mode of access.  Encrypting and normal fields are identical in this mode.  When
+       password is deleted, encrypting fields are accessible only as ciphertext.  This is Tie::EncryptedHash's opaque mode of access, optimized for serialization.
+
+       Encryption is done with Crypt::CBC(3) which encrypts in the cipher block chaining mode with Blowfish, DES or IDEA.  Tie::EncryptedHash uses Blowfish by default, but can be instructed to employ any
+       cipher supported by Crypt::CBC(3).
+
+MOTIVATION
+       Tie::EncryptedHash was designed for storage and communication of key material used in public key cryptography algorithms.  I abstracted out the mechanism for encrypting selected fields of a
+       structured data record because of the sheer convenience of this data security method.
+
+       Quite often, applications that require data confidentiality eschew strong cryptography in favor of OS-based access control mechanisms because of the additional costs of cryptography integration.
+       Besides cipher implementations, which are available as ready-to-deploy perl modules, use of cryptography in an application requires code to aid conversion and representation of encrypted data.
+       This code is usually encapsulated in a data access layer that manages encryption, decryption, access control and re-structuring of flat plaintext according to a data model.  Tie::EncryptedHash
+       provides these functions under the disguise of a Perl hash so perl applications can use strong cryptography without the cost of implementing a complex data access layer.
+
+CONSTRUCTION
+   Tied Hash
+       "tie %h, Tie::EncryptedHash, 'Password', 'Cipher';"
+
+       Ties %h to Tie::EncryptedHash and sets the value of password and cipher to 'Password' and 'Cipher'.  Both arguments are optional.
+
+   Blessed Object
+       "$h = new Tie::EncryptedHash __password =" 'Password',
+                                __cipher => 'Cipher';>
+
+       The new() constructor returns an object that is both tied and blessed into Tie::EncryptedHash.  Both arguments are optional.  When used in this manner, Tie::EncryptedHash behaves like a class with
+       encrypting data members.
+
+RESERVED ATTRIBUTES
+       The attributes __password, __cipher and __hide are reserved for communication with object methods.  They are "write-only" from everywhere except the class to which the hash is tied.  __scaffolding
+       is inaccessible.  Tie::EncryptedHash stores the current encryption password and some transient data structures in these fields and restricts access to them on need-to-know basis.
+
+   __password
+       "$h{__password} = "new password"; delete $h{__password};"
+
+       The password is stored under the attribute "__password".  In addition to specifying a password at construction, assigning to the __password attribute sets the current encryption password to the
+       assigned value.  Deleting the __password unsets it and switches the hash into opaque mode.
+
+   __cipher
+       "$h{__cipher} = 'DES'; $h{__cipher} = 'Blowfish';"
+
+       The cipher used for encryption/decryption is stored under the attribute __cipher.  The value defaults to 'Blowfish'.
+
+   __hide
+       "$h{__hide} = 1;"
+
+       Setting this attribute hides encrypting fields in opaque mode.  'undef' is returned at FETCH() and EXISTS().
+
+BEHAVIOR
+   References
+       A reference stored in an encrypting field is serialized before encryption.  The data structure represented by the reference is folded into a single line of ciphertext which is stored under the
+       first level key.  In the opaque mode, therefore, only the first level of keys of the hash will be visible.
+
+   Opaque Mode
+       The opaque mode introduces several other constraints on access of encrypting fields.  Encrypting fields return ciphertext on FETCH() unless __hide attribute is set, which forces Tie::EncryptedHash
+       to behave as if encrypting fields don't exist.  Irrespective of __hide, however, DELETE() and CLEAR() fail in opaque mode.  So does STORE() on an existing encrypting field.  Plaintext assignments
+       to encrypting fields are silently ignored, but ciphertext assignments are fine.  Ciphertext assignments can be used to move data between different EncryptedHashes.
+
+   Multiple Passwords and Ciphers
+       Modality of Tie::EncryptedHash's access system breaks down when more than one password is used to with different encrypting fields.  This is a feature.  Tie::EncryptedHash lets you mix passwords
+       and ciphers in the same hash.  Assign new values to __password and __cipher and create a new encrypting field.  Transparent mode will be restricted to fields encrypted with the current password.
+
+   Error Handling
+       Tie::Encrypted silently ignores access errors.  It doesn't carp/croak when you perform an illegal operation (like assign plaintext to an encrypting field in opaque mode).  This is to prevent data
+       lossage, the kind that results from abnormal termination of applications.
+
+QUIRKS
+   Autovivification
+       Due to the nature of autovivified references (which spring into existence when an undefined reference is dereferenced), references are stored as plaintext in transparent mode.  Analogous
+       ciphertext representations are maintained in parallel and restored to encrypting fields when password is deleted.  This process is completely transparent to the user, though it's advisable to
+       delete the password after the final assignment to a Tie::EncryptedHash.  This ensures plaintext representations and scaffolding data structures are duly flushed.
+
+   Data::Dumper
+       Serialization of references is done with Data::Dumper, therefore the nature of data that can be assigned to encrypting fields is limited by what Data::Dumper can grok.  We set
+       $Data::Dumper::Purity = 1, so self-referential and recursive structures should be OK.
+
+   Speed
+       Tie::EncryptedHash'es keep their contents encrypted as much as possible, so there's a rather severe speed penalty.  With Blowfish, STORE() on EncryptedHash can be upto 70 times slower than a
+       standard perl hash.  Reference STORE()'es will be quicker, but speed gain will be adjusted at FETCH().  FETCH() is about 35 times slower than a standard perl hash.  DES affords speed improvements
+       of upto 2x, but is not considered secure for long-term storage of data.  These values were computed on a DELL PIII-300 Mhz notebook with 128 Mb RAM running perl 5.003 on Linux 2.2.16.  Variations
+       in speed might be different on your machine.
+
+STANDARD USAGE
+       The standard usage for this module would be something along the lines of: populate Tie::EncryptedHash with sensitive data, delete the password, serialize the encrypted hash with Data::Dumper,
+       store the result on disk or send it over the wire to another machine.  Later, when the sensitive data is required, procure the EncryptedHash, set the password and accesses the encrypted data
+       fields.
+
+SEE ALSO
+       Data::Dumper(3), Crypt::CBC(3), Crypt::DES(3), Crypt::Blowfish(3), Tie::SecureHash(3)
+
+ACKNOWLEDGEMENTS
+       The framework of Tie::EncryptedHash derives heavily from Damian Conway's Tie::SecureHash.  Objects that are blessed as well as tied are just one of the pleasant side-effects of stealing Damian's
+       code.  Thanks to Damian for this brilliant module.
+
+       PacificNet (http://www.pacificnet.net) loaned me the aforementioned notebook to hack from the comfort of my bed.  Thanks folks!
+
+AUTHOR
+       Vipul Ved Prakash <mail@vipul.net>
+
+LICENSE
+       This module is distributed under the same license as Perl itself.
+
+perl v5.26.1                                                                                     2018-03-31                                                                         Tie::EncryptedHash(3pm)

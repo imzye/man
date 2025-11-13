@@ -1,0 +1,543 @@
+Config::AST(3)        User Contributed Perl Documentation       Config::AST(3)
+
+
+NAME
+       Config::AST - abstract syntax tree for configuration files
+
+SYNOPSIS
+           my $cfg = new Config::AST(%opts);
+           $cfg->parse() or die;
+           $cfg->commit() or die;
+
+           if ($cfg->is_set('core', 'variable')) {
+              ...
+           }
+
+           my $x = $cfg->get('file', 'locking');
+
+           $cfg->set('file', 'locking', 'true');
+
+           $cfg->unset('file', 'locking');
+
+DESCRIPTION
+       This module aims to provide a generalized implementation of parse tree
+       for various configuration files. It does not implement parser for any
+       existing configuration file format. Instead, it provides an API that
+       can be used by parsers to build internal representation for the
+       particular configuration file format.
+
+       See Config::Parser module for an implementation of a parser based on
+       this module.
+
+       A configuration file in general is supposed to consist of statements of
+       two kinds: simple statements and sections. A simple statement declares
+       or sets a configuration parameter. Examples of simple statements are:
+
+           # Bind configuration file:
+           file "cache/named.root";
+
+           # Apache configuration file:
+           ServerName example.com
+
+           # Git configuration file:
+           logallrefupdates = true
+
+       A section statement groups together a number of another statements.
+       These can be simple statements, as well as another sections. Examples
+       of sections are (with subordinate statements replaced with ellipsis):
+
+           # Bind configuration file:
+           zone "." {
+              ...
+           };
+
+           # Apache configuration file:
+           <VirtualHost *:80>
+              ...
+           </VirtualHost>
+
+           # Git configuration file:
+           [core]
+              ...
+
+       The syntax of Git configuration file being one of the simplest, we will
+       use it in the discussion below to illustrate various concepts.
+
+       The abstract syntax tree (AST) for a configuration file consists of
+       nodes.  Each node represents a single statement and carries detailed
+       information about that statement, in particular:
+
+       locus
+           Location of the statement in the configuration. It is represented
+           by an object of class Text::Locus.
+
+       order
+           0-based number reflecting position of this node in the parent
+           section node.
+
+       value
+           For simple statements - the value of this statement.
+
+       subtree
+           For sections - the subtree below this section.
+
+       The type of each node can be determined using the following node
+       attributes:
+
+       is_section
+           True if node is a section node.
+
+       is_value
+           True if node is a simple statement.
+
+       To retrieve a node, address it using its full path, i.e. list of
+       statement names that lead to this node. For example, in this simple
+       configuration file:
+
+          [core]
+              filemode = true
+
+       the path of the "filemode" statement is "qw(core filemode)".
+
+CONSTRUCTOR
+           $cfg = new Config::AST(%opts);
+
+       Creates new configuration parser object.  Valid options are:
+
+       debug => NUM
+           Sets debug verbosity level.
+
+       ci => 0 | 1
+           If 1, enables case-insensitive keyword matching.  Default is 0,
+           i.e. the keywords are case-sensitive.
+
+       lexicon => \%hash
+           Defines the keyword lexicon.
+
+       Keyword lexicon
+
+       The hash reference passed via the lexicon keyword defines the keywords
+       and sections allowed within a configuration file.  In a simplest case,
+       a keyword is described as
+
+           name => 1
+
+       This means that name is a valid keyword, but does not imply anything
+       about its properties.  A more complex declaration is possible, in which
+       the value is a hash reference, containing one or more of the following
+       keywords:
+
+       mandatory => 0 | 1
+           Whether or not this setting is mandatory.
+
+       default => VALUE
+           Default value for the setting. This value will be assigned if that
+           particular statement is not explicitly used in the configuration
+           file. If VALUE is a CODE reference, it will be invoked as a method
+           each time the value is accessed.
+
+           Default values must be pure Perl values (not the values that should
+           appear in the configuration file). They are not processed using the
+           check callbacks (see below).
+
+       array => 0 | 1
+           If 1, the value of the setting is an array.  Each subsequent
+           occurrence of the statement appends its value to the end of the
+           array.
+
+       re => regexp
+           Defines a regular expression which the value must match. If it does
+           not, a syntax error will be reported.
+
+       select => coderef
+           Reference to a method which will be called in order to decide
+           whether to apply this hash to a particular configuration setting.
+           The method is called as
+
+               $self->$coderef($node, @path)
+
+           where $node is the Config::AST::Node::Value object (use
+           $vref->value, to obtain the actual value), and @path is its
+           pathname.
+
+       check => coderef
+           Defines a method which will be called after parsing the statement
+           in order to verify its value.  The coderef is called as
+
+               $self->$coderef($valref, $prev_value, $locus)
+
+           where $valref is a reference to its value, and $prev_value is the
+           value of the previous instance of this setting.  The function must
+           return true, if the value is OK for that setting.  In that case, it
+           is allowed to modify the value referenced by $valref.  If the value
+           is erroneous, the function must issue an appropriate error message
+           using $cfg->error, and return 0.
+
+       In taint mode, any value that matched re expression or passed the check
+       function will be automatically untainted.
+
+       To define a section, use the section keyword, e.g.:
+
+           core => {
+               section => {
+                   pidfile => {
+                      mandatory => 1
+                   },
+                   verbose => {
+                      re => qr/^(?:on|off)/i
+                   }
+               }
+           }
+
+       This says that the section named core can have two variables: pidfile,
+       which is mandatory, and verbose, whose value must be on, or off (case-
+       insensitive). E.g.:
+
+           [core]
+               pidfile = /run/ast.pid
+               verbose = off
+
+       To accept arbitrary keywords, use *.  For example, the following
+       declares code section, which must have the pidfile setting and is
+       allowed to have any other settings as well.
+
+           code => {
+              section => {
+                  pidfile => { mandatory => 1 },
+                  '*' => 1
+              }
+           }
+
+       Everything said above applies to the '*' as well.  E.g. the following
+       example declares the code section, which must have the pidfile setting
+       and is allowed to have subsections with arbitrary settings.
+
+           code => {
+              section => {
+                  pidfile = { mandatory => 1 },
+                  '*' => {
+                      section => {
+                          '*' => 1
+                      }
+                  }
+              }
+           }
+
+       The special entry
+
+           '*' => '*'
+
+       means "any settings and any subsections are allowed".
+
+   $node = $cfg->root
+       Returns the root node of the tree, initializing it if necessary.
+
+   $s = $r->mangle_key($name)
+       Converts the string $name to a form suitable for lookups, in accordance
+       with the ci parameter passed to the constructor.
+
+   $cfg->lexicon($hashref)
+       Returns current lexicon.  If $hashref is supplied, installs it as a new
+       lexicon.
+
+   $cfg->describe_keyword(@path)
+       Returns a lexicon entry for the statement at @path. If no such
+       statement is defined, returns undef.
+
+PARSING
+       This module provides a framework for parsing, but does not implement
+       parsers for any particular configuration formats. To implement a
+       parser, the programmer must write a class that inherits from
+       Config::AST. This class should implement the parse method which, when
+       called, will actually perform the parsing and build the AST using
+       methods described in section CONSTRUCTING THE SYNTAX TREE (see below).
+
+       The caller must then perform the following operations
+
+       1. Create an instance of the derived class $cfg.
+       2. Call the $cfg->parse method.
+       3. On success, call the $cfg->commit method.
+
+   $cfg->parse(...)
+       Abstract method that is supposed to actually parse the configuration
+       file and build the parse tree from it. Derived classes must overload
+       it.
+
+       The must return true on success and false on failure. Eventual errors
+       in the configuration should be reported using error.
+
+   $cfg->commit([%hash])
+       Must be called after parse to finalize the parse tree. This function
+       applies default values on settings where such are defined.
+
+       Optional arguments control what steps are performed.
+
+       lint => 1
+           Forse syntax checking.  This can be necessary if new nodes were
+           added to the tree after parsing.
+
+       lexicon => $hashref
+           Override the lexicon used for syntax checking and default value
+           processing.
+
+       Returns true on success.
+
+   $cfg->error_count
+       Returns total number of errors encountered during parsing.
+
+   $cfg->success
+       Returns true if no errors were detected during parsing.
+
+   $cfg->reset
+       Destroys the parse tree and clears error count, thereby preparing the
+       object for parsing another file.
+
+METHODS
+   $cfg->error($message)
+   $cfg->error($message, locus => $loc)
+       Prints the $message on STDERR.  If locus is given, its value must be a
+       reference to a valid Text::Locus(3) object.  In that case, the object
+       will be formatted first, then followed by a ": " and the $message.
+
+   $cfg->debug($lev, @msg)
+       If $lev is greater than or equal to the debug value used when creating
+       $cfg, outputs on standard error the strings from @msg, separating them
+       with a single space character.
+
+       Otherwise, does nothing.
+
+NODE RETRIEVAL
+       A node is addressed by its path, i.e. a list of names of the
+       configuration sections leading to the statement plus the name of the
+       statement itself.  For example, the statement:
+
+           pidfile = /var/run/x.pid
+
+       has the path
+
+           ( 'pidfile' )
+
+       The path of the pidfile statement in section core, e.g.:
+
+           [core]
+               pidfile = /var/run/x.pid
+
+       is
+
+           ( 'core', 'pidfile' )
+
+       Similarly, the path of the file setting in the following configuration
+       file:
+
+           [item foo]
+               file = bar
+
+       is
+           ( 'item', 'foo', 'bar' )
+
+   $node = $cfg->getnode(@path);
+       Retrieves the AST node referred to by @path. If no such node exists,
+       returns "undef".
+
+   $var = $cfg->get(@path);
+       Returns the Config::AST::Node::Value(3) corresponding to the
+       configuration variable represented by its path, or "undef" if the
+       variable is not set.
+
+   $cfg->is_set(@path)
+       Returns true if the configuration variable addressed by @path is set.
+
+   $cfg->is_section(@path)
+       Returns true if the configuration section addressed by @path is
+       defined.
+
+   $cfg->is_variable(@path)
+       Returns true if the configuration setting addressed by @path is set and
+       is a simple statement.
+
+   $cfg->tree
+           Returns the parse tree.
+
+   $cfg->subtree(@path)
+       Returns the configuration subtree associated with the statement
+       indicated by @path.
+
+DIRECT ADDRESSING
+       Direct addressing allows programmer to access configuration settings as
+       if they were methods of the configuration class. For example, to
+       retrieve the node at path
+
+           qw(foo bar baz)
+
+       one can write:
+
+           $node = $cfg->foo->bar->baz
+
+       This statement is equivalent to
+
+           $node = $cfg->getnode(qw(foo bar baz))
+
+       except that if the node in question does not exist, direct access
+       returns a null node, and getnode returns "undef". Null node is a
+       special node representing a missing node.  Its is_null method returns
+       true and it can be used in conditional context as a boolean value,
+       e.g.:
+
+           if (my $node = $cfg->foo->bar->baz) {
+               $val = $node->value;
+           }
+
+       Direct addressing is enabled only if lexicon is provided (either during
+       creation of the object, or later, via the lexicon method).
+
+       Obviously, statements that have names coinciding with one of the
+       methods of the Config::AST class (or any of its subclasses) can't be
+       used in direct addressing.  In other words, you can't have a top-level
+       statement called "tree" and access it as
+
+           $cfg->tree
+
+       This statement will always refer to the method tree of the Config::AST
+       class.
+
+       Another possible problem when using direct access are keywords with
+       dashes.  Currently a kludge is implemented to make it possible to
+       access such keywords: when looking for a matching keyword, double
+       underscores compare equal to a single dash.  For example, to retrieve
+       the "qw(files temp-dir)" node, use
+
+           $cfg->files->temp__dir;
+
+CONSTRUCTING THE SYNTAX TREE
+       The methods described in this section are intended for use by the
+       parser implementers. They should be called from the implementation of
+       the parse method in order to construct the tree.
+
+   $cfg->add_node($path, $node)
+       Adds the node in the node corresponding to $path. $path can be either a
+       list of keyword names, or its string representation, where names are
+       separated by dots. I.e., the following two calls are equivalent:
+
+           $cfg->add_node(qw(core pidfile), $node)
+
+           $cfg->add_node('core.pidfile', $node)
+
+       If the node already exists at $path, new node is merged to it according
+       to the lexical rules.  I.e., for scalar value, new node overwrites the
+       old one.  For lists, it is appended to the list.
+
+   $cfg->add_value($path, $value, $locus)
+       Adds a statement node with the given $value and $locus in position,
+       indicated by $path.
+
+       If the setting already exists at $path, the new value is merged to it
+       according to the lexical rules.  I.e., for scalars, $value overwrites
+       prior setting.  For lists, it is appended to the list.
+
+   $cfg->set(@path, $value)
+       Sets the configuration variable @path to $value.
+
+       No syntax checking is performed.  To enforce syntax checking use
+       add_value.
+
+   cfg->unset(@path)
+       Unsets the configuration variable.
+
+AUXILIARY METHODS
+   @array = $cfg->names_of(@path)
+       If @path refers to an existing configuration section, returns a list of
+       names of variables and subsections defined within that section.
+       Otherwise, returns empty list. For example, if you have
+
+           [item foo]
+              x = 1
+           [item bar]
+              x = 1
+           [item baz]
+              y = 2
+
+       the call
+
+           $cfg->names_of('item')
+
+       will return
+
+           ( 'foo', 'bar', 'baz' )
+
+   @array = $cfg->flatten()
+   @array = $cfg->flatten(sort => $sort)
+       Returns a flattened representation of the configuration, as a list of
+       pairs [ $path, $value ], where $path is a reference to the variable
+       pathname, and $value is a Config::AST::Node::Value object.
+
+       The $sort argument controls the ordering of the entries in the returned
+       @array.  It is either a code reference suitable to pass to the Perl
+       sort function, or one of the following constants:
+
+       NO_SORT
+           Don't sort the array.  Statements will be placed in an apparently
+           random order.
+
+       SORT_NATURAL
+           Preserve relative positions of the statements.  Entries in the
+           array will be in the same order as they appeared in the
+           configuration file.  This is the default.
+
+       SORT_PATH
+           Sort by pathname.
+
+       These constants are not exported by default.  You can either import the
+       ones you need, or use the :sort keyword to import them all, e.g.:
+
+           use Config::AST qw(:sort);
+           @array = $cfg->flatten(sort => SORT_PATH);
+
+   $h = $cfg->as_hash
+   $h = $cfg->as_hash($map)
+       Returns parse tree converted to a hash reference. If $map is supplied,
+       it must be a reference to a function. For each $key/$value pair, this
+       function will be called as:
+
+           ($newkey, $newvalue) = &{$map}($what, $key, $value)
+
+       where $what is "section" or "value", depending on the type of the hash
+       entry being processed. Upon successful return, $newvalue will be
+       inserted in the hash slot for the key $newkey.
+
+       If $what is "section", $value is always a reference to an empty hash
+       (since the parse tree is traversed in pre-order fashion). In that case,
+       the $map function is supposed to do whatever initialization that is
+       necessary for the new subtree and return as $newvalue either $value
+       itself, or a reference to a hash available inside the $value. For
+       example:
+
+           sub map {
+               my ($what, $name, $val) = @_;
+               if ($name eq 'section') {
+                   $val->{section} = {};
+                   $val = $val->{section};
+               }
+               ($name, $val);
+           }
+
+   $cfg->canonical(%args)
+       Returns the canonical string representation of the configuration tree.
+       For details, please refer to the documentation of this method in class
+       Config::AST::Node.
+
+   $cfg->lint([\%lex])
+       Checks the syntax according to the keyword lexicon %lex (or
+       $cfg->lexicon, if called without arguments).  On success, applies
+       eventual default values and returns true.  On errors, reports them
+       using error and returns false.
+
+       This method provides a way to delay syntax checking for a later time,
+       which is useful, e.g. if some parts of the parser are loaded as modules
+       after calling parse.
+
+SEE ALSO
+       Config::AST::Node.
+
+       Config::Parser.
+
+perl v5.40.2                      2021-02-12                    Config::AST(3)

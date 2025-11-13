@@ -1,0 +1,680 @@
+Class::Delegation(3)  User Contributed Perl Documentation Class::Delegation(3)
+
+
+NAME
+       Class::Delegation - Object-oriented delegation
+
+VERSION
+       This document describes version 1.9.0 of Class::Delegation released
+       April 23, 2002.
+
+SYNOPSIS
+               package Car;
+
+               use Class::Delegation
+                       send => 'steer',
+                         to => ["left_front_wheel", "right_front_wheel"],
+
+                       send => 'drive',
+                         to => ["right_rear_wheel", "left_rear_wheel"],
+                         as => ["rotate_clockwise", "rotate_anticlockwise"]
+
+                       send => 'power',
+                         to => 'flywheel',
+                         as => 'brake',
+
+                       send => 'brake',
+                         to => qr/.*_wheel$/,
+
+                       send => 'halt'
+                         to => -SELF,
+                         as => 'brake',
+
+                       send => qr/^MP_(.+)/,
+                         to => 'mp3',
+                         as => sub { $1 },
+
+                       send => -OTHER,
+                         to => 'mp3',
+
+                       send => 'debug',
+                         to => -ALL,
+                         as => 'dump',
+
+                       send => -ALL,
+                         to => 'logger',
+                       ;
+
+BACKGROUND
+       [Skip to "DESCRIPTION" if you don't care why this module exists]
+
+       Inheritance is one of the foundations of object-oriented programming.
+       But inheritance has a fundamental limitation: a class can only directly
+       inherit once from a given parent class. This limitation occasionally
+       leads to awkward work-arounds like this:
+
+               package Left_Front_Wheel;   use base qw( Wheel );
+               package Left_Rear_Wheel;    use base qw( Wheel );
+               package Right_Front_Wheel;  use base qw( Wheel );
+               package Right_Rear_Wheel;   use base qw( Wheel );
+
+               package Car;                use base qw(Left_Front_Wheel
+                                                       Left_Rear_Wheel
+                                                       Right_Front_Wheel
+                                                       Right_Rear_Wheel);
+
+       Worse still, the method dispatch semantics of most languages (including
+       Perl) require that only a single inherited method (in Perl, the one
+       that is left-most-depth-first in the inheritance tree) can handle a
+       particular method invocation. So if the Wheel class provides methods to
+       steer a wheel, drive a wheel, or stop a wheel, then calls such as:
+
+               $car->steer('left');
+               $car->drive(+55);
+               $car->brake('hard');
+
+       will only be processed by the left front wheel.  This will probably not
+       produce desirable road behaviour.
+
+       It is often argued that it is simply a synecdochic mistake to treat a
+       car as a specialized form of four wheels, but this argument is far from
+       conclusive. And, regardless of its philosophical merits, programmers
+       often do conceptualize composite systems in exactly this way.
+
+       The alternative is, of course, to make the four wheels attributes of
+       the class, rather than ancestors:
+
+               package Car;
+
+               sub new {
+                       bless { left_front_wheel  => Wheel->new('steer', 'brake'),
+                               left_rear_wheel   => Wheel->new('drive', 'brake'),
+                               right_front_wheel => Wheel->new('steer', 'brake'),
+                               right_rear_wheel  => Wheel->new('drive', 'brake'),
+                             }, $_[0];
+               }
+
+       Indeed some object-oriented languages (e.g. Self) do away with
+       inheritance entirely and rely exclusively on the use of attributes to
+       implement class hierarchies.
+
+   The problem(s) with attribute-based hierarchies
+       Using attributes instead of inheritance does solve the problem: it
+       allows a Car to directly have four wheels. However, this solution
+       creates a new problem: it requires that the class manually redispatch
+       (or delegate) every method call:
+
+               sub steer {
+                       my $self = shift;
+                       return ( $self->{left_front_wheel}->steer(@_),
+                                $self->{right_front_wheel}->steer(@_), );
+               }
+
+               sub drive {
+                       my $self = shift;
+                       return ( $self->{left_rear_wheel}->drive(@_),
+                                $self->{right_rear_wheel}->drive(@_),  );
+               }
+
+               sub brake {
+                       my $self = shift;
+                       return ( $self->{left_front_wheel}->brake(@_),
+                                $self->{left_rear_wheel}->brake(@_),
+                                $self->{right_front_wheel}->brake(@_),
+                                $self->{right_rear_wheel}->brake(@_),  );
+               }
+
+       "AUTOLOAD" methods can help in this regard, but usually at the cost of
+       readability and maintainability:
+
+               sub AUTOLOAD {
+                       my $self = shift;
+                       $AUTOLOAD =~ s/.*:://;
+                       my @results;
+                       return map { $self->{$_}->$AUTOLOAD(@_) },
+                               grep { $self->{$_}->can($AUTOLOAD) },
+                                keys %$self;
+               }
+
+       Often, the simple auto-delegation mechanism shown above cannot be used
+       at all, and the various cases must be hand-coded into the "AUTOLOAD" or
+       into separate named methods (as shown earlier).
+
+       For example, an electric car might also have a flywheel and an MP3
+       player:
+
+               sub new {
+                       bless { left_front_wheel  => Wheel->new('steer', 'brake'),
+                               left_rear_wheel   => Wheel->new('drive', 'brake'),
+                               right_front_wheel => Wheel->new('steer', 'brake'),
+                               right_rear_wheel  => Wheel->new('drive', 'brake'),
+                               flywheel          => Flywheel->new(),
+                               mp3               => MP3::Player->new(),
+                             }, $_[0];
+               }
+
+       The Flywheel class would probably have its own "brake" method (to
+       harvest motive energy from the flywheel) and MP3::Player might have its
+       own "drive" method (to switch between storage devices).
+
+       An "AUTOLOAD" redispatch such as that shown above would then fail very
+       badly. Whilst it would prove merely annoying to have one's music skip
+       tracks ("$self->{mp3}->drive(+10)") every time one accelerated
+       ("$self->{right_rear_wheel}->drive(+10)"), it might be disastrous to
+       attempt to suck energy out of the flywheel
+       ("$self->{flywheel}->brake()") whilst the brakes are trying to feed it
+       back in ("$self->{right_rear_wheel}->brake()").
+
+       Class-action lawyers love this kind of programming.
+
+DESCRIPTION
+       The Class::Delegation module simplifies the creation of delegation-
+       based class hierarchies, allowing a method to be redispatched:
+
+       •   to a single nominated attribute,
+
+       •   to a collection of nominated attributes in parallel, or
+
+       •   to any attribute that can handle the message.
+
+       •   the object itself
+
+       These three delegation mechanisms can be specified for:
+
+       •   a single method
+
+       •   a set of nominated methods collectively
+
+       •   any as-yet-undelegated methods
+
+       •   all methods, delegated or not.
+
+   The syntax and semantics of delegation
+       To cause a hash-based class to delegate method invocations to its
+       attributes, the Class::Delegation module is imported into the class,
+       and passed a list of method/handler mappings that specify the
+       delegation required. Each mapping consists of between one and three
+       key/value pairs. For example:
+
+               package Car;
+
+               use Class::Delegation
+                       send => 'steer',
+                         to => ["left_front_wheel", "right_front_wheel"],
+
+                       send => 'drive',
+                         to => ["right_rear_wheel", "left_rear_wheel"],
+                         as => ["rotate_clockwise", "rotate_anticlockwise"]
+
+                       send => 'power',
+                         to => 'flywheel',
+                         as => 'brake',
+
+                       send => 'brake',
+                         to => qr/.*_wheel$/,
+
+                       send => qr/^MP_(.+)/,
+                         to => 'mp3',
+                         as => sub { $1 },
+
+                       send => -OTHER,
+                         to => 'mp3',
+
+                       send => 'debug',
+                         to => -ALL,
+                         as => 'dump',
+
+                       send => -ALL,
+                         to => 'logger',
+                       ;
+
+   Specifying methods to be delegated
+       The names of methods to be redispatched can be specified using the
+       'send' key. They may be specified as single strings, arrays of strings,
+       regular expressions, subroutines, or as one of the two special names:
+       "-ALL" and "-OTHER".  A single string specifies a single method to be
+       delegated in some way.  The other alternatives specify sets of methods
+       that are to share the associated delegation semantics. That set of
+       methods may be specified:
+
+       •   explicitly, by an array (the set consists of those method calls
+           whose names appear in the array),
+
+       •   implicitly, by a regex (the set consists of those method calls
+           whose names match the pattern),
+
+       •   procedurally, by a subroutine (the set consists of any method calls
+           for which the subroutine returns a true value, when passed the
+           method invocant, the method name, and the arguments with which the
+           method was invoked),
+
+       •   generically, by "-ALL" (the set consists of every method call --
+           excluding calls to "DESTROY" --  that is not handled by an explicit
+           method of the class),
+
+       •   exclusively, by "-OTHER" (the set consists of every method call --
+           excluding calls to "DESTROY" -- that is not successfully delegated
+           by any earlier mapping in the "use Class::Delegation" list).
+
+       The exclusion of calls to "DESTROY" in the last two cases ensures that
+       automatically invoked destructor calls are not erroneously delegated.
+       "DESTROY" calls can be delegated through any of the other specification
+       mechanisms.
+
+   Specifying attributes to be delegated to
+       The actual delegation behaviour is determined by the attributes to
+       which these methods are to be delegated. This information can be
+       specified via the 'to' key, using a string, an array, a regex, a
+       subroutine, or the special flag "-ALL". Normally the delegated method
+       that is invoked on the specified attribute (or attributes) has the same
+       name as the original call, and is invoked in the same calling context
+       (void, scalar, or list).
+
+       If the attribute is specified via a single string, that string is taken
+       as the name of the attribute to which the associated method (or
+       methods) should be delegated. For example, to delegate invocations of
+       "$self->power(...)" to "$self->{flywheel}->power(...)":
+
+               use Class::Delegation
+                   send => 'power',
+                     to => 'flywheel';
+
+       If the attribute is specified via a single string that starts with
+       ""-"..."> then that string is taken as specifying the name of a method
+       of the current object. That method is called and is expected to return
+       an object. The original method that was being delegated is then
+       delegated to that object. For example, to delegate invocations of
+       "$self->power(...)" to "$self->flywheel()->power(...)":
+
+               use Class::Delegation
+                   send => 'power',
+                     to => '->flywheel';
+
+       Since this syntax is a little obscure (and not a little ugly), the same
+       effect can also be obtained like so:
+
+               use Class::Delegation
+                   send => 'power',
+                     to => -SELF->flywheel;
+
+       An array reference can be used in the attribute position to specify the
+       a list of attributes, all of which are delegated to -- in sequence they
+       appear in the list. Note that each element of the array is processed
+       recursively, so it may contain any of the other attribute specifiers
+       described in this section (or, indeed, a nested array of attribute
+       specifiers)
+
+       For example, to distribute invocations of "$self->drive(...)" to both
+       "$self->{left_rear_wheel}->drive(...)" and
+        "$self->{right_rear_wheel}->drive(...)":
+
+               use Class::Delegation
+                   send => 'drive',
+                     to => ["left_rear_wheel", "right_rear_wheel"];
+
+       Note that using an array to specify parallel delegation has an effect
+       on the return value of the original method. In a scalar context, the
+       original call returns a reference to an array containing the (scalar
+       context) return values of each of the calls. In a list context, the
+       original call returns a list of array references containing references
+       to the individual (list context) return lists of the calls. So, for
+       example, if a class's "cost" method were delegated like so:
+
+               use Class::Delegation
+                       send => 'cost',
+                         to => ['supplier', 'manufacturer', 'distributor'];
+
+       then the total cost could be calculated like this:
+
+               use List::Util 'sum';
+               $total = sum @{$obj->cost()};
+
+       Specifying the attribute as a regular expression causes the associated
+       method to be delegated to any attribute whose name matches the pattern.
+       Attributes are tested for such a match -- and delegated to -- in the
+       internal order of their hash (i.e. in the sequence returned by "keys").
+       For example, to redispatch "brake" calls to every attribute whose name
+       ends in "_wheel":
+
+               send => 'brake',
+                 to => qr/.*_wheel$/,
+
+       If a subroutine reference is used as the 'to' attribute specifier, it
+       is passed the invocant, the name of the method, and the argument list.
+       It is expected to return either a value specifying the correct
+       attribute name (or names). As with an array, the value returned may be
+       any valid attribute specifier (including another subroutine reference)
+       and is iteratively processed to determine the correct target(s) for
+       delegation.
+
+       A subroutine may also return a reference to an object, in which case
+       the subroutine is delegated to that object (rather than to an attribute
+       of the current object). This can be useful when the actual delegation
+       target is more complex than just a direct attribute. For example:
+
+               send => 'start',
+                 to => sub { $_[0]{ignition}{security}[$_[0]->next_key] },
+
+       If the "-ALL" flag is used as the name of the attribute, the method is
+       delegated to all attributes of the object (in their "keys" order). For
+       example, to forward debugging requests to every attribute in turn:
+
+               send => 'debug',
+                 to => -ALL,
+
+   Specifying the name of a delegated method
+       Sometimes it is necessary to invoke an attribute's method through a
+       different name than that of the original delegated method. The 'as' key
+       facilitates this type of method name translation in any delegation.
+       The value associated with an 'as' key specifies the name of the method
+       to be invoked, and may be a string, an array, or a subroutine.
+
+       If a string is provided, it is used as the new name of the delegated
+       method.  For example, to cause calls to "$self->power(...)" to be
+       delegated to "$self->{flywheel}->brake(...)":
+
+               send => 'power',
+                 to => 'flywheel',
+                 as => 'brake',
+
+       If an array is given, it specifies a list of delegated method names.
+       If the 'to' key specifies a single attribute, each method in the list
+       is invoked on that one attribute. For example:
+
+               send => 'boost',
+                 to => 'flywheel',
+                 as => ['override', 'engage', 'discharge'],
+
+       would sequentially call:
+
+               $self->{flywheel}->override(...);
+               $self->{flywheel}->engage(...);
+               $self->{flywheel}->discharge(...);
+
+       If both the 'to' key and the 'as' key specify multiple values, then
+       each attribute and method name form a pair, which is invoked. For
+       example:
+
+               send => 'escape',
+                 to => ['flywheel', 'smokescreen'],
+                 as => ['engage',   'release'],
+
+       would sequentially call:
+
+               $self->{flywheel}->engage(...);
+               $self->{smokescreen}->release(...);
+
+       If a subroutine reference is used as the 'as' specifier, it is passed
+       the invocant, the name of the method, and the argument list, and is
+       expected to return a string that will be used as the method name. For
+       example, to strip method calls of a "driver_..." prefix and delegate
+       them to the 'driver' attribute:
+
+               send => sub { substr($_[1],0,7) eq "driver_" },
+                 to => 'driver',
+                 as => sub { substr($_[1],7) }
+
+       or:
+
+               send => qr/driver_(.*)/,
+                 to => 'driver',
+                 as => sub { $1 }
+
+   Delegation to self
+       Class::Delegation can also be used to delegate methods back to the
+       original object, using the "-SELF" option with the 'to' key. For
+       example, to redirect any call to "overdrive" so to invoke the "boost"
+       method instead:
+
+              send => 'overdrive',
+                to => -SELF,
+                as => 'boost',
+
+       Note that this only works if the object does not already have an
+       "overdrive" method.
+
+       As with other delegations, a single call can be redelegated-to-self as
+       multiple calls.  For example:
+
+              send => 'emergency',
+                to => -SELF,
+                as => ['overdrive', 'launch_rockets'],
+
+   Handling failure to delegate
+       If a method cannot be successfully delegated through any of its
+       mappings, Class::Delegation will ignore the call and the built-in
+       "AUTOLOAD" mechanism will attempt to handle it instead.
+
+EXAMPLES
+       Delegation is a useful replacement for inheritance in a number of
+       contexts.  This section outlines five of the most common uses.
+
+   Simulating single inheritance
+       Unlike most other OO languages, inheritance in Perl only works well
+       when the base class has been designed to be inherited from. If the
+       attributes of a prospective base class are inaccessible, or the
+       implementation is not extensible (e.g. a blessed scalar or regular
+       expression), or the base class's constructor does not use the two-
+       argument form "bless", it will probably be impractical to inherit from
+       the class.
+
+       Moreover, in many cases, it is not possible to tell -- without a
+       detailed inspection of a base class's implementation -- whether such a
+       class can easily be inherited. This inability to reliably treat classes
+       as encapsulated and implementation-independent components seriously
+       undermines the usability of object-oriented Perl.
+
+       But since inheritance in Perl merely specifies where a class is to look
+       next if a suitable method is not found in its own package [3], it is
+       often possible to replace derivation with aggregation and use a
+       delegated attribute instead.
+
+       For example, it is possible to simulate the inheritance of the class
+       Base via a delegated attribute:
+
+               package Derived;
+               use Class::Delegation send => -ALL, to => 'base';
+
+               sub new {
+                       my ($class, $new_attr1, $new_attr2, @base_args) = @_;
+                       bless { attr1 => $new_attr1,
+                               attr2 => $new_attr2,
+                               base  => Base->new(@base_args),
+                             }, $class;
+               }
+
+       Now any method that is not present in Derived is delegated to the Base
+       object referred to by the "base" attribute, just as it would have been
+       if Derived actually inherited from Base.
+
+       This technique works in situations where the functionality of the Base
+       methods is non-polymorphic with respect to their invocant. That is, if
+       an inherited method in class Base were to interrogate the class of the
+       object on which it was called, it would find a Derived object. But a
+       delegated method in class Base will find a Base object.  This is not
+       the usual behaviour in OO Perl, but is correct and appropriate under
+       the earlier assumption that Base has not been designed to be inherited
+       from -- and must therefore always expect a Base class object as its
+       invocant.
+
+   Replacing method dispatch semantics
+       Another situation in which delegation is preferable to inheritance is
+       where inheritance is feasible, but Perl's standard dispatch semantics
+       -- left-most, depth-first priority of method dispatch -- are
+       inappropriate.
+
+       For example, if various base classes in a class hierarchy provide a
+       "dump_info" method for debugging purposes, then a derived class than
+       multiply inherits from two or more of those classes will only dispatch
+       calls to "dump_info" to the left-most ancestor's method. This is
+       unlikely to be the desired behaviour.
+
+       Using delegation it is possible to cause calls to "dump_info" to invoke
+       the corresponding methods of all the base classes, whilst all other
+       method calls are dispatched left-most and depth-first, as normal:
+
+               package Derived;
+               use Class::Delegation
+                       send => 'dump_info',
+                         to => -ALL,
+
+                       send => -OTHER,
+                         to => 'base1',
+
+                       send => -OTHER,
+                         to => 'base2',
+                       ;
+
+               sub new {
+                       my ($class, %named_args) = @_;
+                       bless { base1 => Base1->new(%named_args),
+                               base2 => Base2->new(%named_args),
+                             }, $class;
+               }
+
+       Note that the semantics of "send => -OTHER" ensure that only one of the
+       two base classes is delegated a method. If "base1" is able to handle a
+       particular method delegation, then it will have been dispatched when
+       the "-OTHER" governing "base2" is reached, so the second "-OTHER" will
+       ignore it.
+
+   Simulating multiple inheritance of pseudohashs
+       Another situation in which multiple inheritance can cause trouble is
+       where a class needs to inherit from two base classes that are both
+       implemented via pseudohashes. Because each pseudohash base class will
+       assume that its attributes start from index 1 of the pseudohash array,
+       the methods of the two classes would contend for the same attribute
+       slots in the derived class. Hence the "use base" pragma detects cases
+       where two ancestral classes are pseudohash-based and rejects them
+       (terminally).
+
+       Delegation provides a convenient way to provide the effects of
+       pseudohash multiple inheritance, without the attendant problems. For
+       example:
+
+               package Derived;
+               use Class::Delegation
+                       send => -ALL,
+                         to => 'pseudobase1',
+
+                       send => -OTHER,
+                         to => 'pseudobase2',
+                       ;
+
+               sub new {
+                       my ($class, %named_args) = @_;
+                       bless { pseudobase1 => Pseudo::Base1->new(%named_args),
+                               pseudobase2 => Pseudo::Base2->new(%named_args),
+                             }, $class;
+               }
+
+       As in the previous example, only one of the two base classes is
+       delegated a method. The "-ALL" associated with "pseudobase1" attempts
+       to delegate every method to that attribute, then the "-OTHER"
+       associated with "pseudobase2" catches any methods that cannot be
+       handled by "pseudobase1".
+
+   Adapting legacy code
+       Because the 'as' key can take a subroutine, it is also possible to use
+       a delegating class to adapt the interface of an existing class. For
+       example, a class with separate "get" and "set" accessors:
+
+               class DogTag;
+
+               sub get_name   { return $_[0]->{name} }
+               sub set_name   { $_[0]->{name} = $_[1] }
+
+               sub get_rank   { return $_[0]->{rank} }
+               sub set_rank   { $_[0]->{rank} = $_[1] }
+
+               sub get_serial { return $_[0]->{serial} }
+               sub set_serial { $_[0]->{serial} = $_[1] }
+
+               # etc.
+
+       could be trivially adapted to provide combined get/set accessors like
+       so:
+
+               class DogTag::SingleAccess;
+
+               use Class::Delegation
+                       send => -ALL
+                         to => 'dogtag',
+                         as => sub {
+                                    my ($invocant, $method, @args) = @_;
+                                    return @args ? "set_$method" : "get_$method"
+                                },
+                       ;
+
+               sub new { bless { dogtag => DogTag->new(@_[1..$#_) }, $_[0] }
+
+       Here, the 'as' subroutine determines whether an "new value" argument
+       was passed to the original method, delegating to the "set_..." method
+       if so, and to the "get_..." method otherwise.
+
+   Multiplexing a facade
+       The ability to use regular expressions to specify method names, and
+       subroutines to indicate the attributes and attribute methods to which
+       they are delegated, opens the possibility of creating a class that acts
+       as a collective front-end for several others. For example:
+
+               package Bilateral;
+
+               %Bilateral = ( left  => 'Levorotatory',
+                              right => 'Dextrorotatory',
+                            );
+
+               use Class::Delegation
+                       send => qr/(left|right)_(.*)/,
+                         to => sub { $1 },
+                         as => sub { $2 },
+                       ;
+
+               sub AUTOLOAD  {
+                       carp "$AUTOLOAD does not begin with 'left_...' or 'right_...'"
+               },
+
+       The Bilateral class now forwards all class method calls that are
+       prefixed with "left_..." to the Laevorotatory class, and all those
+       prefixed with "right_..." to the Dextrorotatory class. Any calls that
+       cannot be dispatched are caught and ignored (with a warning) by the
+       "AUTOLOAD".
+
+       The mechanism by which the class method dispatch is achieved is perhaps
+       a little obscure.  Consider the invocation of a class method:
+
+               Bilateral->left_rotate(45);
+
+       Here, the invocant is the string "Bilateral", rather than a blessed
+       object. Thus, when Class::Delegation forwards the call to:
+
+               $self->{$1}->$2(45);
+
+       the effect is the same as calling:
+
+               "Bilateral"->{left}->rotate(45);
+
+       This invokes a little-known feature of the "->" operator [4]. If a hash
+       access is performed on a string, that string is taken as a symbolic
+       reference to a package hash variable in the current package. Thus the
+       above call is internally translated to:
+
+               ${"Bilateral"}{left}->rotate(45);
+
+       which is equivalent to the class method call:
+
+               Levorotatory->rotate(45);
+
+AUTHOR
+       Damian Conway (damian@conway.org)
+
+BUGS
+       There are undoubtedly serious bugs lurking somewhere in this code.  Bug
+       reports and other feedback are most welcome.
+
+COPYRIGHT
+              Copyright (c) 2001, Damian Conway. All Rights Reserved.
+           This module is free software. It may be used, redistributed
+               and/or modified under the same terms as Perl itself.
+
+perl v5.40.2                      2016-07-14              Class::Delegation(3)

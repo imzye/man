@@ -1,0 +1,398 @@
+ALSA(3pm)                                                                           User Contributed Perl Documentation                                                                           ALSA(3pm)
+
+NAME
+       MIDI::ALSA - the ALSA library, plus some interface functions
+
+SYNOPSIS
+        use MIDI::ALSA(':CONSTS');
+        MIDI::ALSA::client( 'Perl MIDI::ALSA client', 1, 1, 0 );
+        MIDI::ALSA::connectfrom( 0, 14, 0 );  # input port is lower (0)
+        MIDI::ALSA::connectto( 1, 20, 0 );   # output port is higher (1)
+        while (1) {
+            my @alsaevent = MIDI::ALSA::input();
+            if ($alsaevent[0] == SND_SEQ_EVENT_PORT_UNSUBSCRIBED()) { last; }
+            if ($alsaevent[0] == SND_SEQ_EVENT_NOTEON()) {
+                my $channel  = $alsaevent[7][0];
+                my $pitch    = $alsaevent[7][1];
+                my $velocity = $alsaevent[7][2];
+            } elsif ($alsaevent[0] == SND_SEQ_EVENT_CONTROLLER()) {
+                my $channel    = $alsaevent[7][0];
+                my $controller = $alsaevent[7][4];
+                my $value      = $alsaevent[7][5];
+            }
+            MIDI::ALSA::output( @alsaevent );
+        }
+
+DESCRIPTION
+       This module offers a Perl interface to the ALSA library.  It is a call-compatible translation into Perl of the Lua module midialsa http://www.pjb.com.au/comp/lua/midialsa.html which is in turn
+       based on the Python modules alsaseq.py and alsamidi.py by Patricio Paez.
+
+       It also offers some functions to translate events from and to the event format used in Sean Burke's MIDI-Perl module.
+
+       Nothing is exported by default, but all the functions and constants can be exported, e.g.:
+        use MIDI::ALSA(client, connectfrom, connectto, id, input, output);
+        use MIDI::ALSA(':CONSTS');
+
+       As from version 1.15, note durations are in seconds rather than milliseconds, for consistency with the timestamps.  This introduces a backward incompatibility which only affects you if are putting
+       together your own alsaevents without using the noteevent() function.  In the worst case you have to detect versions:
+
+        if ($MIDI::ALSA::VERSION < 1.145) { $alsevent[7][4] *= 1000; }
+
+FUNCTIONS
+       Functions based on those in alsaseq.py: client(), connectfrom(), connectto(), disconnectfrom(), disconnectto(), fd(), id(), input(), inputpending(), output(), start(), status(), stop(),
+       syncoutput()
+
+       Functions based on those in alsamidi.py: noteevent(), noteonevent(), noteoffevent(), pgmchangeevent(), pitchbendevent(), controllerevent(), chanpress(), sysex()
+
+       Functions to interface with MIDI-Perl: alsa2scoreevent(), scoreevent2alsa()
+
+       Functions to get the current ALSA status: listclients(), listnumports(), listconnectedto(), listconnectedfrom(), parse_address()
+
+       client($name, $ninputports, $noutputports, $createqueue)
+          Create  an  ALSA sequencer client with zero or more input or output ports, and optionally a timing queue.  ninputports and noutputports are created if the quantity requested is between 1 and 64
+          for each.  If createqueue = true, it creates a queue for stamping the arrival time of incoming events and scheduling future start times of outgoing events.
+
+          For full ALSA functionality, the $name should contain only letters, digits, underscores or spaces, and should contain at least one letter.
+
+          Unlike in the alsaseq.py Python module, it returns success or failure.
+
+       connectfrom( $inputport, $src_client, $src_port )
+          Connect from src_client:src_port to inputport. Each input port can connect from more than one client. The input() function will receive events from any  intput  port  and  any  of  the  clients
+          connected to each of them.  Events from each client can be distinguised by their source field.
+
+          Unlike in the alsaseq.py Python module, it returns success or failure.
+
+          Since  version  1.11,  and  unlike in the alsaseq.py Python module, if $src_client contains a letter or $src_port is undefined, then parse_address($src_client) automatically gets invoked.  This
+          allows you to refer to the clients by name, for example connectfrom($inputport,'Virtual:1') will connect from port 1 of the 'Virtual Raw MIDI' client.
+
+       connectto( $outputport, $dest_client, $dest_port )
+          Connect outputport to dest_client:dest_port.  Each output port can be Connected to more than one client.  Events sent to an output port using the output()  function will be sent to all  clients
+          that are connected to it using this function.
+
+          Unlike in the alsaseq.py Python module, it returns success or failure.
+
+          Since  version 1.11, and unlike in the alsaseq.py Python module, if $dest_client contains a letter or $dest_port is undefined, then parse_address($dest_client) automatically gets invoked.  This
+          allows you to refer to the clients by name, for example connectto($outputport,'Virtual:1') will connect to port 1 of the 'Virtual Raw MIDI' client.
+
+       disconnectfrom( $inputport, $src_client, $src_port )
+          Disconnect the connection from the remote src_client:src_port to my inputport.  Returns success or failure.
+
+          Since version 1.11, and unlike in the alsaseq.py Python module, if $dest_client contains a letter or $dest_port is undefined, then parse_address($src_client) automatically gets  invoked.   This
+          allows you to refer to the clients by name, for example disconnectfrom($inputport,'Virtual:1') will disconnect from port 1 of the 'Virtual Raw MIDI' client.
+
+       disconnectto( $outputport, $dest_client, $dest_port )
+          Disconnect the connection from my outputport to the remote dest_client:dest_port.  Returns success or failure.
+
+          Since  version 1.11, and unlike in the alsaseq.py Python module, if $dest_client contains a letter or $dest_port is undefined, then parse_address($dest_client) automatically gets invoked.  This
+          allows you to refer to the clients by name, for example disconnectto($outputport,'Virtual:1') will disconnect to port 1 of the 'Virtual Raw MIDI' client.
+
+       fd()
+          Return fileno of sequencer.
+
+          This piece of code, contributed by Daren Schwenke, uses the AnyEvent module to build an application which waits both for ALSA events, and for user-input:
+
+             my $alsa_midi = AnyEvent->io (
+                fh => MIDI::ALSA::fd(), poll => "r",
+                cb => sub {
+                   my @alsaevent = MIDI::ALSA::input();
+                   print "Alsa event: " . Dumper(\@alsaevent);
+                }
+             );
+
+       id()
+          Return the client number, or 0 if the client is not yet created.
+
+       input()
+          Wait for an ALSA event in any of the input ports and return it.  ALSA events are returned as an array with 8 elements:
+
+           ($type, $flags, $tag, $queue, $time, \@source, \@destination, \@data)
+
+          Unlike in the alsaseq.py Python module, the time element is in floating-point seconds.  The last three elements are also arrays:
+
+           @source = ( $src_client,  $src_port )
+           @destination = ( $dest_client,  $dest_port )
+           @data = ( varies depending on type )
+
+          The source and destination arrays may be useful within an application for handling events differently according to their  source  or  destination.   The  event-type  constants,  beginning  with
+          SND_SEQ_, are available as module subroutines with empty prototypes, not as strings, and must therefore be used without any dollar-sign e.g.:
+
+           if ($event[0] == MIDI::ALSA::SND_SEQ_EVENT_PORT_UNSUBSCRIBED) { ...
+
+          The data array is mostly as documented in http://alsa-project.org/alsa-doc/alsa-lib/seq.html.  For NOTE events,  the elements are ( $channel, $pitch, $velocity, unused, $duration ); where since
+          version  1.15  the  duration  is in floating-point seconds (unlike in the alsaseq.py Python module where it is in milliseconds).  For SYSEX events, the data array contains just one element: the
+          byte-string, including any F0 and F7 bytes.  For most other events,  the elements are ($channel, unused,unused,unused, $param, $value)
+
+          The channel element is always 0..15
+
+          In the SND_SEQ_EVENT_PITCHBEND event the value element is from -8192..+8191 (not 0..16383)
+
+          If a connection terminates, then input() returns, and the next event will be of type SND_SEQ_EVENT_PORT_UNSUBSCRIBED
+
+          Note that if the event is of type SND_SEQ_EVENT_PORT_SUBSCRIBED or SND_SEQ_EVENT_PORT_UNSUBSCRIBED, then that message has come from the System, and its dest_port tells you which of  your  ports
+          is involved.  But its src_client and src_port do not tell you which other client disconnected;  you'll need to use listconnectedfrom() or listconnectedto() to see what's happened.
+
+       inputpending()
+          Return the number of bytes available in input buffer.  Use before input()  to wait till an event is ready to be read.
+
+       output($type,$flags,$tag,$queue,$time,\@source,\@destination,\@data)
+          Send  an  ALSA-event from an output port.  The format of the event is as discussed in input() above.  The event will be output immediately either if no queue was created in the client or if the
+          queue parameter is set to SND_SEQ_QUEUE_DIRECT, and otherwise it will be queued and scheduled.
+
+          The @source is an array with two elements: ($src_client, $src_port), specifying the local output-port from which the event will be sent.  If only one output-port exists,  all  events  are  sent
+          from  it.   If  two or more exist, the $src_port determines which to use.  The smallest available port-number (as created by client()) will be used if $src_port is less than it, and the largest
+          available will be used if $src_port is greater than it.
+
+          The @destination is an array with two elements: ($dest_client, $dest_port), specifying the remote client/port to which the event will  be  sent.   If  $dest_client  is  zero  (as  generated  by
+          scoreevent2alsa()  or noteevent()), or is the same as the local client (as generated by input()), then the event will be sent to all clients that the local port is connected to (see connectto()
+          and listconnectedto()).  But if you set dest_client to a remote client, then the event will be sent to that dest_client:dest_port and nowhere else.
+
+          It is possible to send an event to a destination to which there is no connection, but it's not usually the right thing to do. Normally, you should set up a connection, to allow  the  underlying
+          RawMIDI ports to remain open while playing - otherwise, ALSA will reset the port after every event.
+
+          If the queue buffer is full, output() will wait until space is available to output the event.  Use status() to know how many events are scheduled in the queue.
+
+          If no queue has been started, a SND_SEQ_EVENT_NOTE event can only emerge as a SND_SEQ_EVENT_NOTEON, since a queue is necessary in order to schedule the corresponding NOTEOFF.
+
+       start()
+          Start the queue. It is ignored if the client does not have a queue.
+
+       status()
+          Return ($status,$time,$events ) of the queue.
+
+           Status: 0 if stopped, 1 if running.
+           Time: current time in seconds.
+           Events: number of output events scheduled in the queue.
+
+          If the client does not have a queue then (0,0,0) is returned.  Unlike in the alsaseq.py Python module, the time element is in floating-point seconds.
+
+       stop()
+          Stop the queue. It is ignored if the client does not have a queue.
+
+       syncoutput()
+          Wait until output events are processed.
+
+       noteevent( $ch, $key, $vel, $start, $duration )
+          Returns an ALSA-event-array, to be scheduled by output().  Unlike in the alsaseq.py Python module, the start and duration elements are in floating-point seconds.
+
+       noteonevent( $ch, $key, $vel, $start )
+          If start is not used, the event will be sent directly.  Unlike in the alsaseq.py Python module.  if start is provided, the event will be scheduled in a queue.  The start element, when provided,
+          is in floating-point seconds.
+
+       noteoffevent( $ch, $key, $vel, $start )
+          If  start is not used, the event will be sent directly.  Unlike in the alsaseq.py Python module, if start is provided, the event will be scheduled in a queue.  The start element, when provided,
+          is in floating-point seconds.
+
+       pgmchangeevent( $ch, $value, $start )
+          Returns an ALSA-event-array for a patch_change event to be sent by output().  If start is not used, the event will be sent directly; if start is provided, the  event  will  be  scheduled  in  a
+          queue.  Unlike in the alsaseq.py Python module, the start element, when provided, is in floating-point seconds.
+
+       pitchbendevent( $ch, $value, $start )
+          Returns  an  ALSA-event-array to be sent by output().  The value is from -8192 to 8191.  If start is not used, the event will be sent directly; if start is provided, the event will be scheduled
+          in a queue.  Unlike in the alsaseq.py Python module, the start element, when provided, is in floating-point seconds.
+
+       controllerevent( $ch, $controllernum, $value, $start )
+          Returns an ALSA-event-array to be sent by output().  If start is not used, the event will be sent directly; if start is provided, the event  will  be  scheduled  in  a  queue.   Unlike  in  the
+          alsaseq.py Python module, the start element, when provided, is in floating-point seconds.
+
+       chanpress( $ch, $value, $start )
+          Returns  an  ALSA-event-array  to  be  sent  by  output().   If  start is not used, the event will be sent directly; if start is provided, the event will be scheduled in a queue.  Unlike in the
+          alsaseq.py Python module, the start element, when provided, is in floating-point seconds.
+
+       sysex( $ch, $string, $start )
+          Returns an ALSA-event-array to be sent by output().  If start is not used, the event will be sent directly; if start is provided, the event will be scheduled in  a  queue.   The  string  should
+          start with your Manufacturer ID, but should not contain any of the F0 or F7 bytes, they will be added automatically; indeed the string must not contain any bytes with the top-bit set.
+
+       alsa2scoreevent( @alsaevent )
+          Returns an event in the millisecond-tick score-format used by the MIDI.lua and MIDI.py modules, based on the score-format in Sean Burke's MIDI-Perl CPAN module. See:
+           http://www.pjb.com.au/comp/lua/MIDI.html#events
+
+          Since it combines a note_on and a note_off event into one note event, it will return nil when called with the note_on event; the calling loop must therefore detect nil and not, for example, try
+          to index it.
+
+       scoreevent2alsa( @event )
+          Returns  an  ALSA-event-array  to  be scheduled in a queue by output().  The input is an event in the millisecond-tick score-format used by the MIDI.lua and MIDI.py modules, based on the score-
+          format in Sean Burke's MIDI-Perl CPAN module. See:
+           http://www.pjb.com.au/comp/lua/MIDI.html#events
+
+          For example:
+           output(scoreevent2alsa('note',4000,1000,0,62,110))
+
+          Some events in a .mid file have no equivalent real-time-midi event (which is the sort that ALSA deals in); these events will cause scoreevent2alsa() to return undef.  Therefore if you are going
+          through the events in a midi score converting them with scoreevent2alsa(), you should check that the result is not undef before doing anything further.
+
+       listclients()
+          Returns a hash of the numbers and descriptive strings of all ALSA clients:
+
+           my %clientnumber2clientname = MIDI::ALSA::listclients();
+           my %clientname2clientnumber = reverse %clientnumber2clientname;
+
+       listnumports()
+          Returns a hash of the client-numbers and how many ports they are running, so if a client is running 4 ports they will be numbered 0..3
+
+           my %clientnumber2howmanyports = MIDI::ALSA::listnumports();
+
+       listconnectedto()
+          Returns a list of arrayrefs, each to a three-element array ( $outputport, $dest_client, $dest_port  )  exactly  as  might  have  been  passed  to  connectto(),  or  which  could  be  passed  to
+          disconnectto().
+
+       listconnectedfrom()
+          Returns  a  list  of  arrayrefs,  each  to  a  three-element  array  (  $inputport,  $src_client,  $src_port  )  exactly  as might have been passed to connectfrom(), or which could be passed to
+          disconnectfrom().
+
+       parse_address( $client_name )
+          Given a string, this function returns a two-integer array ( $client_number, $port_number ) as might be needed by connectto() or connectfrom().  For  example,  even  if  client()  has  not  been
+          called, "24" will return 24,0 and "25:1" will return 25,1
+
+          If the local client is running, then parse_address() also looks up names. For example, if "aconnect -oil" reveals a timidity client:
+
+           client 128: 'TiMidity' [type=user]
+
+          then  parse_address("TiM")  will  return  128,0  and  parse_address("TiMi:1")  will return 128,1 because it finds the first client with a start-of-string case-sensitive match to the given name.
+          parse_address() is called automatically by connectto(), connectfrom(), disconnectto() and disconnectfrom() if they are called with the third argument undefined.
+
+          parse_address() was introduced in version 1.11 and is not present in the alsaseq.py Python module.
+
+CONSTANTS
+       The event-type constants, beginning with SND_SEQ_, are available not as scalars, but as module subroutines with empty prototypes.  They must therefore be used without a dollar-sign e.g.:
+
+        if ($event[0] == MIDI::ALSA::SND_SEQ_EVENT_PORT_UNSUBSCRIBED) { ...
+
+       and sometimes even need an explicit () at the end, e.g.: MIDI::ALSA::SND_SEQ_EVENT_PORT_UNSUBSCRIBED()
+
+       SND_SEQ_EVENT_BOUNCE SND_SEQ_EVENT_CHANPRESS SND_SEQ_EVENT_CLIENT_CHANGE SND_SEQ_EVENT_CLIENT_EXIT  SND_SEQ_EVENT_CLIENT_START  SND_SEQ_EVENT_CLOCK  SND_SEQ_EVENT_CONTINUE  SND_SEQ_EVENT_CONTROL14
+       SND_SEQ_EVENT_CONTROLLER  SND_SEQ_EVENT_ECHO SND_SEQ_EVENT_KEYPRESS SND_SEQ_EVENT_KEYSIGN SND_SEQ_EVENT_NONE SND_SEQ_EVENT_NONREGPARAM SND_SEQ_EVENT_NOTE SND_SEQ_EVENT_NOTEOFF SND_SEQ_EVENT_NOTEON
+       SND_SEQ_EVENT_OSS     SND_SEQ_EVENT_PGMCHANGE     SND_SEQ_EVENT_PITCHBEND     SND_SEQ_EVENT_PORT_CHANGE     SND_SEQ_EVENT_PORT_EXIT      SND_SEQ_EVENT_PORT_START      SND_SEQ_EVENT_PORT_SUBSCRIBED
+       SND_SEQ_EVENT_PORT_UNSUBSCRIBED  SND_SEQ_EVENT_QFRAME  SND_SEQ_EVENT_QUEUE_SKEW  SND_SEQ_EVENT_REGPARAM  SND_SEQ_EVENT_RESET  SND_SEQ_EVENT_RESULT  SND_SEQ_EVENT_SENSING  SND_SEQ_EVENT_SETPOS_TICK
+       SND_SEQ_EVENT_SETPOS_TIME SND_SEQ_EVENT_SONGPOS SND_SEQ_EVENT_SONGSEL SND_SEQ_EVENT_START SND_SEQ_EVENT_STOP  SND_SEQ_EVENT_SYNC_POS  SND_SEQ_EVENT_SYSEX  SND_SEQ_EVENT_SYSTEM  SND_SEQ_EVENT_TEMPO
+       SND_SEQ_EVENT_TICK   SND_SEQ_EVENT_TIMESIGN   SND_SEQ_EVENT_TUNE_REQUEST   SND_SEQ_EVENT_USR0   SND_SEQ_EVENT_USR1   SND_SEQ_EVENT_USR2   SND_SEQ_EVENT_USR3  SND_SEQ_EVENT_USR4  SND_SEQ_EVENT_USR5
+       SND_SEQ_EVENT_USR6 SND_SEQ_EVENT_USR7 SND_SEQ_EVENT_USR8  SND_SEQ_EVENT_USR9  SND_SEQ_EVENT_USR_VAR0  SND_SEQ_EVENT_USR_VAR1  SND_SEQ_EVENT_USR_VAR2  SND_SEQ_EVENT_USR_VAR3  SND_SEQ_EVENT_USR_VAR4
+       SND_SEQ_QUEUE_DIRECT SND_SEQ_TIME_STAMP_REAL VERSION
+
+       You  should  avoid  hard-coding  their  numerical  values  into your programs; but you may sometimes want to inspect MIDI-ALSA data eg. with Data::Dumper.  So, sorted by number as gleaned from the
+       source:
+
+          0     SND_SEQ_EVENT_SYSTEM
+          1     SND_SEQ_EVENT_RESULT
+
+          5     SND_SEQ_EVENT_NOTE
+          6     SND_SEQ_EVENT_NOTEON
+          7     SND_SEQ_EVENT_NOTEOFF
+          8     SND_SEQ_EVENT_KEYPRESS
+
+         10     SND_SEQ_EVENT_CONTROLLER
+         11     SND_SEQ_EVENT_PGMCHANGE
+         12     SND_SEQ_EVENT_CHANPRESS
+         13     SND_SEQ_EVENT_PITCHBEND
+         14     SND_SEQ_EVENT_CONTROL14
+         15     SND_SEQ_EVENT_NONREGPARAM
+         16     SND_SEQ_EVENT_REGPARAM
+
+         20     SND_SEQ_EVENT_SONGPOS
+         21     SND_SEQ_EVENT_SONGSEL
+         22     SND_SEQ_EVENT_QFRAME
+         23     SND_SEQ_EVENT_TIMESIGN
+         24     SND_SEQ_EVENT_KEYSIGN
+
+         30     SND_SEQ_EVENT_START
+         31     SND_SEQ_EVENT_CONTINUE
+         32     SND_SEQ_EVENT_STOP
+         33     SND_SEQ_EVENT_SETPOS_TICK
+         34     SND_SEQ_EVENT_SETPOS_TIME
+         35     SND_SEQ_EVENT_TEMPO
+         36     SND_SEQ_EVENT_CLOCK
+         37     SND_SEQ_EVENT_TICK
+         38     SND_SEQ_EVENT_QUEUE_SKEW
+         39     SND_SEQ_EVENT_SYNC_POS
+
+         40     SND_SEQ_EVENT_TUNE_REQUEST
+         41     SND_SEQ_EVENT_RESET
+         42     SND_SEQ_EVENT_SENSING
+
+         50     SND_SEQ_EVENT_ECHO
+         51     SND_SEQ_EVENT_OSS
+
+         60     SND_SEQ_EVENT_CLIENT_START
+         61     SND_SEQ_EVENT_CLIENT_EXIT
+         62     SND_SEQ_EVENT_CLIENT_CHANGE
+         63     SND_SEQ_EVENT_PORT_START
+         64     SND_SEQ_EVENT_PORT_EXIT
+         65     SND_SEQ_EVENT_PORT_CHANGE
+         66     SND_SEQ_EVENT_PORT_SUBSCRIBED
+         67     SND_SEQ_EVENT_PORT_UNSUBSCRIBED
+
+         90     SND_SEQ_EVENT_USR0
+         91     SND_SEQ_EVENT_USR1
+         92     SND_SEQ_EVENT_USR2
+         93     SND_SEQ_EVENT_USR3
+         94     SND_SEQ_EVENT_USR4
+         95     SND_SEQ_EVENT_USR5
+         96     SND_SEQ_EVENT_USR6
+         97     SND_SEQ_EVENT_USR7
+         98     SND_SEQ_EVENT_USR8
+         99     SND_SEQ_EVENT_USR9
+
+        130     SND_SEQ_EVENT_SYSEX
+        131     SND_SEQ_EVENT_BOUNCE
+        135     SND_SEQ_EVENT_USR_VAR0
+        136     SND_SEQ_EVENT_USR_VAR1
+        137     SND_SEQ_EVENT_USR_VAR2
+        138     SND_SEQ_EVENT_USR_VAR3
+        139     SND_SEQ_EVENT_USR_VAR4
+
+        255     SND_SEQ_EVENT_NONE
+
+       The MIDI standard specifies that a NOTEON event with velocity=0 means the same as a NOTEOFF event; so you may find a little subroutine like this convenient:
+
+        sub is_noteoff { my @alsaevent = @_;
+           if ($alsaevent[0] == MIDI::ALSA::SND_SEQ_EVENT_NOTEOFF()) {
+               return 1;
+           }
+           if ($alsaevent[0] == MIDI::ALSA::SND_SEQ_EVENT_NOTEON()
+             and $alsaevent[7][2] == 0) {
+               return 1;
+           }
+           return 0;
+        }
+
+       Since Version 1.20, the output-ports are marked as WRITE, so they can receive SND_SEQ_EVENT_PORT_SUBSCRIBED or SND_SEQ_EVENT_PORT_UNSUBSCRIBED events from System Announce.  Up until Version  1.19,
+       and  in the original Python module, output-ports created by client() were not so marked; in those days, if knowing about connections and disconnections to the output-port was important, you had to
+       listen to all notifications from System Announce: "MIDI::ALSA::connectfrom(0,'System:1')" This alerted you unnecessarily to events which didn't involve your client, and the  connection  showed  up
+       confusingly in the output of "aconnect -oil"
+
+DOWNLOAD
+       This Perl version is available from CPAN at http://search.cpan.org/perldoc?MIDI::ALSA
+
+       The Lua module is available as a LuaRock in http://luarocks.org/repositories/rocks/index.html#midi so you should be able to install it with the command:
+        # luarocks install midialsa
+
+TO DO
+       Perhaps there should be a general connect_between() mechanism, allowing the interconnection of two other clients, a bit like aconnect 32 20
+
+       ALSA does not transmit Meta-Events like text_event, and there's not much can be done about that.
+
+AUTHOR
+       Peter J Billam, http://www.pjb.com.au/comp/contact.html
+
+SEE ALSO
+        aconnect -oil
+        http://pp.com.mx/python/alsaseq
+        http://search.cpan.org/perldoc?MIDI::ALSA
+        http://www.pjb.com.au/comp/lua/midialsa.html
+        http://luarocks.org/repositories/rocks/index.html#midialsa
+        http://www.pjb.com.au/comp/lua/MIDI.html
+        http://www.pjb.com.au/comp/lua/MIDI.html#events
+        http://alsa-project.org/alsa-doc/alsa-lib/seq.html
+        http://alsa-project.org/alsa-doc/alsa-lib/structsnd__seq__ev__note.html
+        http://alsa-project.org/alsa-doc/alsa-lib/structsnd__seq__ev__ctrl.html
+        http://alsa-project.org/alsa-doc/alsa-lib/structsnd__seq__ev__queue__control.html
+        http://alsa-project.org/alsa-doc/alsa-lib/group___seq_client.html
+        http://alsa-utils.sourcearchive.com/documentation/1.0.20/aconnect_8c-source.html
+        http://alsa-utils.sourcearchive.com/documentation/1.0.8/aplaymidi_8c-source.html
+        snd_seq_client_info_event_filter_clear
+        snd_seq_get_any_client_info
+        snd_seq_get_client_info
+        snd_seq_client_info_t
+        http://hackage.haskell.org/package/alsa-seq
+        http://search.cpan.org/perldoc?AnyEvent
+
+perl v5.40.0                                                                                     2024-10-15                                                                                       ALSA(3pm)

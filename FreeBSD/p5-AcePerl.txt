@@ -1,0 +1,990 @@
+Ace(3)                User Contributed Perl Documentation               Ace(3)
+
+
+NAME
+       Ace - Object-Oriented Access to ACEDB Databases
+
+SYNOPSIS
+           use Ace;
+           # open a remote database connection
+           $db = Ace->connect(-host => 'beta.crbm.cnrs-mop.fr',
+                              -port => 20000100);
+
+           # open a local database connection
+           $local = Ace->connect(-path=>'~acedb/my_ace');
+
+           # simple queries
+           $sequence  = $db->fetch(Sequence => 'D12345');
+           $count     = $db->count(Sequence => 'D*');
+           @sequences = $db->fetch(Sequence => 'D*');
+           $i         = $db->fetch_many(Sequence=>'*');  # fetch a cursor
+           while ($obj = $i->next) {
+              print $obj->asTable;
+           }
+
+           # complex queries
+           $query = <<END;
+           find Annotation Ready_for_submission ; follow gene ;
+           follow derived_sequence ; >DNA
+           END
+           @ready_dnas= $db->fetch(-query=>$query);
+
+           $ready = $db->fetch_many(-query=>$query);
+           while ($obj = $ready->next) {
+               # do something with obj
+           }
+
+           # database cut and paste
+           $sequence = $db->fetch(Sequence => 'D12345');
+           $local_db->put($sequence);
+           @sequences = $db->fetch(Sequence => 'D*');
+           $local_db->put(@sequences);
+
+           # Get errors
+           print Ace->error;
+           print $db->error;
+
+DESCRIPTION
+       AcePerl provides an interface to the ACEDB object-oriented database.
+       Both read and write access is provided, and ACE objects are returned as
+       similarly-structured Perl objects.  Multiple databases can be opened
+       simultaneously.
+
+       You will interact with several Perl classes: Ace, Ace::Object,
+       Ace::Iterator, Ace::Model.  Ace is the database accessor, and can be
+       used to open both remote Ace databases (running aceserver or
+       gifaceserver), and local ones.
+
+       Ace::Object is the superclass for all objects returned from the
+       database.  Ace and Ace::Object are linked: if you retrieve an
+       Ace::Object from a particular database, it will store a reference to
+       the database and use it to fetch any subobjects contained within it.
+       You may make changes to the Ace::Object and have those changes written
+       into the database.  You may also create Ace::Objects from scratch and
+       store them in the database.
+
+       Ace::Iterator is a utility class that acts as a database cursor for
+       long-running ACEDB queries.  Ace::Model provides object-oriented access
+       to ACEDB's schema.
+
+       Internally, Ace uses the Ace::Local class for access to local databases
+       and Ace::AceDB for access to remote databases.  Ordinarily you will not
+       need to interact directly with either of these classes.
+
+CREATING NEW DATABASE CONNECTIONS
+   connect() -- multiple argument form
+           # remote database
+           $db = Ace->connect(-host  =>  'beta.crbm.cnrs-mop.fr',
+                              -port  =>  20000100);
+
+           # local (non-server) database
+           $db = Ace->connect(-path  =>  '/usr/local/acedb);
+
+       Use Ace::connect() to establish a connection to a networked or local
+       AceDB database.  To establish a connection to an AceDB server, use the
+       -host and/or -port arguments.  For a local server, use the -port
+       argument.  The database must be up and running on the indicated host
+       and port prior to connecting to an AceDB server.  The full syntax is as
+       follows:
+
+           $db = Ace->connect(-host  =>  $host,
+                              -port  =>  $port,
+                              -path  =>  $database_path,
+                              -program     => $local_connection_program
+                              -classmapper =>  $object_class,
+                              -timeout     => $timeout,
+                              -query_timeout => $query_timeout
+                              -cache        => {cache parameters},
+                             );
+
+       The connect() method uses a named argument calling style, and
+       recognizes the following arguments:
+
+       -host, -port
+           These arguments point to the host and port of an AceDB server.
+           AcePerl will use its internal compiled code to establish a
+           connection to the server unless explicitly overridden with the
+           -program argument.
+
+       -path
+           This argument indicates the path of an AceDB directory on the local
+           system.  It should point to the directory that contains the wspec
+           subdirectory.  User name interpolations (~acedb) are OK.
+
+       -user
+           Name of user to log in as (when using socket server only).  If not
+           provided, will attempt an anonymous login.
+
+       -pass
+           Password to log in with (when using socket server).
+
+       -url
+           An Acedb URL that combines the server type, host, port, user and
+           password in a single string.  See the connect() method's "single
+           argument form" description.
+
+       -cache
+           AcePerl can use the Cache::SizeAwareFileCache module to cache
+           objects to disk. This can result in dramatically increased
+           performance in environments such as web servers in which the same
+           Acedb objects are frequently reused.  To activate this mechanism,
+           the Cache::SizeAwareFileCache module must be installed, and you
+           must pass the -cache argument during the connect() call.
+
+           The value of -cache is a hash reference containing the arguments to
+           be passed to Cache::SizeAwareFileCache.  For example:
+
+              -cache => {
+                         cache_root         => '/usr/tmp/acedb',
+                         cache_depth        => 4,
+                         default_expires_in => '1 hour'
+                         }
+
+           If not otherwise specified, the following cache parameters are
+           assumed:
+
+                  Parameter               Default Value
+                  ---------               -------------
+                  namespace               Server URL (e.g. sace://localhost:2005)
+                  cache_root              /tmp/FileCache (dependent on system temp directory)
+                  default_expires_in      1 day
+                  auto_purge_interval     12 hours
+
+           By default, the cache is not size limited (the "max_size" property
+           is set to $NO_MAX_SIZE).  To adjust the size you may consider
+           calling the Ace object's cache() method to retrieve the physical
+           cache and then calling the cache object's limit_size($max_size)
+           method from time to time.  See Cache::SizeAwareFileCache for more
+           details.
+
+       -program
+           By default AcePerl will use its internal compiled code calls to
+           establish a connection to Ace servers, and will launch a tace
+           subprocess to communicate with local Ace databases.  The -program
+           argument allows you to customize this behavior by forcing AcePerl
+           to use a local program to communicate with the database.  This
+           argument should point to an executable on your system.  You may use
+           either a complete path or a bare command name, in which case the
+           PATH environment variable will be consulted.  For example, you
+           could force AcePerl to use the aceclient program to connect to the
+           remote host by connecting this way:
+
+             $db = Ace->connect(-host => 'beta.crbm.cnrs-mop.fr',
+                                -port => 20000100,
+                                -program=>'aceclient');
+
+       -classmapper
+           The optional -classmapper argument (alias -class) points to the
+           class you would like to return from database queries.  It is
+           provided for your use if you subclass Ace::Object.  For example, if
+           you have created a subclass of Ace::Object called
+           Ace::Object::Graphics, you can have the database return this
+           subclass by default by connecting this way:
+
+             $db = Ace->connect(-host => 'beta.crbm.cnrs-mop.fr',
+                                -port => 20000100,
+                                -class=>'Ace::Object::Graphics');
+
+           The value of -class can be a hash reference consisting of AceDB
+           class names as keys and Perl class names as values.  If a class
+           name does not exist in the hash, a key named _DEFAULT_ will be
+           looked for.  If that does not exist, then Ace will default to
+           Ace::Object.
+
+           The value of -class can also be an object or a classname that
+           implements a class_for() method.  This method will receive three
+           arguments containing the AceDB class name, object ID and database
+           handle.  It should return a string indicating the perl class to
+           create.
+
+       -timeout
+           If no response from the server is received within $timeout seconds,
+           the call will return an undefined value.  Internally timeout sets
+           an alarm and temporarily intercepts the ALRM signal.  You should be
+           aware of this if you use ALRM for your own purposes.
+
+           NOTE: this feature is temporarily disabled (as of version 1.40)
+           because it is generating unpredictable results when used with
+           Apache/mod_perl.
+
+       -query_timeout
+           If any query takes longer than $query_timeout seconds, will return
+           an undefined value.  This value can only be set at connect time,
+           and cannot be changed once set.
+
+       If arguments are omitted, they will default to the following values:
+
+           -host          localhost
+           -port          200005;
+           -path          no default
+           -program       tace
+           -class         Ace::Object
+           -timeout       25
+           -query_timeout 120
+
+       If you prefer to use a more Smalltalk-like message-passing syntax, you
+       can open a connection this way too:
+
+         $db = connect Ace -host=>'beta.crbm.cnrs-mop.fr',-port=>20000100;
+
+       The return value is an Ace handle to use to access the database, or
+       undef if the connection fails.  If the connection fails, an error
+       message can be retrieved by calling Ace->error.
+
+       You may check the status of a connection at any time with ping().  It
+       will return a true value if the database is still connected.  Note that
+       Ace will timeout clients that have been inactive for any length of
+       time.  Long-running clients should attempt to reestablish their
+       connection if ping() returns false.
+
+           $db->ping() || die "not connected";
+
+       You may perform low-level calls using the Ace client C API by calling
+       db().  This fetches an Ace::AceDB object.  See THE LOW LEVEL C API for
+       details on using this object.
+
+           $low_level = $db->db();
+
+   connect() -- single argument form
+         $db = Ace->connect('sace://stein.cshl.org:1880')
+
+       Ace->connect() also accepts a single argument form using a URL-type
+       syntax.  The general syntax is:
+
+          protocol://hostname:port/path
+
+       The :port and /path parts are protocol-dependent as described above.
+
+       Protocols:
+
+       sace://hostname:port
+           Connect to a socket server at the indicated hostname and port.
+           Example:
+
+              sace://stein.cshl.org:1880
+
+           If not provided, the port defaults to 2005.
+
+       rpcace://hostname:port
+           Connect to an RPC server at the indicated hostname and RPC service
+           number.  Example:
+
+             rpcace://stein.cshl.org:400000
+
+           If not provided, the port defaults to 200005
+
+       tace:/path/to/database
+           Open up the local database at /path/to/database using tace.
+           Example:
+
+             tace:/~acedb/elegans
+
+       /path/to/database
+           Same as the previous.
+
+   close() Method
+       You can explicitly close a database by calling its close() method:
+
+          $db->close();
+
+       This is not ordinarily necessary because the database will be
+       automatically close when it -- and all objects retrieved from it -- go
+       out of scope.
+
+   reopen() Method
+       The ACeDB socket server can time out.  The reopen() method will ping
+       the server and if it is not answering will reopen the connection.  If
+       the database is live (or could be resurrected), this method returns
+       true.
+
+RETRIEVING ACEDB OBJECTS
+       Once you have established a connection and have an Ace databaes handle,
+       several methods can be used to query the ACE database to retrieve
+       objects.  You can then explore the objects, retrieve specific fields
+       from them, or update them using the Ace::Object methods.  Please see
+       Ace::Object.
+
+   fetch() method
+           $count   = $db->fetch($class,$name_pattern);
+           $object  = $db->fetch($class,$name);
+           @objects = $db->fetch($class,$name_pattern,[$count,$offset]);
+           @objects = $db->fetch(-name=>$name_pattern,
+                                 -class=>$class
+                                 -count=>$count,
+                                 -offset=>$offset,
+                                 -fill=>$fill,
+                                 -filltag=>$tag,
+                                 -total=>\$total);
+           @objects = $db->fetch(-query=>$query);
+
+       Ace::fetch() retrieves objects from the database based on their class
+       and name.  You may retrieve a single object by requesting its name, or
+       a group of objects by fetching a name pattern.  A pattern contains one
+       or more wildcard characters, where "*" stands for zero or more
+       characters, and "?" stands for any single character.
+
+       This method behaves differently depending on whether it is called in a
+       scalar or a list context, and whether it is asked to search for a name
+       pattern or a simple name.
+
+       When called with a class and a simple name, it returns the object
+       referenced by that time, or undef, if no such object exists.  In an
+       array context, it will return an empty list.
+
+       When called with a class and a name pattern in a list context, fetch()
+       returns the list of objects that match the name.  When called with a
+       pattern in a scalar context, fetch() returns the number of objects that
+       match without actually retrieving them from the database.  Thus, it is
+       similar to count().
+
+       In the examples below, the first line of code will fetch the Sequence
+       object whose database ID is D12345.  The second line will retrieve all
+       objects matching the pattern D1234*.  The third line will return the
+       count of objects that match the same pattern.
+
+          $object =  $db->fetch(Sequence => 'D12345');
+          @objects = $db->fetch(Sequence => 'D1234*');
+          $cnt =     $db->fetch(Sequence =>'D1234*');
+
+       A variety of communications and database errors may occur while
+       processing the request.  When this happens, undef or an empty list will
+       be returned, and a string describing the error can be retrieved by
+       calling Ace->error.
+
+       When retrieving database objects, it is possible to retrieve a "filled"
+       or an "unfilled" object.  A filled object contains the entire contents
+       of the object, including all tags and subtags.  In the case of certain
+       Sequence objects, this may be a significant amount of data.  Unfilled
+       objects consist just of the object name.  They are filled in from the
+       database a little bit at a time as tags are requested.  By default,
+       fetch() returns the unfilled object.  This is usually a performance
+       win, but if you know in advance that you will be needing the full
+       contents of the retrieved object (for example, to display them in a
+       tree browser) it can be more efficient to fetch them in filled mode.
+       You do this by calling fetch() with the argument of -fill set to a true
+       value.
+
+       The -filltag argument, if provided, asks the database to fill in the
+       subtree anchored at the indicated tag.  This will improve performance
+       for frequently-accessed subtrees.  For example:
+
+          @objects = $db->fetch(-name    => 'D123*',
+                                -class   => 'Sequence',
+                                -filltag => 'Visible');
+
+       This will fetch all Sequences named D123* and fill in their Visible
+       trees in a single operation.
+
+       Other arguments in the named parameter calling form are -count, to
+       retrieve a certain maximum number of objects, and -offset, to retrieve
+       objects beginning at the indicated offset into the list.  If you want
+       to limit the number of objects returned, but wish to learn how many
+       objects might have been retrieved, pass a reference to a scalar
+       variable in the -total argument.  This will return the object count.
+       This example shows how to fetch 100 Sequence objects, starting at
+       Sequence number 500:
+
+         @some_sequences = $db->fetch('Sequence','*',100,500);
+
+       The next example uses the named argument form to fetch 100 Sequence
+       objects starting at Sequence number 500, and leave the total number of
+       Sequences in $total:
+
+         @some_sequences = $db->fetch(-class  => 'Sequence',
+                                      -count  => 100,
+                                      -offset => 500,
+                                      -total  => \$total);
+
+       Notice that if you leave out the -name argument the "*" wildcard is
+       assumed.
+
+       You may also pass an arbitrary Ace query string with the -query
+       argument.  This will supersede any name and class you provide.
+       Example:
+
+         @ready_dnas= $db->fetch(-query=>
+             'find Annotation Ready_for_submission ; follow gene ;
+              follow derived_sequence ; >DNA');
+
+       If your request is likely to retrieve very many objects, fetch() many
+       consume a lot of memory, even if -fill is false.  Consider using
+       fetch_many() instead (see below).  Also see the get() method, which is
+       equivalent to the simple two-argument form of fetch().
+
+       get() method
+              $object = $db->get($class,$name [,$fill]);
+
+           The get() method will return one and only one AceDB object
+           identified by its class and name.  The optional $fill argument can
+           be used to control how much data is retrieved from the database. If
+           $fill is absent or undefined, then the method will return a
+           lightweight "stub" object that is filled with information as
+           requested in a lazy fashion. If $fill is the number "1" then the
+           retrieved object contains all the relevant information contained
+           within the database.  Any other true value of $fill will be treated
+           as a tag name: the returned object will be prefilled with the
+           subtree to the right of that tag.
+
+           Examples:
+
+              # return lightweight stub for Author object "Sulston JE."
+              $author = $db->get(Author=>'Sulston JE');
+
+              # return heavyweight object
+              $author = $db->get(Author=>'Sulston JE',1);
+
+              # return object containing the Address subtree
+              $author = $db->get(Author=>'Sulston JE','Address');
+
+           The get() method is equivalent to this form of the fetch() method:
+
+              $object = $db->fetch($class=>$name);
+
+   aql() method
+           $count   = $db->aql($aql_query);
+           @objects = $db->aql($aql_query);
+
+       Ace::aql() will perform an AQL query on the database.  In a scalar
+       context it returns the number of rows returned.  In an array context it
+       returns a list of rows.  Each row is an anonymous array containing the
+       columns returned by the query as an Ace::Object.
+
+       If an AQL error is encountered, will return undef or an empty list and
+       set Ace->error to the error message.
+
+       Note that this routine is not optimized -- there is no iterator
+       defined.  All results are returned synchronously, leading to large
+       memory consumption for certain queries.
+
+   put() method
+          $cnt = $db->put($obj1,$obj2,$obj3);
+
+       This method will put the list of objects into the database, overwriting
+       like-named objects if they are already there.  This can be used to copy
+       an object from one database to another, provided that the models are
+       compatible.
+
+       The method returns the count of objects successfully written into the
+       database.  In case of an error, processing will stop at the last object
+       successfully written and an error message will be placed in
+       Ace->error();
+
+   parse() method
+         $object = $db->parse('data to parse');
+
+       This will parse the Ace tags contained within the "data to parse"
+       string, convert it into an object in the databse, and return the
+       resulting Ace::Object.  In case of a parse error, the undefined value
+       will be returned and a (hopefully informative) description of the error
+       will be returned by Ace->error().
+
+       For example:
+
+         $author = $db->parse(<<END);
+         Author : "Glimitz JR"
+         Full_name "Jonathan R. Glimitz"
+         Mail  "128 Boylston Street"
+         Mail  "Boston, MA"
+         Mail  "USA"
+         Laboratory GM
+         END
+
+       This method can also be used to parse several objects, but only the
+       last object successfully parsed will be returned.
+
+   parse_longtext() method
+         $object = $db->parse($title,$text);
+
+       This will parse the long text (which may contain carriage returns and
+       other funny characters) and place it into the database with the given
+       title.  In case of a parse error, the undefined value will be returned
+       and a (hopefully informative) description of the error will be returned
+       by Ace->error(); otherwise, a LongText object will be returned.
+
+       For example:
+
+         $author = $db->parse_longtext('A Novel Inhibitory Domain',<<END);
+         We have discovered a novel inhibitory domain that inhibits
+         many classes of proteases, including metallothioproteins.
+         This inhibitory domain appears in three different gene families studied
+         to date...
+         END
+
+   parse_file() method
+         @objects = $db->parse_file('/path/to/file');
+         @objects = $db->parse_file('/path/to/file',1);
+
+       This will call parse() to parse each of the objects found in the
+       indicated .ace file, returning the list of objects successfully loaded
+       into the database.
+
+       By default, parsing will stop at the first object that causes a parse
+       error.  If you wish to forge on after an error, pass a true value as
+       the second argument to this method.
+
+       Any parse error messages are accumulated in Ace->error().
+
+   new() method
+         $object = $db->new($class => $name);
+
+       This method creates a new object in the database of type $class and
+       name $name.  If successful, it returns the newly-created object.
+       Otherwise it returns undef and sets $db->error().
+
+       $name may contain sprintf()-style patterns.  If one of the patterns is
+       %d (or a variant), Acedb uses a class-specific unique numbering to
+       return a unique name.  For example:
+
+         $paper = $db->new(Paper => 'wgb%06d');
+
+       The object is created in the database atomically.  There is no chance
+       to rollback as there is in Ace::Object's object editing methods.
+
+       See also the Ace::Object->add() and replace() methods.
+
+   list() method
+           @objects = $db->list(class,pattern,[count,offset]);
+           @objects = $db->list(-class=>$class,
+                                -name=>$name_pattern,
+                                -count=>$count,
+                                -offset=>$offset);
+
+       This is a deprecated method.  Use fetch() instead.
+
+   count() method
+           $count = $db->count($class,$pattern);
+           $count = $db->count(-query=>$query);
+
+       This function queries the database for a list of objects matching the
+       specified class and pattern, and returns the object count.  For large
+       sets of objects this is much more time and memory effective than
+       fetching the entire list.
+
+       The class and name pattern are the same as the list() method above.
+
+       You may also provide a -query argument to instead specify an arbitrary
+       ACE query such as "find Author COUNT Paper > 80".  See find() below.
+
+   find() method
+           @objects = $db->find($query_string);
+           @objects = $db->find(-query => $query_string,
+                                -offset=> $offset,
+                                -count => $count
+                                -fill  => $fill);
+
+       This allows you to pass arbitrary Ace query strings to the server and
+       retrieve all objects that are returned as a result.  For example, this
+       code fragment retrieves all papers written by Jean and Danielle
+       Thierry-Mieg.
+
+           @papers = $db->find('author IS "Thierry-Mieg *" ; >Paper');
+
+       You can find the full query syntax reference guide plus multiple
+       examples at http://probe.nalusda.gov:8000/acedocs/index.html#query.
+
+       In the named parameter calling form, -count, -offset, and -fill have
+       the same meanings as in fetch().
+
+   fetch_many() method
+           $obj = $db->fetch_many($class,$pattern);
+
+           $obj = $db->fetch_many(-class=>$class,
+                                  -name =>$pattern,
+                                  -fill =>$filled,
+                                  -chunksize=>$chunksize);
+
+           $obj = $db->fetch_many(-query=>$query);
+
+       If you expect to retrieve many objects, you can fetch an iterator
+       across the data set.  This is friendly both in terms of network
+       bandwidth and memory consumption.  It is simple to use:
+
+           $i = $db->fetch_many(Sequence,'*');  # all sequences!!!!
+           while ($obj = $i->next) {
+              print $obj->asTable;
+           }
+
+       The iterator will return undef when it has finished iterating, and
+       cannot be used again.  You can have multiple iterators open at once and
+       they will operate independently of each other.
+
+       Like fetch(), fetch_many() takes an optional -fill (or -filled)
+       argument which retrieves the entire object rather than just its name.
+       This is efficient on a network with high latency if you expect to be
+       touching many parts of the object (rather than just retrieving the
+       value of a few tags).
+
+       fetch_many() retrieves objects from the database in groups of a certain
+       maximum size, 40 by default.  This can be tuned using the optional
+       -chunksize argument.  Chunksize is only a hint to the database.  It may
+       return fewer objects per transaction, particularly if the objects are
+       large.
+
+       You may provide raw Ace query string with the -query argument.  If
+       present the -name and -class arguments will be ignored.
+
+   find_many() method
+       This is an alias for fetch_many().  It is now deprecated.
+
+   keyset() method
+           @objects = $db->keyset($keyset_name);
+
+       This method returns all objects in a named keyset.  Wildcard characters
+       are accepted, in which case all keysets that match the pattern will be
+       retrieved and merged into a single list of unique objects.
+
+   grep() method
+           @objects = $db->grep($grep_string);
+           $count   = $db->grep($grep_string);
+           @objects = $db->grep(-pattern => $grep_string,
+                                -offset=> $offset,
+                                -count => $count,
+                                -fill  => $fill,
+                                -filltag => $filltag,
+                                -total => \$total,
+                                -long  => 1,
+                               );
+
+       This performs a "grep" on the database, returning all object names or
+       text that contain the indicated grep pattern.  In a scalar context this
+       call will return the number of matching objects.  In an array context,
+       the list of matching objects are retrieved.  There is also a named-
+       parameter form of the call, which allows you to specify the number of
+       objects to retrieve, the offset from the beginning of the list to
+       retrieve from, whether the retrieved objects should be filled
+       initially.  You can use -total to discover the total number of objects
+       that match, while only retrieving a portion of the list.
+
+       By default, grep uses a fast search that only examines class names and
+       lexiques.  By providing a true value to the -long parameter, you can
+       search inside LongText and other places that are not usually touched
+       on, at the expense of much more CPU time.
+
+       Due to "not listable" objects that may match during grep, the list of
+       objects one can retrieve may not always match the count.
+
+   model() method
+         $model = $db->model('Author');
+
+       This will return an Ace::Model object corresponding to the indicated
+       class.
+
+   new() method
+          $obj = $db->new($class,$name);
+          $obj = $db->new(-class=>$class,
+                          -name=>$name);
+
+       Create a new object in the database with the indicated class and name
+       and return a pointer to it.  Will return undef if the object already
+       exists in the database.  The object isn't actually written into the
+       database until you call Ace::Object::commit().
+
+   raw_query() method
+           $r = $db->raw_query('Model');
+
+       Send a command to the database and return its unprocessed output.  This
+       method is necessary to gain access to features that are not yet
+       implemented in this module, such as model browsing and complex queries.
+
+   classes() method
+          @classes = $db->classes();
+          @all_classes = $db->classes(1);
+
+       This method returns a list of all the object classes known to the
+       server.  In a list context it returns an array of class names.  In a
+       scalar context, it the number of classes defined in the database.
+
+       Ordinarily classes() will return only those classes that are exposed to
+       the user interface for browsing, the so-called "visible" classes.  Pass
+       a true argument to the call to retrieve non-visible classes as well.
+
+   class_count() method
+          %classes = $db->class_count()
+
+       This returns a hash in which the keys are the class names and the
+       values are the total number of objects in that class.  All classes are
+       returned, including invisible ones.  Use this method if you need to
+       count all classes simultaneously.  If you only want to count one or two
+       classes, it may be more efficient to call count($class_name) instead.
+
+       This method transiently uses a lot of memory.  It should not be used
+       with Ace 4.5 servers, as they contain a memory leak in the counting
+       routine.
+
+   status() method
+           %status = $db->status;
+           $status = $db->status;
+
+       Returns various bits of status information from the server.  In an
+       array context, returns a hash of hashes.  In a scalar context, returns
+       a reference to a hash of hashes.  Keys and subkeys are as follows
+
+          code
+                  program     name of acedb binary
+                  version     version of acedb binary
+                  build       build date of acedb binary in format Jan 25 2003 16:21:24
+
+          database
+                  title       name of the database
+                  version     version of the database
+                  dbformat    database format version number
+                  directory   directory in which the database is stored
+                  session     session number
+                  user        user under which server is running
+                  write       whether the server has write access
+                  address     global address - not known if this is useful
+
+          resources
+                  classes     number of classes defined
+                  keys        number of keys defined
+                  memory      amount of memory used by acedb objects (bytes)
+
+       For example, to get the program version:
+
+          my $version = $db->status->{code}{version};
+
+   title() method
+           my $title = $db->title
+
+       Returns the version of the current database, equivalent to
+       $db->status->{database}{title};
+
+   version() method
+           my $version = $db->version;
+
+       Returns the version of the current database, equivalent to
+       $db->status->{database}{version};
+
+   date_style() method
+         $style = $db->date_style();
+         $style = $db->date_style('ace');
+         $style = $db->date_style('java');
+
+       For historical reasons, AceDB can display dates using either of two
+       different formats.  The first format, which I call "ace" style, puts
+       the year first, as in "1997-10-01".  The second format, which I call
+       "java" style, puts the day first, as in "01 Oct 1997 00:00:00" (this is
+       also the style recommended for Internet dates).  The default is to use
+       the latter notation.
+
+       date_style() can be used to set or retrieve the current style.  Called
+       with no arguments, it returns the current style, which will be one of
+       "ace" or "java."  Called with an argument, it will set the style to one
+       or the other.
+
+   timestamps() method
+         $timestamps_on = $db->timestamps();
+         $db->timestamps(1);
+
+       Whenever a data object is updated, AceDB records the time and date of
+       the update, and the user ID it was running under.  Ordinarily, the
+       retrieval of timestamp information is suppressed to conserve memory and
+       bandwidth.  To turn on timestamps, call the timestamps() method with a
+       true value.  You can retrieve the current value of the setting by
+       calling the method with no arguments.
+
+       Note that activating timestamps disables some of the speed
+       optimizations in AcePerl.  Thus they should only be activated if you
+       really need the information.
+
+   auto_save()
+       Sets or queries the auto_save variable.  If true, the "save" command
+       will be issued automatically before the connection to the database is
+       severed.  The default is true.
+
+       Examples:
+
+          $db->auto_save(1);
+          $flag = $db->auto_save;
+
+   error() method
+           Ace->error;
+
+       This returns the last error message.  Like UNIX errno, this variable is
+       not reset between calls, so its contents are only valid after a method
+       call has returned a result value indicating a failure.
+
+       For your convenience, you can call error() in any of several ways:
+
+           print Ace->error();
+           print $db->error();  # $db is an Ace database handle
+           print $obj->error(); # $object is an Ace::Object
+
+       There's also a global named $Ace::Error that you are free to use.
+
+   datetime() and date()
+         $datetime = Ace->datetime($time);
+         $today    = Ace->datetime();
+         $date     = Ace->date($time);
+         $today    = Ace->date([$time]);
+
+       These convenience functions convert the UNIX timestamp given by $time
+       (seconds since the epoch) into a datetime string in the format that
+       ACEDB requires.  date() will truncate the time portion.
+
+       If not provided, $time defaults to localtime().
+
+OTHER METHODS
+   debug()
+         $debug_level = Ace->debug([$new_level])
+
+       This class method gets or sets the debug level.  Higher integers
+       increase verbosity.  0 or undef turns off debug messages.
+
+   name2db()
+        $db = Ace->name2db($name [,$database])
+
+       This class method associates a database URL with an Ace database
+       object. This is used internally by the Ace::Object class in order to
+       discover what database they "belong" to.
+
+   cache()
+       Get or set the Cache::SizeAwareFileCache object, if one has been
+       created.
+
+   memory_cache_fetch()
+         $obj = $db->memory_cache_fetch($class,$name)
+
+       Given an object class and name return a copy of the object from the in-
+       memory cache.  The object will only be cached if a copy of the object
+       already exists in memory space.  This is ordinarily called internally.
+
+   memory_cache_store($obj)
+       Store an object into the memory cache.  This is ordinarily called
+       internally.
+
+   memory_cache_delete($obj)
+       Delete an object from the memory cache. This is ordinarily called
+       internally.
+
+   memory_cache_clear()
+       Completely clears the memory cache.
+
+   file_cache_fetch()
+         $obj = $db->file_cache_fetch($class,$name)
+
+       Given an object class and name return a copy of the object from the
+       file cache.  This is ordinarily called internally.
+
+   file_cache_store($obj)
+       Store an object into the file cache.  This is ordinarily called
+       internally.
+
+   file_cache_delete($obj)
+       Delete an object from the file cache.  This is ordinarily called
+       internally.
+
+THE LOW LEVEL C API
+       Internally Ace.pm makes C-language calls to libace to send query
+       strings to the server and to retrieve the results.  The class that
+       exports the low-level calls is named Ace::AceDB.
+
+       The following methods are available in Ace::AceDB:
+
+       new($host,$port,$query_timeout)
+           Connect to the host $host at port $port. Queries will time out
+           after $query_timeout seconds.  If timeout is not specified, it
+           defaults to 120 (two minutes).
+
+           If successful, this call returns an Ace::AceDB connection object.
+           Otherwise, it returns undef.  Example:
+
+             $acedb = Ace::AceDB->new('localhost',200005,5)
+                      || die "Couldn't connect";
+
+           The Ace::AceDB object can also be accessed from the high-level Ace
+           interface by calling the ACE::db() method:
+
+             $db = Ace->new(-host=>'localhost',-port=>200005);
+             $acedb = $db->db();
+
+       query($request)
+           Send the query string $request to the server and return a true
+           value if successful.  You must then call read() repeatedly in order
+           to fetch the query result.
+
+       read()
+           Read the result from the last query sent to the server and return
+           it as a string.  ACE may return the result in pieces, breaking
+           between whole objects.  You may need to read repeatedly in order to
+           fetch the entire result.  Canonical example:
+
+             $acedb->query("find Sequence D*");
+             die "Got an error ",$acedb->error() if $acedb->status == STATUS_ERROR;
+             while ($acedb->status == STATUS_PENDING) {
+                $result .= $acedb->read;
+             }
+
+       status()
+           Return the status code from the last operation.  Status codes are
+           exported by default when you use Ace.pm.  The status codes you may
+           see are:
+
+             STATUS_WAITING    The server is waiting for a query.
+             STATUS_PENDING    A query has been sent and Ace is waiting for
+                               you to read() the result.
+             STATUS_ERROR      A communications or syntax error has occurred
+
+       error()
+           Returns a more detailed error code supplied by the Ace server.
+           Check this value when STATUS_ERROR has been returned.  These
+           constants are also exported by default.  Possible values:
+
+            ACE_INVALID
+            ACE_OUTOFCONTEXT
+            ACE_SYNTAXERROR
+            ACE_UNRECOGNIZED
+
+           Please see the ace client library documentation for a full
+           description of these error codes and their significance.
+
+       encore()
+           This method may return true after you have performed one or more
+           read() operations, and indicates that there is more data to read.
+           You will not ordinarily have to call this method.
+
+BUGS
+       1. The ACE model should be consulted prior to updating the database.
+
+       2. There is no automatic recovery from connection errors.
+
+       3. Debugging has only one level of verbosity, despite the best of
+       intentions.
+
+       4. Performance is poor when fetching big objects, because of many
+       object references that must be created.  This could be improved.
+
+       5. When called in an array context at("tag[0]") should return the
+       current tag's entire column.  It returns the current subtree instead.
+
+       6. There is no way to add comments to objects.
+
+       7. When timestamps are active, many optimizations are disabled.
+
+       8. Item number eight is still missing.
+
+SEE ALSO
+       Ace::Object, Ace::Local, Ace::Model,
+       Ace::Sequence,Ace::Sequence::Multi.
+
+AUTHOR
+       Lincoln Stein <lstein@cshl.org> with extensive help from Jean Thierry-
+       Mieg <mieg@kaa.crbm.cnrs-mop.fr>
+
+       Copyright (c) 1997-1998 Cold Spring Harbor Laboratory
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.  See DISCLAIMER.txt for
+       disclaimers of warranty.
+
+POD ERRORS
+       Hey! The above document had some coding errors, which are explained
+       below:
+
+       Around line 1194:
+           '=item' outside of any '=over'
+
+       Around line 1224:
+           You forgot a '=back' before '=head2'
+
+perl v5.40.2                      2008-11-11                            Ace(3)

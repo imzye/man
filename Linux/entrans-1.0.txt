@@ -1,0 +1,682 @@
+entrans(1)                                                                                                                                                                                           entrans(1)
+
+NAME
+       entrans - build and run GStreamer transcoding pipeline
+
+SYNOPSIS
+       entrans [OPTION]... {--} {PIPELINE-OPTION}...
+
+DESCRIPTION
+       entrans builds and runs a GStreamer pipeline, primarily intended for transcoding, encoding or recording purposes.
+
+       On the one hand, it is much like gst-launch(1) in that it has no ambitions to go beyond command-line (or script) driven processing.
+
+       On the other hand, it has quite a few enhancements that provide application-level functionality sufficiently comfortable and suitable for plain-and-simple (and robust) transcoding, encoding or record‐
+       ing using the GStreamer framework and plugins:
+
+       • Pipeline to run can be specified manually, or can be built dynamically based on inputstream and pipeline fragments (see OPERATION), which takes care of most of the boilerplate (and of some  pitfalls
+         to watch out for with transcoding pipelines, see also MUXING PIPELINES).
+
+       • Provides some typically relevant (configurable) interesting info regarding the pipeline (elements, properties, queues, ...) and caps flowing in pipeline.
+
+       • Regular progress updates are provided.
+
+       • Limited support for tag setting (whenever a TagSetter is present).
+
+       • Property configuration support; settings can be applied from what is stored in a config file and there is also some custom support for setting popular options (e.g. bitrate).
+
+       • Last but not least (convenient), processing can be restricted to specific portions of the input(stream) (mind REQUIREMENTS).
+
+       • Graceful shutdown of processing at any time, and still well-formed output as result (mind REQUIREMENTS).
+
+       Another  (technical) difference is that it is written in python ⟨http://www.python.org/⟩ , using the python bindings for the GStreamer framework (gst-python), which makes many of the enhancements much
+       more comfortable to implement and easy to adjust (to taste).
+
+OPERATION
+       As already alluded to above, entrans fundamentally operates in one of the following ways, also loosely called modes:
+
+       • Raw mode.  The pipeline to construct, run and manage is explictly given manually (see --raw).  On the one hand, this mode allows full freedom in pipeline construction and can be great for diagnosing
+         and  debugging.   On the other hand, if this freedom is not properly used, all sorts of things can go wrong (blocking, ...) see MUXING PIPELINES and REQUIREMENTS [do not even try to run in this mode
+         if what is stated there is not fully clear and understood].  For now, this mode is also required for performing e.g. video-passthrough transcoding (perhaps more  appropriately  called  re-muxing  in
+         this case).
+
+       • Dynamic  mode.   decodebin is applied to the inputstream, which will automagically provide all the streams present in the input in their decoded raw (video, audio or other, e.g. text) form.  Each of
+         these streams is then connected to an instance of a pipeline (fragment) given by --video, --audio or --other, each typically containing filters and/or encoder. An optional subsequent step is  trying
+         to connect this to an appropriately selected muxer for the output.
+
+       In  any  case,  no  (advanced) error processing or sane-ness checking is performed on either pipeline or pipeline fragments.  As such, linking, negotiation or other matters can very well fail, e.g. if
+       fragments do not contain encoder elements that are compatible with the muxer in question. It is also possible for some parts of the pipeline to simply remain disconnected and the corresponding  stream
+       being effectively discarded (this might also be used as a feature ;-) ).  Reporting on any of these occurrences is of course done in as much as the pipeline provides info on what is happening.
+
+       Though  this  may sound ominous, in practice, this comes down to either things working out just nicely or finding out about something going wrong in a more or less fast and hard way.  Having a look at
+       EXAMPLES should increases chances on the former being the case, and should even provide enough for a jump-start based on some GStreamer experience.
+
+       Processing can be halted at any time by sending a SIGINT or SIGTERM signal to entrans.  This will make entrans block the data-flow and send an end-of-stream event through the pipeline to ensure grace‐
+       ful termination of streaming.  As such, it should be noted that termination may not occur instantly, it might take a moment for things to run out (particularly with some queues around).
+
+       If  in  rare cases this mechanism were to fail, sending such a signal a second time will forego any attempts at graceful shutdown and will make entrans end things the hard way with no guarantee on the
+       output being fully OK (it will most likely not be) ...
+
+              Note
+
+              Due to the way the python interpreter handles signals, even the above may not work if things are messed up seriously, e.g. when python interpreter is caught up somewhere  in  GStreamer  backend
+              code.  This, however, has only been known to happen as a prelude to finding some serious application bug or GStreamer plugin/core bug.  Regardless, e.g. SIGKILL is then your friend ...
+
+OPTIONS
+       entrans accepts the options presented in the following sections, most of which have shortname (one-letter) or longname forms.  The ordering of the options is not strict, and options can be single-val‐
+       ued or multi-valued.
+
+       • In the former case, which is the default unless otherwise indicated below, only the value given last is retained.  In particular, this includes boolean options.  If such an option is given, the cor‐
+         responding setting is turned on.  The setting can also be explictly turned off by providing the corresponding --no-longname option.
+
+       • Otherwise,  for multi-valued options, all values given are taken into consideration.  In these cases, it may sometimes also be possible to pass several values per single option occurrence, by comma-
+         separating these values as indicated in each such case below. This will typically be the case in those instances where there can be no ambiguity since the supplied value does not include free-text.
+
+       -h, --help
+         Show a brief help message.
+
+   PIPELINE OPTIONS
+       At least one of the following options should be provided following -- (in each case, see gst-launch(1) for the syntax of pipeline-description).  Clearly, as explained previously, the former option ex‐
+       cludes all of the latter ones.
+
+       --raw pipeline-description
+              Makes entrans run in raw mode, and provides the complete pipeline for this mode of operation.
+
+              Again, this should be used with expertise and being aware of comments in MUXING PIPELINES and REQUIREMENTS.
+
+       --video[:streamnumber] pipeline-description
+              pipeline-description describes a pipeline fragment for video data processing, typically consisting of 0 or more filters followed by an encoder.
+
+       --audio[:streamnumber] pipeline-description
+              Similar to --video, except that it provides a pipeline for (optionally) processing and encoding audio data.
+
+       --other[:streamnumber] pipeline-description
+              Similar to the above options, except that it provides a pipeline for (optionally) processing and/or encoding data that does not fit in the above categories, e.g. subtitles.
+
+       --decoder decoder-factory
+              Use  decoder-factory  instead  of  the  default decodebin to construct the decoding part of the pipeline in dynamic mode (as mentioned earlier).  The given element should have compatible behav‐
+              iour/signals with decodebin, which should be the case for any GstBin derived element.
+
+       The above (partial) pipelines should typically have an encoder as last element. In any case, it should best not be a generic element, as that might cause confusion as to how to link to the muxer  (see
+       also MUXING PIPELINES).
+
+       It  is  also  possible  to  close  any of the above pipeline fragments by ending it with a sink element. In this case, the resulting stream will not be muxed and each can have independent output, e.g.
+       streamed to a file.  As each of these would evidently need to have distinct names, there is (extremely) limited support for variable substitutions.  Each (video and audio) stream that dynamically  be‐
+       comes  available  is  (independently) numbered, starting from 1, and as such assigned an (audio or video) stream number.  Any element property of type string will be subject to having ${vn}, ${an} and
+       ${on} replaced by the video, audio and other stream number (at that time) respectively in video, audio or other pipeline fragments.  If any of the above have a streamnumber appended, then  that  frag‐
+       ment  will  only apply to that particular stream, otherwise it will be the default fragment. If no specific or default fragment has been provided for a particular stream, then that stream will be dis‐
+       carded.  This effect is similar to the use of --vn, --an or --on (see next section).
+
+   INPUT/OUTPUT OPTIONS
+       The option in this section are only applicable in dynamic mode, so incompatible with --raw.
+
+       -i uri, --input uri
+              Indicates the input source. If uri is a valid URI, then a proper source element will be selected, otherwise it is simply taken as a (relative) path of an inputfile. If uri is -, then stdin will
+              be used as input.
+
+       -o uri, --output uri
+              Indicates  the  output destination. If output is a valid URI, then a corresponding sink element is selected, otherwise it is taken as a (relative) path of an outputfile (output to stdout is not
+              supported).  The (file)suffix of uri is used to automagically choose an appropriate muxer, which can be overridden with --muxer
+
+       --muxer mux-element
+              Use mux-element in stead of the automatically selected one, or if one fails to be auto-selected.  mux-element must be of Muxer class.
+
+       --encoding-profile targetname:profilename[:category]
+              Optionally (and incompatible with the previous option), one can use the encodebin helper element to handle most of the encoding details, such as selecting  appropriate  encoders  and  enforcing
+              certains constraints (e.g. resolution) as indicated by the encoding profile selected by this option.  While it is still possible to provide pipeline-description fragments, this is typically not
+              necessary (and requires proper care for these to be compatible on both ends).
+
+       As mentioned in the previous section, all streams found in the input are assigned a stream number and considered for processing, unless somehow restricted by the following options.
+
+       --vn streamnumber[,...], --an streamnumber[,...], --on streamnumber[,...]
+              [multi-valued] Only the video, audio or other streams with (respectively) listed streamnumber will be considered, others disregarded.  Furthermore, streams of each type will be muxed  into  the
+              target in the order in which their streamnumbers are given in these options, and in overall first video, then audio and others.
+
+       --sync-link
+              This  option  is mainly meant for testing and diagnostic purposes.  It basically disables the stream(re)-ordering mechanism as implied by and explained in the above option (though still retains
+              stream selection).
+
+       --at tag[,...]
+              [multi-valued] Audio streams can (though need not) be accompanied by a language tag (typically a 2- or 3-letter language code). The regular expression tag is matched against each detected audio
+              stream's  language  tag  and only streams without language tag or streams with a matching language tag are processed, others disregarded. This selection method cannot be combined with the above
+              streamnumber based selection.
+
+              Note
+
+              The current (or another?) method of implementing this selection may very well not work with all muxer elements. As such, this option can be given a try, but if not successful, the much more ro‐
+              bust --an should be used instead. The proper number(s) to use for this may be derived from (ordered) tag information that is provided by some elements and reported at start-up.
+
+       --stamp
+              This  is enabled by default, and makes entrans insert an identity element (with single-segment True) before the connected pipeline-fragment to perform timestamp re-sequencing. This is typically
+              useful when muxing into a format that records timestamps (and does not hurt when the format does not).
+
+   BASIC OPTIONS
+       Whereas no specific dependencies exist for all other options, the REQUIREMENTS section applies particularly to the following options (in more or less degree).
+
+       -c [[(]format[)]:]t1-t2[,...], --cut [[(]format[)]:]t1-t2[,...]
+              [multi-valued] Only process the indicated sections of the pipeline (by default the complete input is processed). The option -s determines the method used for selecting the desired data.
+
+              If no format is provided, the tN parameters can be given in timecode format HH:MM:SS.FRACTION or as a (video)framenumber, which is a number following f or F. Any buffer that overlaps  with  the
+              indicated section is taken into account. The last indicated section may be open-ended, i.e. the end point may be omitted.
+
+              However,  if  format is the nickname of a pre-defined or custom format (defined by some element in the pipeline), then it is used as unit for the tN numbers.  In this case, option -s below must
+              select a seek-based method, and the seek will be executed in format if it is provided without matching (...), otherwise the given units will be (query) converted to time format first, and these
+              results will be used to seek in time.
+
+       -s method, --section method
+              Possible choices for method are:
+
+              seek   Sections are selected by means of regular GStreamer seeks.  A flushing seek is performed for the first section, segment seek for the others, and a normal seek for the last section.  This
+                     is also the default method and is OK for most circumstances.  In some cases, however, the other methods may be in order, e.g. when (the driving element in) the pipeline does not  support
+                     some type of seek that would be used.
+
+              seek-key
+                     This  is  similar  to  the  case  above,  but  each seek is also a keyframe seek, that is, the actual selection may not be exactly the one that was requested but may start at the nearest
+                     keyframe preceding the desired start.  This would typically be required when performing re-muxing without fully decoding and re-encoding the material.
+
+              cut-time
+                     In this case, the pipeline is run from the start (without any seeks) and all but the desired sections are disregarded.  The decision whether or not to drop a piece of data  is  based  on
+                     its timestamp.  This is the recommended (only possible) method to use when performing A/V sync correction using data-timestamp shifting, e.g. by means of the entransshift element. It can
+                     also be used to end a live source(s) driven pipeline after a specified duration.
+
+              cut    This method applies in case any/all of the above fail, e.g. some element does not support seek or unreliable timestamps are produced in the pipeline.  No seeks  or  anything  special  is
+                     done,  the  pipeline is run from the start and all but the indicated sections is dropped. Timestamps on the datastream are disregarded, and the incoming data is restamped based on frame‐
+                     count and framerate (video), or on sample count and samplerate (audio).  In particular, audio cutting is performed up to sample precision.
+
+       Note that the last 2 methods require the desired sections to be in ascending order, whereas the former methods make it possible to select sections that are out-of-order with regards to the input mate‐
+       rial.
+
+       -a     Perform  (audio)  sample  precision  selection, that is, it is possible for only parts of buffers to be passed or dropped. This is done by default in the cut method above, but not for the other
+              methods.
+
+       --dam  Indicate, or rather, confirm that entransdam elements are being used in raw pipelines.  Otherwise, surrogate dam elements will be searched for and used instead.  These are  identified  as  ele‐
+              ments whose name is of the form dam<digits>.
+
+       -f framerate, --framerate framerate
+              The framerate that is used for framenumber to time conversion is normally auto-detected (soon enough) within the pipeline. If this were not to succeed, then framerate, specified as NUM[/DENOM],
+              is used as a fallback instead of the otherwise default 25/1.
+
+       -b, --block-overrun
+              This makes entrans prevent automatic adjustments to queues (in a decodebin), thereby keeping them at fixed size.
+
+              Despite all the automagic, the pipeline may stall in exotic cases (e.g. some strange behaving element/muxer, ...). A good first thing to try then is to configure queues at a larger-than-default
+              setting (see for example following section) and to use this option to ensure they really remain configured as intended without any other influence.
+
+   PIPELINE CONFIGURATION
+       Although  element properties are typically set in the pipeline descriptions, the following options can be useful for dynamically created elements (see for instance the dvd example in EXAMPLES) or when
+       it is desired to configure a property syntactically separated from the pipeline on the command line.
+
+       --set-prop element:prop:value[:time]
+              Sets property prop of element to value, where element can either be a factory name, or the name or full path-string of a specific element.  If prop is a GST_CONTROLLABLE property  (use  gst-in‐
+              spect(1) to determine this), then a (pipeline media) time at which prop should be set to this particular value (using the controller framework) can be given as well.
+
+              In  general,  a  value  given for a property within the pipeline description will override any value provided this way. In case of queues, however, both decodebin and entrans will override some
+              properties' values in order to minimize the possibility of blocking.  Though it is not recommended, set-prop can be used to forcibly overwrite such aforementioned defaults.
+
+              The rank of an element (as a plugin feature), which (a.o.) determines whether or not it is considered for auto-plugging (in dynamic mode) is considered as  a  pseudo-property  pf_rank  and  can
+              therefore be set in this way as well.
+
+       --vb vkbitrate, --ab akbitrate
+              Sets the bitrate property of any video or audio element to vkbitrate [ * 1000] or akbitrate [ * 1000] respectively, depending on whether the property expects to be provided with (k)bitrate.
+
+       --vq vquality, --aq aquality
+              Sets either the quality or quantizer property of any video or audio element to vquality or aquality respectively.
+
+       --pass pass
+              Sets the pass property of any video element to pass, which must be 1 or 2.
+
+       -t tag:value, --tag tag:value
+              [multi-valued] entrans locates a TagSetter in the pipeline and sets each given tag to value.
+
+              A list of possible tags can be found in GStreamer core documentation ⟨http://www.gstreamer.net/data/doc/gstreamer/head/gstreamer/html/gstreamer-GstTagList.html⟩ .
+
+   REPORTING OPTIONS
+       By default, entrans reports the following items at startup:
+
+       • an overview of elements found in the pipeline, along with the current values of properties that differ from their usual (default) setting
+
+       • tags discovered on decodebin's pads (in dynamic mode); for purposes of report-filtering it is considered a pseudo-property tag of the pad
+
+       • a set of distinct caps that have been found flowing through the pipeline,
+
+       • the (video) queues found in the pipeline (with their neighbours), and their maximum capacity settings (size, buffers, time)
+
+       After that, it provides the following in regular intervals, if already available or applicable:
+
+       • (time) position in input stream,
+
+       • movie time: position in output stream, and the total expected output movie time
+
+       • processing speed: ratio of elapsed (input) stream time to elapsed CPU time
+
+       • ETA: expected time to completion of processing; this calculation always uses elapsed system clock time, regardless of options below,
+
+       • amount of buffers presently contained in the queues reported at startup,
+
+       • if a specific output file can be identified, (combined) bitrate so far.
+
+       The following options can influence some of this behaviour:
+
+       -d delay, --delay delay
+              Sets the interval between progress updates to delay seconds. The default delay is 2 seconds.
+
+       --timeout timeout
+              As  an  entrans  run spins up, it transitions through a number of stages, which should normally follow each other in pretty rapid succession.  timeout, by default 4, is the maximum interval (in
+              seconds) that will be allowed between such stages. If the interval is exceeded, entrans may simply abort altogether or try to recover the situation (depending on  the  stage),  the  success  of
+              which  depends  on the cause (e.g. a misbehaving element, or a badly constructed pipeline, ...).  Evidently, a high timeout value essentially renders this check mute. Setting it to 0 completely
+              disables this check as well as some other mechanisms employed to support it, and is not normally advisable.
+
+       --progress-fps
+              Makes regular reports also provide processing speed in fps, which is calculated using either auto-detected framerate or provided by -f.
+
+       --progress-real
+              Calculate processing speed based on elapsed system clock time (instead of CPU-time).
+
+       In the following, proppattern is a regular expression that will be matched against a combination of an element and (optionally) one of its properties prop. More precisely, this combination matches  if
+       the regular expression matches any of the following:
+
+       • element's factory name.prop
+
+       • element's name.prop
+
+       • element's path name.prop
+
+       In each case, the last part is omitted if there is no prop in the context in question.
+
+       Similarly,  msgpattern is matched against expressions as above, but with prop replaced by message type name.message structure name.  Again, in each case, the last part is omitted if there is no struc‐
+       ture for the message in question.
+
+       -m     Output messages posted on the pipeline's bus
+
+       -v     Provide output on property changes of the pipeline's elements.  This output can be filtered using -x
+
+       --short-caps
+              Do not perform complete caps to string conversion, instead replace e.g. buffers with their (string) type representation.  This can make for more comfortable display of e.g.  Vorbis  and  Theora
+              related caps.
+
+       --ignore-msg msgpattern[,...] , --display-msg msgpattern[,...]
+              [multi-valued] If message reporting is enabled by -m, only report on those that match --display-msg or do not match --ignore-msg
+
+       -x proppattern[,...] , --exclude proppattern[,...] , --include proppattern[,...]
+              [multi-valued] If property change reporting is enabled by -v, only report those on properties that match --include or do not match --exclude
+
+       --display-prop proppattern[,...] , --ignore-prop proppattern[,...]
+              [multi-valued]  An element's property (value) is reported at start-up if and only if it matches an expression given in --display-prop or its value differs from the default value and it does not
+              match --ignore-prop.  Also, in any case, an element's presence in the pipeline is at least mentioned by default, unless the element (by itself) matches --ignore-prop
+
+   CONFIGURATION OPTIONS
+       Each entrans option —be it one affecting entrans' run-time behaviour or affecting pipeline element (properties)— can also be provided on a more permanent basis using a configuration file.  Such a file
+       consists of sections, led by a [section] header and followed by name: value entries, name=value is also accepted.  Note that leading whitespace is removed from values.  Lines beginning with # or ; are
+       ignored and may be used to provide comments.
+
+       In the special section [options], each entry name: value is equivalent to providing --name value on the command-line, where name must be an option's longname.  If the option is multi-valued  and  does
+       not  accept  a  comma-separated list of values, then name may also have _0 or _1 (and so forth) appended to it.  The name of any other section is interpreted as an element, with each entry providing a
+       value for a property.  Otherwise put, each prop: value in a section [element] is equivalent to mentioning it in --set-prop as element:prop:value
+
+       By default, the current directory and the user's home directory is searched for a configuration file called .gst-entrans whereas entrans.conf is searched for in  XDG_HOME_CONFIG  directory  (typically
+       $HOME/.config) (in that order).
+
+       Any  setting  provided on the command line for a single-valued option (e.g. a boolean option) overrides a similar value given in a configuration file, whereas values provided for multi-valued ones ap‐
+       pend to those already provided.
+
+       --config file
+              Use file instead of any default configuration file.
+
+       --profile file
+              Load file after other configuration files, either default ones or given by --config.  This option derives its name from its use in loading certain export or encoder profiles (e.g. MPEG1, MPEG2,
+              etc), which are mainly a collection of presets for certain properties that can be kept in corresponding profile configuration files.
+
+   MISCELLANEOUS OPTIONS
+       --save message:file[:append][,...]
+              [multi-valued]  Makes entrans save a custom element message to file, that is, the string representation of the message's structure is saved (followed by a linefeed).  If append is true (e.g. 1,
+              t, T), then all messages are appended to file, otherwise the default is to truncate file whenever message is received, thereby saving only the most recently received message.  For good measure,
+              it might be noted here there was a change in version 0.10.15 in a structure's string representation with respect to usage of a terminating ;.
+
+              file will be subject to having ${n}$ replaced by the name of the element sending message.
+
+EXAMPLES
+       More examples of pipelines can also be found in gst-launch(1); the ones below are primarily meant to illustrate some of entrans' features.
+
+       In each case, everything could also be written on one line, without the backslash character. In some cases, some particular quoting is needed to prevent (mis)interpretation by the shell.
+
+       Basic transcoding
+
+       entrans.py -i dvd://2 -o dvd.ogm --short-caps -- \
+       --video theoraenc --audio audioconvert ! vorbisenc
+
+       Transcodes complete title 2 from a DVD into a mixed Ogg containing all video and audio tracks (but no subtitles) using default settings, while preventing some extensive caps display.
+
+       Selected stream transcoding
+
+       entrans.py --set-prop dvdreadsrc:device:/mnt -i dvd://2 -o dvd.mkv \
+       --set-prop dvdsubdec:pf_rank:128 --on 6,12 --an 1,2 --vq 4 --ab 256 -- \
+       --video avenc_mpeg4 --audio audioconvert ! lamemp3enc \
+       --other videoconvert ! avenc_mpeg4 ! matroskamux ! filesink location='sub-${on}.mkv'
+
+       Transcodes  video  and  selected  audio tracks from a DVD image mounted at /mnt into a Matroska file, using the indicated fixed quantization and bitrate for video and audio respectively. Some selected
+       subtitle tracks are also encoded as separate video streams into other Matroska files. Note that the rank of the dvdsubdec must be increased for a subtitle stream to be considered for decoding and sub‐
+       sequently made available.
+
+       Extensive progress update transcoding
+
+       entrans.py -i example-in.avi -o example-out.mkv -- \
+       --video tee name=tee ! queue ! theoraenc \
+         tee. ! queue ! timeoverlay ! xvimagesink sync=false qos=false \
+       --audio audioconvert ! lamemp3enc
+
+       Transcodes into Matroska using Theora and MP3 codecs, while providing for (excessive) live preview progress info.
+
+       Partial stream transcoding
+
+       entrans.py -i dvd://2 -o dvd.mkv -c chapter:5- --short-caps -- \
+       --video ! identity single-segment=true ! avenc_mpeg4 \
+       --audio audioconvert ! identity single-segment=true ! vorbisenc
+
+       Transcodes  all  video  and  audio  tracks  from a DVD title 2 (chapter 5 to the end) into Matroska using MPEG4 and Vorbis codecs (while catering for properly timestamped input for the container which
+       records these faithfully for posterity).
+
+       Pass-through transcoding
+
+       entrans.py -s seek-key -c 60-180 --dam -- --raw \
+       filesrc location=example-in.avi ! avidemux name=demux \
+       avimux name=mux ! filesink location=example-out.avi \
+       demux.video_0 ! queue ! dam ! queue ! mux.video_0 \
+       demux.audio_0 ! queue ! dam ! queue ! mad ! audioconvert ! lamemp3enc ! mux.audio_0
+
+       Transcodes a particular section from an AVI file into another AVI file without re-encoding video (but does re-encode audio, which is recommended). The output will range from (approximately) 60 seconds
+       into the input up to 180 seconds; actually there will be a (key)seek to the nearest keyframe just before the 60 seconds point to ensure the integrity of later decoding of the output.  In addition, en‐
+       trans will report changes on any object's properties, except for any (pad's) caps.
+
+       The pipeline above uses raw mode, and as such must abide by some rules and recommendations in pipeline building (see MUXING PIPELINES), which leads in particular to  the  above  abundance  in  queues.
+       With some extra configuration, pass-through could also be performed in dynamic mode as follows (assuming that video/mpeg properly describes the encoded video content):
+
+       entrans.py -s seek-key -c 60-180 \
+       --set-prop 'decodebin:caps:video/mpeg;audio/x-raw' \
+       -i example-in.avi -o example-out.avi -- \
+       --video capsfilter caps=video/mpeg \
+       --audio audioconvert ! lamemp3enc
+
+       Live recording
+
+       entrans.py -s cut-time -c 0-60 -v -x '.*caps' --dam -- --raw \
+       v4l2src queue-size=16 ! video/x-raw,framerate=25/1,width=384,height=576 ! \
+         entransstamp sync-margin=2 silent=false progress=0 ! queue ! \
+         entransdam ! avenc_mpeg4 name=venc  \
+       alsasrc buffer-time=1000000 ! audio/x-raw,rate=48000,channels=1 ! queue ! \
+         entransdam ! audioconvert ! queue ! lamemp3enc name=aenc   \
+       avimux name=mux ! filesink location=rec.avi aenc. ! mux. venc. ! mux.
+
+       Records 1 minute of video and audio from a video4linux device and features additional synchronization and reporting on object property changes (if any), which includes reports on frame drops or dupli‐
+       cations, although (pad's) caps changes are excluded for convenience.
+
+       2-pass transcoding
+
+       entrans.py -i example-in.avi -o /dev/null --muxer avimux --vb 1200 --pass 1 \
+       --save entransastat:astat.log -- --video avenc_mpeg4 \
+       --audio audioconvert ! entransastat ! fakesink
+       SCALE="$(cat astat.log | sed 's/astat, scale=(double)//' | sed 's/;//')"
+       entrans.py -i example-in.avi -o example-out.avi --vb 1200 --pass 2 \
+       --tag 'comment:2-pass demonstration' -- \
+       --video avenc_mpeg4 --audio audioconvert ! volume volume=$SCALE ! lamemp3enc
+
+       Performs 2-pass transcoding from one AVI into another. The first pass also determines and saves the maximum volume scaling that can safely be applied without having to resort to clipping. It does  not
+       bother performing audio encoding or producing an output file. Although the particular (encoder compatible) muxer is hardly relevant here, one is nevertheless indicated explicitly as a reasonablechoice
+       cannot be determined from /dev/null. After some scripting to retrieve the saved value from a file, the second pass performs volume scaling and encoding.  It also sets a comment (tag) in the  resulting
+       file to note its lofty goal.
+
+       Configuration file
+
+       [options]
+       ignore-prop=.*src.*,.*sink.*,dam.*,queue.*,identity.*,.*decodebin.*
+       display-prop=.*\.tag,.*\.bitrate$,.*bframes,.*quantizer,.*\.pass,.*\.queue-size
+       tag_0=encoder:entrans
+       tag_1=application-name:entrans
+
+       [dam]
+       drop-tags=bitrate,encoder,codec,container
+
+       [avenc_mpeg4]
+       me-method=epzs
+       max-bframes=0
+       gop-size=250
+
+       [dvdsubdec]
+       pf_rank = 128
+
+       A  basic,  though  adequate configuration file that filters out some (usually less interesting) information on some technical elements, while making sure on the other hand that some other settings get
+       displayed in any case. In addition, an element's properties can be given defaults (other than the hardcoded ones), and the rank of dvdsubdec is increased so that subtitles streams will also be provid‐
+       ed. Also, when transcoding, some original tags are filtered out and some tags are set on the resulting file (where its format/type may or may not support recording these particular tags).
+
+       Profile configuration
+
+       Some  examples of (encoding) profiles that can be passed to --profile (each profile is in a separate file).  Note that profiles also impose constraints on e.g. width and height which are not automagi‐
+       cally enforced; one must still take care of this by means of e.g. proper scaling.  Similarly, the elements that are to perform the required encoding must be properly (manually) specified, though their
+       configuration is then taken care of by the examples below.
+
+       # vcd:
+       # 352 x 240|288
+       # 44.1kHz, 16b, 2ch, mp2
+
+       [options]
+       vb = 1150
+       ab = 224
+
+       [avenc_mpeg1video]
+       bitrate = 1150
+       # <= 10
+       gop-size = 9
+       rc-min-rate = 1150
+       rc-max-rate = 1150
+       rc-buffer-size = 320
+       rc-buffer-aggressivity = 99
+
+       [mpeg2enc]
+       format = 1
+
+       # --------
+       # svcd:
+       # 480 x 480|576
+       # 44.1kHz, 16b, 2ch, mp2
+
+       [options]
+       vb = 2040
+       # >= 64, <= 384
+       ab = 224
+
+       [avenc_mpeg2video]
+       bitrate = 2040
+       # <= 19
+       gop-size = 15
+       # ntsc: gop-size = 18
+       rc-min-rate = 0
+       rc-max-rate = 2516
+       rc-buffer-size = 1792
+       rc-buffer-aggressivity = 99
+       flags = scanoffset
+
+       [mpeg2enc]
+       format = 4
+
+       # ---------
+       # xvcd:
+       # 480 x 480|576
+       # 32|44.1|48kHz, 16b, 2ch, mp2
+
+       [options]
+       vb = 5000
+       # >= 64, <= 384
+       ab = 224
+
+       [avenc_mpeg2video]
+       # 1000 <= bitrate <= 9000
+       bitrate = 2040
+       # <= 19
+       gop-size = 15
+       # ntsc: gop-size = 18
+       rc-min-rate = 0
+       # optional:
+       rc-max-rate = 5000
+       #
+       rc-buffer-size = 1792
+       rc-buffer-aggressivity = 99
+       flags = scanoffset
+
+       # ------
+       # dvd:
+       # 353|704|720 x 240|288|480|576
+       # 48kHz, 16b, 2ch, mp2|ac3
+
+       [options]
+       vb = 5000
+       # >= 64, <= 384
+       ab = 224
+
+       [avenc_mpeg2video]
+       # 1000 <= bitrate <= 9800
+       bitrate = 5000
+       # <= 19
+       gop-size = 15
+       # ntsc: gop-size = 18
+       rc-min-rate = 0
+       rc-max-rate = 9000
+       rc-buffer-size = 1792
+       rc-buffer-aggressivity = 99
+
+       [mpeg2enc]
+       format = 8
+
+       Encoding Profile Transcoding
+
+       entrans.py -i example-in.avi -o example-out.mp4 --encoding-profile video-encoding:mpeg4-video
+
+       Performs  transcoding  of  input  file  to  MP4  using  encodebin  with  the  specified encoding profile, for instance defined as follows (and saved in a file in $HOME/.gstreamer/encoding-profiles/de‐
+       vice/video-encoding.gep).  Note that in this case the input file may contain either video or audio or both.
+
+       [GStreamer Encoding Target]
+       name = video-encoding
+       category = device
+       description = Video encoding profiles
+
+       [profile-mpeg4-video]
+       name = mpeg4-video
+       type = container
+       description[c] = Standard MPEG-4 video profile
+       format = video/quicktime, variant=(string)iso
+
+       [streamprofile-mpeg4-video-0]
+       parent = mpeg4-video
+       type = video
+       format = video/mpeg, mpegversion=(int)4
+       presence = 0
+       pass = 0
+       variableframerate = false
+
+       [streamprofile-mpeg4-video-1]
+       parent = mpeg4-video
+       type = audio
+       format = audio/mpeg, mpegversion=(int)4
+       presence = 0
+
+REQUIREMENTS
+       Evidently, there must be a basic GStreamer framework installation, the extent of which and available plugins determine the processing scope that can be achieved.  Beyond this, it is highly recommended
+       for  the  entransdam  element  to be available, which is part of the plugins supplied along with entrans.  More (technical) details and motivation can be found in the documentation for entransdam, but
+       suffice it to say that without entransdam the following notes apply:
+
+       • For --seek, only the methods seek and seek-key are available.  However, for reasons explained in entransdam documentation and in MUXING PIPELINES, even these methods can not be considered  reliable,
+         either functional or technical.  As such, only full (uninterrupted) pipeline transcoding is really available.
+
+         As  a technical note, this unreliability could be alleviated by having the functionality to drop out-of-segment-bound buffers not only in sinks or in some elements, but as a specific ability in e.g.
+         identity.
+
+       • The graceful (signal initiated) termination usually also relies on entransdam, and is quite sturdy in this case.  However, and fortunately, there is also an alternative fall-back implementation that
+         will take care of this in the vast majority of circumstances.
+
+       Note that in case of dynamic pipelines, the availability of the entransdam element in the system is auto-detected, and the proper pipeline-construction action is taken accordingly. In raw mode, howev‐
+       er, it must be explictly confirmed (by --dam) that entransdams are properly used, otherwise none will be assumed present and only restricted operation is then available, as indicated above. Proper us‐
+       age  of  entransdam is subject to comments in MUXING PIPELINES, but basically comes down to putting a entransdam as upstream as possible in each independent stream, e.g. preceding some queue. Alterna‐
+       tively, such a queue could be used as surrogate dam by naming it dam<digits>.
+
+GNONLIN/GES COMPARISON
+       On the one hand, one might compare in the sense that both GNonLin (nowadays part of GStreamer Editing Services) and entrans aim to create media files while allowing for non-linear editing/cutting.  On
+       the other hand, entrans is quite complementary and can actually be combined with GNonLin, for example
+
+       entrans.py -- --raw nlecomposition. '(' name=comp caps=video/x-raw \
+         nleurisource uri=file:///tmp/test.avi start=0 duration=20000000000 inpoint=0 ')' \
+         comp.src ! avenc_mpeg4  ! queue ! avimux ! filesink location=test-gnonlin.avi
+
+       That being the case, why this alternative and yet another program, rather than being content with e.g. GNonLin (and gst-launch(1)) ?
+
+       On  the one hand, historically, there were some technical reasons that allowed entrans' approach to operate with great precision in a variety of circumstances (unlike GNonLin). However, a recent GNon‐
+       Lin no longer exhibits such drawbacks, and is aided by a GES convenience layer nowadays.
+
+       On the other hand, and applicable to date, is a matter of style.  The above example pipeline looks and feels rather contrived (and that's only the video part!), and is not much of a pipeline  in  that
+       e.g.  nlecomposition  is  really  (deliberately) not so much a pipeline than it is more of a bag (serving its intended purpose well). On the other hand, Un*x pipelines have a long standing beauty (and
+       a.o. adaptability and flexibility), and a (traditional) GStreamer pipeline continues in that tradition. In that sense, entrans' (and gst-launch(1)) approach is an ode to pipeline and its inherent sim‐
+       plicity  and  clarity  of intent.  In particular, typical entrans pipelines are only slightly different than playback pipelines, and the cutting/seeking mechanism is pretty identical.  In that way, an
+       entrans media file creation is very close to a (non-linear) playback session (and closer than a GNonLin equivalent would be).  Of course, there is now also GES  (along  with  e.g.   ges-launch  tool),
+       though all that somewhat surpasses the plain-and-simple as intended here (and the remainder is left to a matter of taste and suitable choice depending on circumstances).
+
+       So, the idea and intention succinctly put is; if you can play it, you can entrans it (with a pretty plain-and-simple similar pipeline, and precision in various circumstances).
+
+MUXING PIPELINES
+       As mentioned earlier, one might run into some pitfalls when constructing a (raw) pipeline, most of which are taken care of by entrans when runnning in dynamic mode.
+
+       Building.  To begin with, the pipeline must be properly built and linked, in particular to the muxer element, which typically only has request pads.  For linking and subsequent negotiation to succeed,
+       a stream must manage to get the request pad it really needs and is compatible with. That means that the element connecting to the muxer (or trying so) should provide  enough  (static)  information  to
+       identify  the corresponding muxer pad (template).  As this information is typically derived from the connecting element's pad templates, it is not quite comfortable to try connecting a generic element
+       (e.g. queue). If this were needed, or there is some or the other problem connecting to the muxer, then it may be helpful to use a capsfilter (aka as a filtered connection) or to specifically  indicate
+       the desired muxer pad (by a name corresponding to the intended template, as in example Pass-through transcoding), see also gst-launch(1) for specific syntax in either case.
+
+       Muxer  and Queue.  In the particular case of a transcoding pipeline (having some media-file as source), some other care is needed to make sure it does not stall, i.e.  simply block without any notifi‐
+       cation (or an application having a chance to do something about it). Specifically, a muxer will often block a thread on its incoming pad until it has enough data across all of its pads for it to  make
+       a decision as to what to mux in next.  Evidently, if a single (demuxer) thread were having to provide data to several pads, then stalling would almost surely occur. As such, each of these pads/streams
+       should have its own thread. In case of live sources, this is usually already the case, e.g. separate video and audio capturing threads.  However, when transcoding,  and  therefore  demuxing  an  input
+       file,  a  queue should be inserted into each outgoing stream to act as a thread boundary and supply a required separate thread.  In addition, this multi-threading will evidently also spread processing
+       across several CPUs (if available) and improve performance. In this respect, it can also be beneficial to use more than 1 queue/thread per stream; one that performs filter processing (if any) and  one
+       that performs encoding.
+
+       Note  that  similar  stalling  can  also occur in some variations of these circumstances. For instance, tee could have the role of demuxer in the above story, and/or a collection of several sinks in a
+       pipeline could act as a muxer in the above story, since they will each also block a thread in PAUSED state (when the pipeline is trying to make it to that state).  Another  such  situation  can  arise
+       (temporarily)  when  pads  are  blocked  as part of the seek-mechanism. In any case, the remedy is the same; use queues to prevent one thread from having to go around in too many places, and ending up
+       stuck in one of them.
+
+       Muxer and Time(stamps).  Even if the above is taken into account, the time-sensitivity of a typical muxer may lead to (at first sight mysterious) stalling (in transcoding pipelines). That is, a  muxer
+       will  usually  examine  the timestamps of the incoming data, select the oldest of these to be put into the outgoing stream and then wait for new data to arrive on this selected input stream (i.e. keep
+       other streams/threads wait'ing).  It follows easily that if there is a gap, imbalance, imperfection, irregularity (or however described) in timestamps between various incoming streams,  a  muxer  will
+       then consistently/continuously expect/want more data on 1 particular pad (for some amount proportional to the irregularity).  For some time, this need could be satisfied by the queues that are present
+       in this stream. At some point, however, these may not hold enough data and will need further input from the upstream demuxer element.  However, for this demuxer to provide data for 1 of its (outgoing)
+       streams,  it  will also need to output data for the other streams, and this ends up into the other streams' queues. Unfortunately, in this situation those queues cannot send out any data, as the muxer
+       is holding their threads (blocked). Hence, they will (soon) fillup and then in turn block the demuxer thread trying to insert data, until there is again space available. Consequently, a deadlock  cir‐
+       cle  ensues; muxer waiting for new data from queue, waiting for data from demuxer, waiting for space to put this into another stream queue, waiting to unload data into the muxer.  Note that this dead‐
+       lock phenomenom will not occur with live (recording) pipelines, as the various threads are then not joined to a single demuxer (thread), though it is then likely to  manifest  itself  it  by  loss  of
+       (live) input data.
+
+       There a number of possible causes for the irregularities mentioned above.
+
+       • Rarely, but not impossibly so, the problem may be inherent in the very input medium itself. Or there could be a problem with a (experimental) demuxer that might produce incorrect timestamps.
+
+       • If  a (segment) seek is performed in a pipeline without using entransdam, it is quite likely that some stream(s) may perform proper filtering of out-of-segment-bound data, and that other(s) may not.
+         This would then cause a typical imbalance between the various streams.
+
+       • If timestamps are being resequenced in some incoming streams (e.g. by identity), but not in the other ones, there is an obvious imbalance.
+
+       • Though more exotic, even if entransdam is being used, one must take care to perform this filtering before (the by now clearly essential) queue in the respective  stream,  particularly  when  several
+         distinct sections are to be cut out of the input.  After all, if queue were placed before entransdam, then the latter does not have a chance to drop unneeded buffers soon enough.  As such, if a mux‐
+         er tries to get the first piece of data on a particular pad following the gap between the sections, these queues would fillup and be effectively as if they were not present.
+
+       Dynamic mode services.  Dynamic mode takes care of (most of) the above as follows:
+
+       • Pipeline building is performed almost completely automagically.  Of course, this does not mean it can fit a square into a circle, so some consideration for compatibility and negotiation is still  in
+         order.
+
+       • queues are inserted where needed and/or useful, either by decodebin or by entrans
+
+       • Whenever available (recommended), entransdam is used and inserted in proper locations.
+
+SEE ALSO
+       GStreamer homepage ⟨http://www.gstreamer.net/⟩ , gst-launch(1), entrans plugins ⟨http://gentrans.sourceforge.net/⟩
+
+AUTHOR
+       Mark Nauwelaerts <mnauw@users.sourceforge.net>
+
+                                                                                                     1.4.1                                                                                           entrans(1)

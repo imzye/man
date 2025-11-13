@@ -1,0 +1,835 @@
+MINIRSYSLOGD(8)         FreeBSD System Manager's Manual        MINIRSYSLOGD(8)
+
+NAME
+       minirsyslogd - highly efficient, minimalistic, remote-only syslog
+       receiver.
+
+SYNOPSIS
+       minirsyslogd [ --daemon ] [ --rootdir path ] [ --maxopen num ] [ --port
+       num ] [ --recvmode mode ] [ --split mode ] [ --oldtimestamp ] [
+       --pidfile filename ] [ --umask mask ] [ --maxopenspersec num ] [
+       --maxfilesize mbytes ] [ --bufsize bytes ] [ --verbose ]
+
+
+DESCRIPTION
+       Minirsyslogd is designed for one single thing: to receive lots of
+       syslog events via UDP from lots of hosts, and do so rapidly.  It is
+       suitable for centralized log receivers whose only purpose is to receive
+       data from multiple sources over the network.
+
+       Minirsyslogd will not receive events from local syslog sockets.  It
+       will not do forwarding, alerting, or perform any kind of excessive
+       logic. Look elsewhere for such functionality.
+
+       The maximum message size that minirsyslogd will handle is 8KB.  If a
+       host sends messages longer than that, they will be split into multiple
+       messages at the 8KB line(s) with no additional intelligence.
+
+
+
+   Quick Getting-Started Guide
+       The below steps are enough to get most installations up and running.
+
+
+       - Create a root directory for your logs, e.g. "/my/logs".
+         Make sure that its permissions and ownership, and the permissions and
+         ownership of all its parent directories, are secure - especially if
+         you plan on running minirsyslogd as root.
+
+
+       - Create subdirectories for the IP addresses you want to receive syslog
+         events from, e.g. "/my/logs/1.2.3.4", "/my/logs/2.3.4.5", etc.
+         Minirsyslogd will not automatically create directories; the
+         (non-)existance of a particular directory is, in fact, its ACL
+         (Access Control List).
+
+
+       - Execute minirsyslogd:
+           minirsyslogd --rootdir /my/logs
+         This will start minirsyslogd as a foreground application so you can
+         see what it is doing.  If everything looks good, you can stop it and
+         restart it with the --daemon switch.
+
+
+       A log file for the daemon itself, e.g. "minirsyslogd-20030930" should
+       immediately be created in the root directory, and contain events like:
+         2003-09-30T20:23:01.139972+02:00 startup: version="1.02" pid=29534
+       uid=500 gid=101 euid=500 egid=101
+         2003-09-30T20:23:01.139972+02:00 settings: rootdir="/my/logs"
+       maxopen=50 port=514 maxopenspersec=200 split=day recvmode=split
+         2003-09-30T20:23:01.139972+02:00 startup: minirsyslogd initialized.
+       listening on 1234/udp
+
+       See DIAGNOSTICS for help if minirsyslogd fails to start.
+
+       New subdirectories may also be created while minirsyslogd is running.
+       Giving it a "kill -HUP" after doing so may be a good idea, but is
+       strictly speaking not necessary; it will pick up on the existance of
+       the new directory at the turn of the hour, at the latest.
+
+       You may also want to add a call to start minirsyslogd in your system
+       startup scripts.
+
+       For a central syslog receiver, it may also be a good idea to start
+       minirsyslogd with a priority slightly above the system default, e.g.
+         nice --3 ./minirsyslogd --daemon
+       to avoid ending up with for instance log analysis jobs getting in the
+       way of syslog reception.
+
+       It is also a very good idea to read at least the rest of the
+       DESCRIPTION section of this man page.
+
+
+
+   Basic idea of operation
+       -  Receive inbound UDP syslog packets on a port of the user's choice.
+          Do NOT deal with local syslog sockets! This is remote only.
+
+
+       -  Do very simple reformatting of the received event as per the
+          --recvmode switch. This basically only deals with control characters
+          and newlines in the events.
+
+
+       -  Store in a structured way according to sender IP, e.g.:
+          "./192.168.0.123/192.168.0.123-2002102407" (The timestamp is
+          YYYYMMDDHH, or YYYYMMDD with --split day).
+
+
+       -  Open files always close at the turn of the hour.
+
+
+       -  Do NOT create directories automatically.  The existance/nonexistance
+          of a destination directory is the Access Control List of the
+          receiver.
+
+
+       -  If the open file table is full, a random file will be closed to
+          allow a new one to be opened. This is better than it sounds;
+          definitely a LOT better than "closing the oldest one".
+
+
+       -  Once an hour: Close all open output files.  Output a list IP
+          addresses denied access to the minirsyslogd-YYYYMMDD file.  The size
+          of this list is limited to 10 entries.
+
+
+       -  Do nothing else, as per the KISS principle.
+
+
+
+   Log file rotation
+       Minirsyslogd always appends a timestamp to the files that it creates,
+       and starts a new file at the turn of the hour/day (depending on the
+       --split switch).  Manual log file rotation is not necessary.
+
+       Example file names, in split-by-hour mode:
+         /my/logs/1.2.3.4/1.2.3.4-2003123100
+         /my/logs/1.2.3.4/1.2.3.4-2003123101
+         /my/logs/1.2.3.4/1.2.3.4-2003123102
+         [...]
+         /my/logs/1.2.3.4/1.2.3.4-2003123123
+         /my/logs/1.2.3.4/1.2.3.4-2004010100
+                                  ^^^^^^^^^^
+                                  YYYYMMDDHH
+
+       However, this leaves the issues of log file compression and deletion.
+
+       Example for gzipping all of yesterday's files (using day splitting):
+           gzip [0-9]*/[0-9]*-`
+             gawk 'BEGIN {
+             print strftime("%Y%m%d", systime()-22*3600);
+             exit(0);
+             }'`
+
+       Example for gzipping all of yesterday's files (using hour splitting):
+           gzip [0-9]*/[0-9]*-`
+             gawk 'BEGIN {
+             print strftime("%Y%m%d", systime()-22*3600);
+             exit(0);
+             }'`[0-2][0-9]
+
+       The above examples can safely be run anywhere between 00:00 and 22:00
+       each day, any number of times.
+
+       Example for deleting all files that are 100 days old (using any
+       splitting, compressed or not)
+              rm -f [0-9]*/[0-9]*-`
+                gawk 'BEGIN {
+                print strftime("%Y%m%d", systime()-100*24*3600);
+                exit(0);
+                }'`*
+
+       The above example can safely be run between 01:00 and 23:00 (assuming
+       perfect clock synchronization, you may want to allow for a few minutes
+       of drift) each day, any number of times.
+
+       A more sophisticated setup would be able to work with files of any age,
+       in case the maintenance scripts fail to run one day, but this is beyond
+       the scope of this document.  The above examples will also break when
+       the command line becomes too long in the expansion, but they should
+       work with "dozens" of syslog sources even in hour splitting mode.
+
+
+
+
+   Log file sizes
+       Minirsyslogd will limit the size of its output files according to the
+       --maxfilesize switch.  This value defaults to 2000 megabytes.  It will
+       never create output files larger than 2GB, as this leads to abrupt
+       process exits or other problems under many OSes and/or libc
+       implementations.  To counter this limit, minirsyslogd splits its output
+       files every hour, by default.
+
+       Minirsyslogd will not split files because of the size limit being
+       exceeded.  This serves as a rudimentary flood protection.
+
+
+   How many output files to keep open
+       Minirsyslogd defaults to keeping up to 50 output files open
+       simultaneously.  This can be changed through the --maxopen switch, and
+       is limited by what your operating system and/or libc supports.  There
+       is also a hard-coded limit in minirsyslogd itself (see #define
+       MAX_DESTS in minirsyslogd.c), which is currently set to 1000.
+       As an example, Debian Linux on x86 platforms supports slightly over
+       1000 open files (and is hence limited by the above 1000-file limit).
+
+       High-activity units, for instance firewalls that log every connection
+       that opens and closes, basically need one file each, as they constantly
+       generate activity.
+
+       Low-activity units, for instance switches that only log power events
+       and ports going up and down, can have dozen of units "sharing" a single
+       slot.  A thousand low-activity units can likely get away with only 50
+       open files.
+
+       If you have too few open files, minirsyslogd will need to close and
+       open its files constantly, which will lead to high system load and
+       possibly lost syslog events. Examine the "statistics:" events in the
+       minirsyslogd-YYYYMMDD files: the "opens=" field will tell you how many
+       files were opened each hour.  Values in the thousands is OK. Perhaps
+       even values in the low tens of thousands.  Values in the high tens of
+       thousands or higher than that is most likely not OK.
+
+       Note that the --maxopenspersec switch can put a cap on the number of
+       files that minirsyslogd will attempt to open each second. It defaults
+       to 200 (720,000 per hour), which is a very high number.
+
+       See the DIAGNOSTICS section for more information about relevant status
+       messages.
+
+
+
+   How to receive local syslog events
+       Minirsyslogd is not meant for receiving events from the local system;
+       it does not implement the local sockets/streams necessary to do this on
+       its own.
+
+       If, however, you for some reason want minirsyslogd to handle storage of
+       your local logs, you can always run your syslogd in local-only mode
+       (this tends to be the default) and have it pass everything on to
+       minirsyslogd on 127.0.0.1. Minirsyslogd will then receive these events
+       from the same address: 127.0.0.1.
+
+       To set up this type of forwarding, add a line like this to your
+       /etc/syslog.conf file:
+
+       *.*  @127.0.0.1
+
+       and create a "127.0.0.1" subdirectory in your minirsyslogd root
+       directory to allow syslog events from this address.
+
+
+
+OPTIONS
+       --daemon
+              Run minirsyslogd as a daemon (in the background).  You most
+              likely want to do this, except perhaps on the first trial run.
+
+
+       --rootdir path
+              Tell minirsyslogd where to store its logs. Minirsyslogd's own
+              logs will end up in this directory, and logs from syslog sources
+              in subdirectories beneath it, named according to their numerical
+              IP addresses.
+              Default: . (current directory)
+
+       --maxopen num
+              Specifies how many output files to keep open simultaneously.
+              See "How many output files to keep open", above.
+              Default: 50
+
+
+       --port num
+              Specifies which UDP port to listen on. Note that only the root
+              user can bind ports lower than 1024. See the CAVEATS section.
+              Default: 514
+
+
+       --recvmode mode
+              The "receive mode" controls how minirsyslogd will treat control
+              characters in the received syslog events.  Control characters
+              should not be present in events according to the syslog
+              specification, but applications sometimes include them anyway,
+              and there is of course no telling what attackers might do.
+              Possible values are truncate, split, flat, forensic and
+              forensicraw.  See "Receive modes", below.
+              Default: split
+
+
+       --split mode
+              Controls splitting of output files. There are only two such
+              modes:
+              day, which splits the output files each day and appends
+              -YYYYMMDD, and
+              hour, which splits them hourly and appends -YYYYMMDDHH.
+              Note the log size limitations outlined in "Log file sizes",
+              above, before changing this setting.
+              Default: hour
+
+
+       --oldtimestamp
+              Instructs minirsyslogd to use syslogd-compatible timestamps, "01
+              Oct 00:24:30", in its output files rather than RFC3339
+              timestamps, "2003-10-01T00:24:30.123456+02:00", which is the
+              default.
+
+
+       --pidfile filename
+              Specifies where to write the PID (process ID) of the
+              minirsyslogd process.
+              Default: /var/run/minirsyslogd[-1234].pid
+              The [-1234] (port number) is appended if minirsyslogd listens on
+              a port different from 514.
+
+
+       --umask mask
+              Specifies the umask of the files that minirsyslogd creates.
+              It defaults to 077, which means that files will be created as
+              "-rw-------".
+              Setting it to 037 to have files created as "-rw-r-----" is
+              likely a good idea if log analysis jobs run as a different user
+              than (but in the same group as) the minirsyslogd process itself.
+              007 ("-rw-rw----") is necessary if said user also does log file
+              compression.
+
+
+       --maxopenspersec num
+              This setting controls how many files minirsyslogd is allowed to
+              open each second.  It functions as a sort of sanity filter, and
+              may be used for some measure of protection against event storms
+              from varying IP addresses.
+              This function is more or less useless in a setup with more open
+              files than allowed syslog sources, but may help in other
+              scenarios.
+              The default value is 200, which is very high. If this setting is
+              actively used, a good starting point is probably about 50 and
+              then experimenting from there.
+              Note that, if --maxopenfiles is higher than --maxopenspersec,
+              minirsyslogd will allow up to --maxopenfiles to be opened each
+              second the first two seconds each hour, and after SIGHUP is
+              received.
+
+
+       --maxfilesize mbytes
+              This setting controls the maximum size of files that
+              minirsyslogd creates.  See "Log file sizes" above.
+              Default: 2000 megabytes
+
+
+       --bufsize bytes
+              Tweaks the in-software (libc) write buffer size. The effects of
+              increasing the buffer size have not been properly researched,
+              but, for systems nearing their capacity, it may be worth while
+              to experiment with it.
+              Default: 16384 bytes
+
+
+       --verbose
+              Prints various status messages during startup and shutdown, and
+              when opening and closing log files.  Everything that normally
+              ends up in the local daemon log will also be printed.
+              Running minirsyslogd in verbose mode implicitly disables daemon
+              mode.
+
+
+
+   Receive modes
+       The following is a list of receive modes that may be specified using
+       the --recvmode switch:
+
+
+       truncate
+              The event will be truncated at the first LF (new line)
+              encountered.  Additionally, all ASCII codes 0-31 and 128-159
+              will be converted to spaces.
+
+
+       flat   All ASCII codes 0-31 and 128-159 will be converted to spaces,
+              including LF.  In other words: multiple lines will appear as a
+              single line.
+
+
+       split  If the received data contains LFs, it will be split up into
+              multiple events; one per line.  Additionally, ASCII codes 0-31
+              and 128-159 will be converted to spaces.
+              This is the default receive mode
+
+
+       forensic
+              LFs are left untouched.  Additionally, ASCII codes 0-31 and
+              128-159 will be converted to spaces.  The event will be prefixed
+              by a character count to allow correct parsing, e.g.
+                2003-10-02T12:45:56.123456 127.0.0.1 57 First line of event
+                Second line of event
+                Last line of event
+                2003-10-02T12:45:56.234567 127.0.0.1 10 Next event
+
+
+       forensicraw
+              Like forensic, except control codes are left untouched.  The
+              only character that receives special treatment is the NUL
+              character (ASCII code 0), which is converted to space.
+
+
+
+
+
+EXAMPLES
+       minirsyslogd
+              Execute minirsyslogd with all values set to default, running as
+              a foreground application.  This is suitable for running from Dan
+              Bernstein's "daemontools" (http://cr.yp.to/daemontools.html) and
+              Gerrit Pape's "runit" (http://smarden.org/runit/).
+
+
+       nice --3 minirsyslogd --daemon --rootdir /my/logs
+              Execute minirsyslogd as a daemon in the correct root directory,
+              with all values set to default, and running at a slightly higher
+              priority than normal.  This is good enough for most
+              installations.  Performance tweaking is however necessary for
+              large installations; see especially the --maxopen switch.
+
+
+
+       minirsyslogd --port 1234
+              Listen on port 1234 instead of the default: 514.  Useful for
+              running as an unprivileged user; perhaps with a packet filter
+              that redirects requests from port 514 to the unprivileged port.
+
+
+       minirsyslogd --maxopen 200
+              Keep up to 200 output files open for write simultaneously,
+              instead of the default: 50. Adjusting this is likely necessary
+              for large installations.
+
+
+
+
+SIGNALS
+       SIGHUP Cause minirsyslogd to immediately flush any cached output and
+              close all output files.  Closed files will, naturally, be re-
+              opened as necessary after the HUP.
+              Useful for log analyzers that run more often than hourly.
+              Example: kill -HUP `cat /var/run/minirsyslogd.pid`
+
+
+       SIGTERM and SIGINT
+              Minirsyslogd traps SIGTERM (default "kill" signal) and SIGINT
+              (ctrl-c) and attempts to exit gracefully.  If either signal is
+              received again while the shutdown is in progress, minirsyslogd
+              is forcefully terminated.
+
+
+       Note that SIGHUP is also useful to get minirsyslogd to stop caching a
+       negative decision.  The fact that a certain directory does not exist is
+       cached, so if you've just created a new directory, and log data does
+       not arrive, you may want to give minirsyslogd a HUP to have it forget
+       about the cached decision immediately rather than waiting until the
+       turn of the hour.
+
+
+
+
+
+
+FILES
+       Minirsyslogd has no configuration / input files. Assuming a root
+       directory of "/my/logs", it will create output files like the
+       following:
+
+
+       /my/logs/minirsyslogd-YYYYMMDD
+              Events concering the operation of minirsyslogd itself, e.g.
+              starting and stopping, errors, hourly usage statistics, and
+              reports of disallowed syslog senders.
+
+
+       /my/logs/1.2.3.4/1.2.3.4-YYYYMMDD[HH]
+              Events from the IP address in question - 1.2.3.4 in this
+              example.  The [HH] (hour) is appended unless minirsyslogd was
+              started with the --split day switch.
+
+
+       /var/run/minirsyslogd[-1234].pid
+              Contains the PID (process ID) of minirsyslogd.  The [-1234]
+              (port number) is appended if minirsyslogd is listening on a port
+              different from the default: 514/udp.  The name of this file may
+              also be specified via the --pidfile switch.
+
+
+
+
+
+CAVEATS
+   Port numbers below 1024
+       Minirsyslogd will not drop privileges, so to bind the default syslog
+       port (514/udp), you will have to run it as root.  To the best of the
+       author's knowledge, this should not be dangerous, given the simplistic
+       design of minirsyslogd, but the author is only human, and humans make
+       mistakes.
+
+       A different approach may be to use a packet filter to redirect packets
+       to port 514 to some high port and have minirsyslogd listen there as an
+       unprivileged user.
+
+
+
+   Standards compliance
+       Minirsyslogd breaks the syslog "standard" in three ways:
+
+       - By default, minirsyslogd uses RFC3339 timestamps, e.g.
+         "2003-09-30T20:37:12.123456+02:00".  The original syslog
+         implementation uses timestamps like "Sep 30 20:37:12".
+
+       - Minirsyslogd will not use and/or remove timestamps from the received
+         events.  If the event contains a timestamp, it will be displayed
+         unmodified after minirsyslogd's own timestamp.
+
+       - Minirsyslogd will not strip the severity/facility tag, e.g. "<123>"
+       from the received events.
+         The tag will be visible in the stored event.
+
+       The author believes that these deviations are all Good Things.
+
+
+
+   No out-of-diskspace checking
+       Minirsyslogd will not perform any kind of diskspace checking.  If left
+       to its own, it will eventually fill the partition it uses for log
+       storage.
+
+
+
+   Abuse of the 'split' receive mode
+       An attacker that knows an allowed IP address can always flood the log
+       server, but this is slightly easier in the "split" receive mode than in
+       other modes: for each LF received, the server will prefix a timestamp
+       and IP address, over 40 bytes, when storing the event. Hence, to use up
+       2GB of disk space, an attacker need only send about 50MB over the
+       network.
+
+       Note that "split" is the default receive mode. This may be changed with
+       the --recvmode switch.
+
+
+
+
+DIAGNOSTICS
+   Status messages in ./minirsyslogd-YYYYMMDD files
+       - startup: version="1.02" pid=n uid=n gid=n euid=n egid=n
+              This message is logged at startup, fairly early on.  If it does
+              not appear, minirsyslogd either failed to parse its arguments,
+              or tried to write to a completely different log file, maybe
+              because of --rootdir pointing to the wrong place.
+
+
+       - settings: rootdir="path" maxopen=n port=n maxopenspersec=n split=mode
+       recvmode=mode
+              These values reflect various minirsyslogd switches.
+
+
+       - startup: backgrounding (daemonizing)
+              This message is logged fairly early at startup if the --daemon
+              switch is used, before actually daemonizing the process.
+
+
+       - startup: minirsyslogd initialized. listening on port/udp
+              This message is logged when minirsyslogd is completely
+              initialized, just before it starts receiving log events.
+
+
+       - statistics: opens=num recvd=bytes
+              This message is logged every hour.
+              "opens": the number of file open attempts during the past hour,
+              successful or not.
+              "recvd": the number of bytes received during the past hour;
+              guaranteed to always contain at least seven digits (zero
+              prefixed if necessary), and may count up to 4294967295999999 (4
+              petabytes).
+
+
+       - signal: got SIGHUP - flushing and closing all open files
+
+       - signal: back from SIGHUP - all files including local daemon log were
+       closed These two messages occur when minirsyslogd was "kill -HUP"ed.
+              All files are closed, and minirsyslogd is almost completely
+              reinitialized.
+
+
+       - shutdown: version="1.02" pid=n uid=n gid=n euid=n egid=n
+              This is the last message logged before minirsyslogd exits.
+              Minirsyslogd will normally attempt to trap SIGTERM and SIGINT
+              and exit gracefully. If it did so successfully, this message
+              appears, otherwise: not.
+
+
+
+   Common warning messages in ./minirsyslogd-YYYYMMDD files
+       These warning / status messages can all be caused by the behavior of a
+       third party (syslog source).
+
+
+       - drop: failed ipaddr num times
+              Minirsyslogd keeps track of the 10 first disallowed hosts each
+              hour, and how many log messages they sent.
+              These events are reported once an hour, at which point the list
+              is cleared and the process starts over.
+
+
+       - drop: failed * num times
+              In addition to the 10 individually tracked hosts (above),
+              minirsyslogd keeps track of disallowed messages that did not
+              belong to one of the individually tracked hosts.
+              These events are reported once an hour, at which point the
+              counter is cleared and the process starts over.
+
+
+       - drop: maximum file length (length) exceeded for filename
+              This message appears when the size of a file exceeds the maximum
+              configured file size, controlled by the --maxfilesize switch.
+              A similar message will also appear in the file itself.
+
+
+       - drop: ignored num file open attempts. maxopenspersec (num) exceeded
+              This message may be logged at most once a second.  If it occurs
+              often, it means one of three things:
+              1. Your syslog receiver is being flooded (you are under attack)
+              2. --maxopens is set too low, and minirsyslogd continuously
+              closes and reopens files
+              3. --maxopenspersec is simply set too low
+
+
+       - drop: ignored num file open attempts. maxopen (num) exceeded during a
+       single second
+              During the first two seconds after startup, of each hour, and
+              after receiving a SIGHUP, minirsyslogd allows up to --maxopen
+              files per second to be opened, given that this setting is
+              actually higher than --maxopenspersec.
+              If this limit is overrun, this message will be logged rather
+              than the previous one.
+
+
+
+
+   Uncommon warning messages in ./minirsyslogd-YYYYMMDD files
+       These messages are indicative of something that may be worth your
+       attention.  Minirsyslogd keeps running.
+
+
+       - warning: could not get length of filename: reason
+           When reopening existing log files, minirsyslogd needs to find out
+           their current size.  If this fails, this message appears.  The file
+           will be treated as unwritable and no logging will occur for the
+           affected syslog source until minirsyslogd moves on to the next file
+           (hour/day).
+
+
+       - warning: failed to write to pidfile 'filename'
+           Minirsyslogd could not write to the process ID tracking file, which
+           defaults to /var/run/minirsyslogd[-1234].pid.  This is not a fatal
+           error.
+           If minirsyslogd runs as an unprivileged user, you should use the
+           --pidfile switch to specify a different file; perhaps even
+           /dev/null.
+
+
+
+
+
+   Fatal error messages in ./minirsyslogd-YYYYMMDD files
+       These messages result in minirsyslogd terminating.
+
+
+       - fatal: out of memory mallocing destination descriptors
+              This indicates that your computer / user is severely low on
+              memory, or that --maxopen is set too high (although the latter
+              is unlikely).
+
+
+       - fatal: fork n: reason
+              This message is most likely indicative of the user running
+              minirsyslogd having its process ulimit set too low.  When
+              daemonizing, three forked minirsyslogd processes will exist
+              during a short period of time.
+              The reason should tell you more.
+
+
+       - fatal: socket: reason
+              This basically should not happen. See the reason.
+
+
+
+       - fatal: bind: reason
+              Minirsyslogd could not listen on the given port.  Reasons for
+              this include:
+              1. some other process already listening on the port - another
+              copy of minirsyslogd? the default syslogd?
+              2. minirsyslogd is running as an unprivileged user but tried to
+              bind a port below 1024.  In this case the reason should be
+              "Permission denied".  A resolution could be using the "--port"
+              parameter to bind a different port.
+
+
+       The above errors can only happen during initialization.
+
+
+       As far as the author knows, the only error that can get minirsyslogd to
+       exit once it is up and running is not being able to open its local log
+       file: ./minirsyslogd-YYYYMMDD. This error can not, however, be recorded
+       in the minirsyslogd log file, for obvious reasons.
+
+
+
+   Messages that appear in individual log files
+       - minirsyslogd <44>Maximum file length (num) exceeded for filename
+              When the size of a log file exceeds the maximum allowed file
+              size, this message is logged as the last message in the file.
+              No more data is written to the file.  A log event is also
+              generated in the .nirsyslogd-YYYYMMDD file.
+
+
+
+
+
+BUGS
+       Minirsyslogd does not properly check and report the reason why an
+       output file could not be created, and assumes that it is because the
+       target directory is not there, i.e. that the administrator does not
+       allow syslog events from the IP address in question.
+
+
+
+
+
+RESTRICTIONS
+       The UDP syslog protocol is insecure and unreliable. This means that an
+       attacker can read any messages that he gets hold of, and inject
+       messages from known-allowed addresses.  Packet loss between the sender
+       and receiver goes uncorrected and undetected.
+       This is beyond the scope of any log receiver to fix. It is simply a
+       property of UDP syslog.
+
+
+
+
+AUTHOR
+       Written by Mikael Olsson <mikael.olsson@clavister.com>.
+
+
+
+
+TERMS OF USE
+       Minirsyslogd is released into the public domain, and, as such, is
+       provided "AS IS".  Do with it what you wish.  I'll happily consider
+       adding relevant improvements to it, but be warned: I won't personally
+       host anything called 'minirsyslogd' that grows to include a full-sized
+       ruleset, alerting, etc...
+
+
+
+
+SEE ALSO
+       syslog-ng
+              BalaBit's syslog-ng is a much more full-featured log receiver,
+              and consequently also slower and, at least according to the laws
+              of complexity, more (security?) bug prone.  The author of
+              minirsyslogd happily uses it for local syslog messages.
+              http://www.balabit.com/products/syslog_ng/
+
+
+       syslogd
+              The original syslog daemon implementation. Very limited and, in
+              most implementations, slow. Unsuitable for receiving syslog
+              events from remote sources.
+
+
+       socklog
+              Gerrit Pape's small and secure syslog replacement. Has a few
+              features that standard syslogd does not have, including logfile
+              rotation and better remote reception management.
+              http://smarden.org/socklog/
+
+
+       RFC3164 - The BSD syslog Protocol
+              http://www.ietf.org/rfc/rfc3164.txt
+
+
+       RFC3339 - Date and Time on the Internet: Timestamps
+              http://www.ietf.org/rfc/rfc3339.txt
+
+
+
+
+
+
+QUESTIONS AND ANSWERS
+       How do I do log file rotation with minirsyslogd?
+           Minirsyslogd always rotates its logs according to day/hour. Out of
+           the box.
+
+
+       How do I split output files per facility / severity?
+           You don't, and I don't intend to add support for it. It increases
+           the strain on the file layer substantially; continously opening and
+           closing lots of little files is rather expensive. Write smarter log
+           analysis scripts instead; the facility/severity tag is included in
+           the stored events.
+
+
+
+       Will you add uid switching so minirsyslogd can bind low ports but run
+       as an unprivileged user?
+           Maybe. Convince me that it is necessary.
+
+
+       Will you add mail reporting / piping into other processes / etcetc
+           No.
+
+
+       Will you add reception of local syslog events?
+           No. All OSes do it differently, so that's a LOT of code for
+           something that is supposed to be minimalistic. See however "How to
+           receive local syslog events".
+
+
+
+       Can I add stuff to minirsyslogd myself and redistribute?
+           Yes. But if you turn it to something completely different, please
+           rename it in the interest of reducing confusion.  A quick credit
+           note would also be appreciated but is in no way necessary.
+
+
+       Can I submit patches to you?
+           Yes. If I think that they are relevant to a "minimalistic, secure,
+           remote-only syslog receiver", I will happily add them (and give
+           credit in this man page).
+
+
+
+
+
+HISTORY
+       There never was a version 1.0. Paul Robertson added his two cents.
+
+Version 1.02                    30 October 2003                MINIRSYSLOGD(8)

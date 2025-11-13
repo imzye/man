@@ -1,0 +1,115 @@
+Net::HTTPS::NB(3pm)                                                                 User Contributed Perl Documentation                                                                 Net::HTTPS::NB(3pm)
+
+NAME
+       Net::HTTPS::NB - Non-blocking HTTPS client
+
+SYNOPSIS
+       Example of sending request and receiving response
+                   use strict;
+                   use Net::HTTPS::NB;
+                   use IO::Select;
+                   use Errno qw/EAGAIN EWOULDBLOCK/;
+
+                   my $s = Net::HTTPS::NB->new(Host => "pause.perl.org") || die $@;
+                   $s->write_request(GET => "/");
+
+                   my $sel = IO::Select->new($s);
+
+                   READ_HEADER: {
+                           die "Header timeout" unless $sel->can_read(10);
+                           my($code, $mess, %h) = $s->read_response_headers;
+                           redo READ_HEADER unless $code;
+                   }
+
+                   # Net::HTTPS::NB uses internal buffer for reading
+                   # so we should check it before socket check by calling read_entity_body()
+                   # it is error to wait data on socket before read_entity_body() will return undef
+                   # with $! set to EAGAIN or EWOULDBLOCK
+                   # make socket non-blocking, so read_entity_body() will not block
+                   $s->blocking(0);
+
+                   while (1) {
+                           my $buf;
+                           my $n;
+                           # try to read until error or all data received
+                           while (1) {
+                                   my $tmp_buf;
+                                   $n = $s->read_entity_body($tmp_buf, 1024);
+                                   if ($n == -1 || (!defined($n) && ($! == EWOULDBLOCK || $! == EAGAIN))) {
+                                           last; # no data available this time
+                                   }
+                                   elsif ($n) {
+                                           $buf .= $tmp_buf; # data received
+                                   }
+                                   elsif (defined $n) {
+                                           last; # $n == 0, all readed
+                                   }
+                                   else {
+                                           die "Read error occured: ", $!; # $n == undef
+                                   }
+                           }
+
+                           print $buf if length $buf;
+                           last if defined $n && $n == 0; # all readed
+                           die "Body timeout" unless $sel->can_read(10); # wait for new data
+                   }
+
+       Example of non-blocking connect
+                   use strict;
+                   use Net::HTTPS::NB;
+                   use IO::Select;
+
+                   my $sock = Net::HTTPS::NB->new(Host => 'encrypted.google.com', Blocking => 0);
+                   my $sele = IO::Select->new($sock);
+
+                   until ($sock->connected) {
+                           if ($HTTPS_ERROR == HTTPS_WANT_READ) {
+                                   $sele->can_read();
+                           }
+                           elsif($HTTPS_ERROR == HTTPS_WANT_WRITE) {
+                                   $sele->can_write();
+                           }
+                           else {
+                                   die 'Unknown error: ', $HTTPS_ERROR;
+                           }
+                   }
+
+       See `examples' subdirectory for more examples.
+
+DESCRIPTION
+       Same interface as Net::HTTPS but it will never try multiple reads when the read_response_headers() or read_entity_body() methods are invoked. In addition allows non-blocking connect.
+
+       If read_response_headers() did not see enough data to complete the headers an empty list is returned.
+       If read_entity_body() did not see new entity data in its read the value -1 is returned.
+
+PACKAGE CONSTANTS
+       Imported by default
+
+               HTTPS_WANT_READ
+               HTTPS_WANT_WRITE
+
+PACKAGE VARIABLES
+       Imported by default
+
+               $HTTPS_ERROR
+
+METHODS
+   new(%cfg)
+       Same as Net::HTTPS::new, but in addition allows `Blocking' parameter. By setting this parameter to 0 you can perform non-blocking connect. See connected() to determine when connection completed.
+
+   connected()
+       Returns  true  value  when  connection  completed  (https  handshake  done).  Otherwise  returns false. In this case you can check $HTTPS_ERROR to determine what handshake need for, read or write.
+       $HTTPS_ERROR could be HTTPS_WANT_READ or HTTPS_WANT_WRITE respectively. See "SYNOPSIS".
+
+   blocking($flag)
+       As opposed to Net::HTTPS where blocking method consciously broken you can set socket blocking. For example you can return socket to blocking state after non-blocking connect.
+
+SEE ALSO
+       Net::HTTP, Net::HTTP::NB, Net::HTTPS
+
+COPYRIGHT
+       Copyright 2011-2015 Oleg G <oleg@cpan.org>.
+
+       This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+perl v5.34.0                                                                                     2022-06-16                                                                             Net::HTTPS::NB(3pm)

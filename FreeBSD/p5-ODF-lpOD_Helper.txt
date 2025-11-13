@@ -1,0 +1,657 @@
+ODF::lpOD_Helper(3)   User Contributed Perl Documentation  ODF::lpOD_Helper(3)
+
+
+NAME
+       ODF::lpOD_Helper - fix and enhance ODF::lpOD
+
+SYNOPSIS
+         use ODF::LpOD;
+         use ODF::LpOD_Helper;
+         use feature 'unicode_strings';
+
+         # Find "Search Phrase" even if it is segmented or crosses span boundaries
+         @matches = $context->Hsearch("Search Phrase");
+
+         # Replace every occurrence of "Search Phrase" with "Hi Mom"
+         $body->Hreplace("Search Phrase", ["Hi Mom"], multi => TRUE)
+           or die "not found";
+
+         # Replace "{famous author}" with "Stephen King" in bold, large red text.
+         #
+         $body->Hreplace("{famous author}",
+                         [["bold", size => "24pt", color => "red"], "Stephen King"]
+                        );
+
+         # Call a callback function to control replacement and searching
+         #
+         $body->Hreplace("{famous author}", sub{ ... });
+
+         # Work around bugs/limitations in ODF::lpOD::Element::insert_element
+         # so that position => WITHIN works when $context is a container.
+         #
+         $new_elt = $context=>Hinsert_element($thing, position=>WITHIN, offset=>...)
+
+         # Similar, but inserted segment(s) described by high-level spec
+         #
+         $context=>Hinsert_content([ "The author is ", ["bold"], "Stephen King"],
+                                   position=>WITHIN, offset => ... );
+
+         # Work around bug in ODF::lpOD::Element::get_text(recursive => TRUE)
+         # so that tab, line-break, and spacing objects are expanded correctly
+         #
+         $text = $context->Hget_text(); # include nested paragraphs
+
+         # Create or reuse an 'automatic' (pseudo-anonymous) style
+         $style = $doc->Hautomatic_style($family, properties...);
+
+         # Remove problematic 'rsid' styles left by LibreOffice which interfere
+         # with cloning content
+         $context->Hclean_for_cloning();
+         do_something( $context->clone );
+
+         # Format a node or entire tree for debug messages
+         say fmt_node($elt);
+         say fmt_tree($elt);
+
+       The following functions are exported by default:
+
+         The Hr_* constants used by the Hreplace method.
+         fmt_match fmt_node fmt_tree fmt_node_brief fmt_tree_brief
+
+DESCRIPTION
+       ODF::lpOD_Helper enables transparent Unicode support, provides higher-
+       level multi-segment text search & replace methods, and works around
+       ODF::lpOD bugs and limitations.
+
+       Styles and hyperlinks may be specified with a high-level notation and
+       the necessary span and style objects are automatically created and
+       fonts registered.
+
+Transparent Unicode Support
+       By default ODF::lpOD_Helper patches ODF::lpOD so that all methods
+       accept and return arbitrary Perl character strings.
+
+       You will always want this unless your application really, really needs
+       to pass un-decoded octets directly between file/network resources and
+       ODF::lpOD without looking at the data along the way. This can be
+       disabled for legacy applications.  Please see
+       ODF::lpOD_Helper::Unicode.
+
+       Currently this patch has global effect but might someday become scoped;
+       to be safe put "use ODF::lpOD_Helper" at the top of every file which
+       calls ODF::lpOD or ODF::lpOD_Helper methods.
+
+       Prior to version 6.000 transparent Unicode was not enabled by default,
+       but required a now-deprecated ':chars' import tag.
+
+METHODS
+       "Hxxx" methods are installed as methods of ODF::lpOD::Element so they
+       can be called the same way as native ODF::lpOD methods ('H' denotes
+       extensions from ODF::lpOD_Helper).
+
+   @matches = $context->Hsearch($expr)
+   $match = $context->Hsearch($expr, OPTIONS)
+       Finds $expr within the "virtual text" of paragraphs below $context (or
+       $context itself if it is a paragraph or leaf node).
+
+           Virtual Text
+
+           This refers to logically-consecutive characters irrespective of how
+           they are stored.  They may be arbitrarily segmented, may use the
+           special ODF nodes for tab, newline, and consecutive spaces, and may
+           be partly located in different spans.
+
+           By default all Paragraphs are searched, including nested paragraphs
+           inside frames and tables.  Nested paragraphs may be excluded using
+           option "prune_cond => 'text:p|text:h'".
+
+       Each match must be contained within a paragraph, but may include any
+       number of segments and need not start or end on segment boundaries.
+
+       A match may encompass leaves under different spans, i.e.  matching pays
+       no attention to style boundaries.
+
+       $expr may be a plain string or qr/regex/s.  \n matches a line-break.
+       Space, tab and \n in $expr match the corresponding special ODF objects
+       as well as regular PCDATA text.
+
+       OPTIONS may be
+
+         offset => NUMBER  # Starting position within the combined virtual
+                           # texts of all paragraphs in $context
+
+         multi  => BOOL    # Allow multiple matches? (FALSE by default)
+
+         prune_cond => STRING or qr/Regex/
+                           # Do not descend below nodes matching the indicated
+                           # condition.  See "Hnext_elt".
+
+       A match hashref is returned for each match:
+
+        {
+          match        => The matched virtual text
+          segments     => [ *leaf* nodes containing the matched text ]
+          offset       => Offset of match in the first segment's virtual text
+          end          => Offset+1 of end of match in the last segment's v.t.
+
+          para         => The paragraph containing the match
+          para_voffset => Offset of match within the paragraph's virtual text
+
+          voffset      => Offset of match in the combined virtual texts in $context
+          vend         => Offset+1 of match-end in the combined virtual texts
+        }
+
+       The following illustrates how the 'offset' OPTION works:
+
+                 Para.#1 ║ Paragraph #2 containing a match  │
+                 (ignored║  straddling the last two segments│
+                  due to ║                                  │
+                  offset)║                                  │
+                 ------------match voffset---►┊             │
+                 --------match vend---------------------►┊  │
+                         ║                    ┊          ┊  │
+                         ║              match ┊   match  ┊  │
+                         ║             ║-off-►┊ ║--end--►┊  │
+                 ╓──╥────╥──╥────╥─────╥──────┬─╥────────┬──╖
+                 ║xx║xxxx║xx║xxxx║xx...║......**║*MATCH**...║
+                 ║xx║xxxx║xx║xxxx║xxSEA║RCHED VI║IRTUAL TEXT║
+                 ╙──╨────╨──╨────╨──┼──╨────────╨───────────╜
+                 ┊─OPTION 'offset'─►┊
+
+       Note: "text:tab" and "text:line-break" nodes count as one virtual
+       character and "text:s" represents any number of consecutive spaces.  If
+       the last segment is a "text:s" then 'end' will be the number of spaces
+       included in the match.
+
+       RETURNS:
+
+           In array context, zero or more match hashrefs.
+
+           In scalar context, a hashref or undef if there was no match (option
+           'multi' is not allowed when called in scalar context).
+
+   Regex Anchoring
+       If $expr is a qr/regex/ it is matched against the combined virtual text
+       of each paragraph.  The match logic is
+
+          $paragraph_text =~ /\G.*?(${your_regex})/
+
+       with pos set to the position implied by $offset, if relevant, or to the
+       position following a previous match (when "multi => TRUE").
+
+       Therefore \A will match the start of the paragraph only on the first
+       match (when pos is zero), provided $offset is not specified or points
+       at or before the start of the current paragraph.
+
+       \z always matches the end of the current paragraph.
+
+   $context->Hreplace($expr, [content], multi => bool, OPTIONS)
+   $context->Hreplace($expr, sub{...},  OPTIONS)
+       Like "Hsearch" but replaces or calls a callback for each match.
+
+       $expr is a string or qr/regex/s as with "Hsearch".
+
+       In the first form, the first matched substring in the virtual text is
+       replaced with [content]; with "multi => TRUE", all instances are
+       replaced.
+
+       In the second form, the specified sub is called for each match, passing
+       a match hashref (see "Hsearch") as the only argument.  Its return value
+       determines whether any substitutions occur.  The sub must
+
+        return(0)
+
+           No substitution is done; searching continues.
+
+        return(Hr_SUBST, [content])
+
+           [content] is substituted for the matched text and searching continues,
+           starting immediately after the replaced text.
+
+        return(Hr_SUBST | Hr_STOP, [content])
+
+           [content] is substituted for the matched text and then "Hreplace"
+           terminates immediately.
+
+        return(Hr_STOP)
+
+           "Hreplace" just terminates.
+
+       "Hreplace" returns a list of zero or more hashes describing the
+       substitutions which were performed:
+
+         {
+           voffset      => offset into the total virtual text of $context of the
+                           the replacement (depends on preceding replacements)
+
+           vlength      => length of the replacement content's virtual text
+
+           para         => The paragraph where the match/replacement occurred
+
+           para_voffset => offset into the paragraph's virtual text
+         }
+
+       Note: The node following replaced text might be merged out of
+       existence.
+
+       [content] Specifications
+
+       A "[content]" value is a ref to an array of zero or more elements, each
+       of which is either
+
+       • A string which may include spaces, tabs and newlines, or
+
+       • A reference [list of format properties]
+
+       Each [list of format properties] describes a character style which will
+       be applied only to the immediately-following text string.
+
+       Format properties may be any of the key => value pairs accepted by
+       "odf_create_style", as well as these single-item abbreviations:
+
+         "center"      means  align => "center"
+         "left"        means  align => "left"
+         "right"       means  align => "right"
+         "bold"        means  weight => "bold"
+         "italic"      means  style => "italic"
+         "oblique"     means  style => "oblique"
+         "normal"      means  style => "normal", weight => "normal"
+         "roman"       means  style => "normal"
+         "small-caps"  means  variant => "small-caps"
+         "normal-caps" means  variant => "normal", #??
+
+         <NUM>         means  size => "<NUM>pt",   # bare number means point size
+         "<NUM>pt"     means  size => "<NUM>pt",
+
+       Internally, an ODF "automatic" Style is created for each unique
+       combination of properties, re-using styles when possible.  Fonts are
+       automatically registered.
+
+       To use an existing (or to-be-explicitly-created) ODF Style, use
+
+         [style_name => "name of style"]
+
+       Additionally, a text segment may be made into a hyperlink with these
+       pseudo-properties, which must appear before any others:
+
+         hyperlink       => "https://..."
+         visited_style   => "stylename"     # optional
+         unvisited_style => "stylename"     # optional
+
+       Regular format properties may follow (or not).
+
+   $node = $context->Hinsert_element($elem_to_insert, OPTIONS)
+       This is an enhanced version of ODF::lpOD::Element::insert_element().
+
+       • $context may be any node, including a textual leaf, a text container
+         (paragraph, heading or span), or an ancestor of a text container such
+         as the document body or a frame.
+
+         If option position => WITHIN then offset refers to the combined
+         Virtual Text of $context; the appropriate textual leaf is located and
+         split if appropriate.
+
+           If offset==0 then a PREV_SIBLING is inserted before the first
+           existing leaf if one exists (which may be $context itself, which
+           ODF::lpOD 1.015 does not handle correctly); otherwise a FIRST_CHILD
+           is inserted into $context if it is a text container, otherwise the
+           first descendant which is a text container (which must exist).
+
+           If offset > 0 and equals the total existing virtual length then a
+           NEXT_SIBLING is inserted after the last existing leaf.
+
+         If position => NEXT_SIBLING or PREV_SIBLING then $context must be a
+         textual leaf or a span.
+
+         If position => FIRST_CHILD or LAST_CHILD then $context must be a text
+         container.
+
+         In all cases, no segment merging occurs.
+
+       • The special ODF textual nodes (text:s, text:tab, text:line-break) are
+         handled and the characters they imply are counted by $offset when
+         inserting WITHIN $context.   If a text:s node representing multiple
+         spaces must be split then another text:s node is created to "contain"
+         the spaces to the right of $offset.
+
+       • Option "prune_cond => ..." may be used to ignore text in nested
+         paragraphs, frames, etc. when counting 'offset' with "position =>
+         WITHIN" (see "Hnext_elt").
+
+   $context->Hinsert_content([content], OPTIONS)
+       This is similar to Hinsert_element() except that multiple segments may
+       be inserted and they are described by a high-level [content]
+       specification.
+
+       [content] is the same as with "Hreplace".
+
+       If "[content]" includes format specifications, the affected text will
+       be stored inside a span using an "automatic" style.
+
+       If a new span would be nested under an existing span, the existing span
+       is partitioned and the new span hoisted up to the same level.
+
+       The first new node will be inserted at the indicated position relative
+       to $context and others will follow as siblings.
+
+       OPTIONS may contain:
+
+         position => ...  # default is FIRST_CHILD.  Always relative to $context.
+                          # See Hinsert_content herein and ODF::lpOD::Element.
+
+         offset   => ...  # Used when position is 'WITHIN', and counts characters
+                          # in the virtual text of $context
+
+         prune_cond => qr/^text:[ph]$/
+                          # (for example) ignore, i.e. skip over nested paragraphs
+
+         chomp => BOOL    # remove \n, if present, from the end of content
+
+       Returns a hashref:
+
+         {
+           vlength => total virtual length of the new content
+           # (currently no other public fields are defined)
+         }
+
+       To facilitate further processing, pre-existing segments are never
+       merged; Hnormalize() should later be called on $context or the nearest
+       ancestral container.
+
+   $boolean = $elt->His_textual()
+       Returns TRUE if $elt is a leaf node which represents text, either
+       PCDATA/CDATA or one of the special ODF nodes representing tab, line-
+       break or consecutive spaces.
+
+   $boolean = $elt->His_text_container()
+       Returns TRUE if $elt is a paragraph, heading or span.
+
+   $newelt = $elt->Hsplit_element_at($offset)
+       "Hsplit_element_at" is like XML::Twig's "split_at" but also knows how
+       to split text:s nodes.
+
+       If $elt is a textual leaf (PCDATA, text:s, etc.) it is split, otherwise
+       it's first textual child is split.  Even a single-character leaf may be
+       "split" if $offset==0 or 1, see below.
+
+       The "right half" is moved to a new next sibling node, which is
+       returned.
+
+       $offset must be between 0 and the existing length, inclusive.  If
+       $offset is 0 then all existing content is moved to the new sibling and
+       the original node will be empty upon return.  if $offset equals the
+       existing length then the new sibling will be empty.
+
+       If a text:s node is split then the new node will also be a text:s node
+       "containing" the appropriate number of spaces.  The 'text:c' attribute
+       will be zero if the node is "empty".
+
+       If a text:tab or text:line-break node is split then if $offset==0 the
+       new node will be an empty PCDATA node, or if $offset==1 the original
+       will be transmuted in-place to become an empty PCDATA node.
+
+   $context->Hget_text()
+   $context->Hget_text(prune_cond => COND)
+       Gets the combined "virtual text" in or below $context, by default
+       including in nested paragraphs (e.g. in Frames or Tables).  The special
+       nodes which represent tabs, line-breaks and consecutive spaces are
+       expanded to the corresponding characters.
+
+       Option prune_cond may be used to omit text below specified node types
+       (see "Hnext_elt").
+
+       Note
+
+       ODF::lpOD::TextElement::get_text() with option recursive -> TRUE looks
+       like it should do the same thing as Hget_text(), but it has bugs:
+
+       1.  The special nodes for tab, etc. are expanded only when they are the
+           immediate children of $context.  With the 'recursive' option
+           #PCDATA nodes in nested paragraphs are expanded but tabs, etc.  are
+           ignored.
+
+       2.  If $context is itself a text leaf, it is expanded only if it is a
+           #PCDATA node, not if it is a tab, etc. node.
+
+       I think get_text's "recursive" option was probably intended to include
+       text from paragraphs in possibly-nested frames and tables, and it was
+       an oversight that that special text nodes are not always handled
+       correctly.
+
+       Note that Hget_text is "recursive" by default; the 'prune_cond' option
+       is the only way to restrict recursion.
+
+   $context->Hnormalize();
+       Similar to XML::Twig's normalize() method but also "normalizes" text:s
+       usage.
+
+       Nodes are edited so that spaces are represented with the first or only
+       space in a #PCDATA node and subsequent consecutive spaces in a text:s
+       node.  Adjacent nodes of the same type are merged, and empties deleted.
+
+       $context may be any text container or ancestor up to the document body.
+
+   $next_elt = $prev_elt->Hnext_elt($subtree_root, $cond, $prune_cond);
+       This are like the "next_elt" method in XML::Twig but accepts an
+       additional argument giving a "prune condition", which if present
+       suppresses descendants of matching nodes.
+
+       A pruned node is itself returned if it also matches the primary
+       condition.
+
+       $subtree_root is never pruned, i.e. it's children are always visited.
+
+       If $prune_cond is undef then Hnext_elt works exactly like XML::Twig's
+       next_elt.
+
+   @elts = $context->Hdescendants($cond, $prune_cond);
+   @elts = $context->Hdescendants_or_self($cond, $prune_cond);
+       These are like the similarly-named non-H methods of XML::Twig but can
+       suppress descendants of nodes matching a "prune condition".
+
+       EXAMPLE 1: In an ODF document, paragraphs may contain frames which in
+       turn contain encapsulated paragraphs.  To find only top-level
+       paragraphs and treat frames as opaque:
+
+           # Iterative
+           my $body = $doc->get_body;
+           my $elt = $body;
+           while($elt = $elt->Hnext_elt($body, qr/^text:[ph]$/, 'draw:frame'))
+           { ...process paragraph $elt }
+
+           # Same thing but getting all the paragraphs at once
+           @paras = $body->Hdescendants(qr/^text:[ph]$/, 'draw:frame');
+
+       EXAMPLE 2: Get all the leaf nodes representing ODF text in a paragraph
+       (including under spans), and also any top-level frames; but not any
+       content stored inside a frame:
+
+           $para = ...
+           my $elt = $para;
+           while ($elt = $elt->Hnext_elt(
+                              $para,
+                             '#TEXT|text:tab|text:line-break|text:s|draw:frame',
+                             'draw:frame')
+                 )
+           { ...process PCDATA/CDATA/tab/line-break/spaces or frame $elt  }
+
+       If the $prune_cond parameter is omitted or undef then these methods
+       work exactly like the corresponding non-H methods.
+
+       "Hnext_elt", "Hdescendants" and "Hdescendants_or_self" "Hparent" and
+       "Hself_or_parent" are installed as methods of XML::Twig::Elt.
+
+   $node->Hparent($cond, [$stop_cond])
+       Returns the nearest ancestor which matches condition $cond.
+
+       If $stop_cond is defined, then 0 is returned if the search would ascend
+       above the nearest ancestor matching the stop condition.  Undef is
+       returned no ancestor matches either $cond or $stop_cond.
+
+       For example,
+
+         my $row = $elt->Hparent("table:table-row", "draw:frame");
+
+       would locate the table row containing $elt but return false if $elt was
+       encapsulated in a frame within an enclosing table row (0 result) or not
+       in a table at all (undef result).
+
+   $node->Hself_or_parent($cond, [$stop_cond])
+       Like "Hparent" but returns $node itself if it matches $cond.
+
+   $cond = Hor_cond(COND, ...)
+       This function combines multiple XML::Twig search conditions into a
+       condition which matches any of the input conditions (hence "or").  The
+       inputs may be any mixture of string, regex, or code-ref conditions.
+
+       Example:
+
+         use ODF::lpOD_Helper qw(:DEFAULT PARA_FILTER);
+         use constant MY_PARAORFRAME_FILTER => Hor_cond(PARA_FILTER, 'draw:frame');
+         ...
+         @elts = $context->descendants(MY_PARAORFRAME_FILTER)
+
+       This would collect all paragraphs or frames below $context.  Note that
+       "PARA_FILTER" might be 'text:p|text:h' or "qr/^text:[ph]$/" or "sub{
+       $_[0] eq 'text:p' || $_[0] eq 'text:h' }" etc.
+
+       "Hor_cond" optimizes a few regex forms into equivalent string
+       conditions, measured to be 30% faster.
+
+   $context->Hgen_style_name($family, SUFFIX)
+   $context->Hgen_table_name(SUFFIX)
+       Generate a style or table name not currently in use.
+
+       In the case of a style, the $family must be specified ("text", "table",
+       etc.).
+
+       SUFFIX is an optional string which will be appended to a generated
+       unique name to make recognition by humans easier.
+
+       $context may be the document itself or any Element.
+
+   $doc->Hautomatic_style($family, PROPERTIES...)
+       Find or create an 'automatic' (i.e. functionally anonymous) style with
+       the specified high-level properties (see "Hreplace").
+
+       Styles are re-used when possible, so the returned style object should
+       not be modified because it might be shared.
+
+       $family must be "text" or another supported style family name (TODO:
+       specify)
+
+       When family is "paragraph", PROPERTIES may include recognized 'text
+       area' properties, which are internally segregated and put into the
+       required 'text area' sub-style. Fonts are registered.
+
+       The invocant must be the document object.
+
+   $doc->Hcommon_style($family, PROPERTIES...)
+       Create a 'common' (i.e. named by the user) style from high-level
+       properties.
+
+       The name, which must not name an existing style, is given by "name =>
+       "STYLENAME"" somewhere in PROPERTIES.
+
+   arraytostring($arrayref)
+   hashtostring($hashref)
+       Returns a signature string uniquely representing the members (keys and
+       values in the case of a hash).
+
+       References are not recursively examined, but are represented using
+       their 'refaddr'.  Signatures of different structures will match only if
+       corresponding first-level non-ref values are 'eq' and refs are exactly
+       the same refs.
+
+   fmt_node($node, OPTIONS)
+       Format a single ODF::lpOD (really XML::Twig) node for debug messages,
+       without a final newline.
+
+       "wi => NUM" may be given in OPTIONS to indent wrapped lines by the
+       indicated number of spaces.
+
+   fmt_tree($subtree_root, OPTIONS)
+       Format a node and all of it's children (sans final newline).
+
+LIBRE OFFICE 'RSID' WORK-AROUND
+       LibreOffice tracks revisions by installing special spans using "rsid"
+       styles which interfere with cloning.  One problem is that LO expects
+       these styles to be referenced exactly once.  The Hclean_for_cloning()
+       method will remove them.
+
+       An old 2015 bug report said a "no rsids" feature was added to Libre
+       Office 4.5.0 but this author could not find such a feature.  See
+       <https://bugs.documentfoundation.org/show_bug.cgi?id=68183>.
+
+   $doc->Hclean_for_cloning();
+       This unpleasant hack removes all "rsid" properties from all styles the
+       document.
+
+       "Hclean_for_cloning" should be called before cloning anything in a
+       document if the cloned items might have been edited by Libre Office.
+       It may be called multiple times; second and subsequent calls do
+       nothing.
+
+       In detail: Every style in the document is examined and any
+       officeooo:rsid and officeooo:paragraph-rsid attributes are deleted.
+       Then every span in the document body is examined and if the span's
+       style is a style which no longer has any properties (i.e. it existed
+       only to record an rsid property), then the span is erased, moving up
+       the span's children, and the empty style is deleted.
+
+HISTORY
+       The original ODF::lpOD_Helper was written in 2012 and used privately.
+       In early 2023 the code was released to CPAN.  In Aug 2023 a major
+       overhaul was released as rev 6.000 with API changes.
+
+       As of Feb 2023, the underlying ODF::lpOD is not actively maintained
+       (last updated in 2014, v1.126), and is unusable as-is.  However with
+       ODF::lpOD_Helper, ODF::lpOD is once again an extremely useful tool.
+
+       Motivation: ODF::lpOD by itself can be inconvenient because
+
+       1.  Method arguments must be passed as encoded binary bytes, rather
+           than character strings.  See ODF::lpOD_Helper::Unicode for why this
+           is a problem.
+
+       2.  search() can not match segmented strings, and so can not match text
+           which was internally fragmented by LibreOffice (e.g. for rsids), or
+           which crosses style boundaries; nor can searches match tab, newline
+           or consecutive spaces, which are represented by specialized
+           elements.  replace() has analogous limitations.
+
+       3.  Nested paragraphs (which can occur via frames and tables) are
+           difficult or impossible to deal with because of various limitations
+           of ODF::lpOD (notably with get_text()).
+
+       4.  "Unknown method DESTROY" warnings occur without a patch.
+           <https://rt.cpan.org/Public/Bug/Display.html?id=97977>
+
+   Why not just fix ODF::lpOD ?
+       Ideally ODF::lpOD bugs would be fixed and enhancements added in a
+       compatible way, with a single integrated documentation set for
+       everything.
+
+       However the author of ODF::lpOD, Jean-Marie Gouarne, is no longer
+       active and some bugs (notably with "get_text") seem to require non-
+       trivial changes across the class hierarchy.  ODF is a complex subject
+       and ODF::lpOD encodes deep knowledge about it.  It seems unwise at this
+       point in history to risk de-stabilizing ODF::lpOD.
+
+       ODF::lpOD_Helper introduced higher-level features which might better be
+       done by extending ODF::lpOD in a compatible way.  That is still a
+       distant goal, but would involve major surgery on ODF::lpOD and careful
+       regression testing against unknown legacy applications of ODF::lpOD.
+
+AUTHOR
+       Jim Avera  (jim.avera AT gmail)
+
+LICENSE
+       ODF::lpOD_Helper is in the Public Domain or CC0 license.  However it
+       requires ODF::lpOD to function so as a practical matter you must comply
+       with ODF::lpOD's license.
+
+       ODF::lpOD (as of v1.126) may be used under the GPL 3 or Apache 2.0
+       license.
+
+perl v5.40.2                      2024-08-26               ODF::lpOD_Helper(3)

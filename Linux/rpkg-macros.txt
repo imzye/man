@@ -1,0 +1,541 @@
+RPKG(MACRO)                                                                                                                                                                                         RPKG(MACRO)
+
+NAME
+       Rpkg macro reference
+
+       NOTE:
+          rpkg  macro  is  a  bash function that outputs to stdout certain part of rpm spec file.  Don't confuse it with rpm macro which is part of the rpm spec file syntax itself. Essentially, rpkg macro is
+          something that can output an rpm macro (or even a sequence of them) to stdout.  rpkg macros are intended to be translated into their respective stdouts (in other words, "executed") by preproc util‐
+          ity  and  you  will  therefore see them in a spec file enclosed triple braces (e.g. {{{ <macro_name> }}}) which are the preproc specific tags used to differentiate macro invocations from the normal
+          text.
+
+EXAMPLES
+       Example spec file with the rpkg macros used:
+
+          Name:       {{{ git_dir_name }}}
+          Version:    {{{ git_dir_version }}}
+          Release:    1%{?dist}
+
+          Summary:    This is a test package.
+          VCS:        {{{ git_dir_vcs }}}
+
+          License:    GPLv2+
+          URL:        https://someurl.org
+
+          Source0:    {{{ git_dir_pack }}}
+
+          %description
+          This is a test package.
+
+          %prep
+          {{{ git_dir_setup_macro }}}
+
+          %changelog
+          {{{ git_dir_changelog }}}
+
+       Other examples can be found online at the addresses below. You can experiment with those by using rpkg tool which understands those spec files and can translate them to regular spec files.
+
+       https://pagure.io/hello_rpkg/blob/master/f/hello_rpkg.spec.rpkg https://pagure.io/hello_rpkg_release/blob/master/f/hello_rpkg.spec.rpkg
+
+BASE GIT MACROS
+       Those macros provide the base implementation for other (derived) macro types like e.g. git_dir macros (see later in this document). They can be, however, used directly as well. Unless otherwise speci‐
+       fied in their description, they operate on git repository top-level for the directory where the input spec file is located.
+
+       The directory location of the input spec file should be provided by user or upper tooling through INPUT_DIR_PATH environment variable (it should be provided even if the derived macros are used instead
+       of the base ones). If this variable is not provided, its value will be derived from INPUT_PATH environment variable by stripping the last path component. If neither INPUT_DIR_PATH nor  INPUT_PATH  are
+       provided,  the INPUT_DIR_PATH variable will be set automatically to ., i.e. the current working directory (the only purpose of this default is to allow for easy experimentation with the macros on com‐
+       mand-line).
+
+       Output of every base git macro call is cached and other macros are made to take those cached values into account by default. You can see that a macro uses a cached value as an input parameter  default
+       value by looking at its function header definition and searching for the OUTPUT keyword.
+
+       E.g.
+          git_version [name="${OUTPUT[git_name]}"] [lead=0] [follow=]
+
+       Default  value  for  name  in  this  definition  is obtained from the cached output of the previously invoked git_name macro or its derivative, e.g. git_dir_name (in which case, the cache key is still
+       git_name). If git_name macro or its derivative has not been invoked or if its output was an empty string, the default value for the name= parameter above will be also an empty string.
+
+       "Subpackage" in the definitions below is a set of annotated tags with a common Name. Such set of tags in a git project usually corresponds to a certain (sub)directory with a spec file in it.
+
+                                                                                                         ----
+
+          git_name [name=] [prepend=] [append=]
+
+       Without any parameters, looks up remote URL for the currently active branch and outputs its basename with .git suffix stripped. If the remote URL could not be determined, "origin" remote URL  is  used
+       instead.
+
+          Optional arguments:
+
+                 name   the base name to be output
+
+                 prepend
+                        string to be prepended to the base name
+
+                 append string to be appended to the base name
+
+                                                                                                         ----
+
+          git_version [name="${OUTPUT[git_name]}"] [lead=0] [follow=]
+
+       Outputs  version  of a subpackage given by name. The version is computed from the current commit, state of the work tree, and also from the latest** reachable annotated tag of N-V-R form (N-V-R stands
+       for the Name-Version-Release rpm triplet) with a matching Name (i.e.  equal to ${name}) and Lead (but only if lead parameter is non-empty). Lead is defined as a substring of Version  before  the  last
+       dot  (note  that for the git_release macro below, it is defined as substring of Release before the last dot, instead). Complementary to Lead, there is Follow which is the version part of the tag after
+       the last dot.
+
+       The version string that git_version produces is generally composed of the following parts (some of those parts might end up empty in certain cases):
+          ${lead}.${follow}${commit_count_appendix}${dirty_appendix}
+
+       lead is a major version substring. By default, it is set to zero. It is intended to be manually incremented on API/ABI changes. It can contain multiple components separated by dot (e.g. 2.1).
+
+       If lead parameter is set to empty, its value will be automatically derived from Lead of the latest (reachable) annotated tag for the subpackage given by name. If there is no such  tag,  lead  will  be
+       empty and the dot after it will not be rendered.
+
+       follow is a minor version substring. It can contain only a single component (i.e. it cannot contain any dots).
+
+       If  follow  parameter is empty, it will be obtained from Follow of the latest tag of a matching Name and also Lead if lead parameter is non-empty. If there is no such tag, the resulting follow will be
+       0.
+
+       commit_count_appendix is generated only if the current commit is not tagged for the given subpackage. It is composed of the following parts:
+          .git.${commit_count}.${current_commit_short_hash}
+
+       commit_count is a number of commits from the latest tag to the current commit for the given subpackage.
+
+       current_commit_short_hash is a short (8-chars long) hash of the current commit.
+
+       dirty_appendix is generated only if the currently checked out work tree is dirty.  It is composed of the following parts:
+          .dirty.${encoded_latest_file_status_change_time}
+
+       encoded_latest_file_status_change_time is an encoded time of the latest file status change that happened in the work tree. That way we can have the version increased each time we make a change in  our
+       work tree without committing.
+
+          Optional arguments:
+
+                 name   name of a subpackage
+
+                 lead   major version substring, dynamically derived if set to empty
+
+                 follow minor version substring, dynamically derived if not specified
+
+          Environment variables:
+                 VERSION_BUMP: if set to a non-empty value, the following procedure is applied to get the version string:
+
+                 If follow is specified by user explicitly, output ${lead}.${follow}.
+
+                 Otherwise,  extract  follow  from  the  latest  tag  of a matching Name and Lead (if lead is non-empty) as the last version component (the component after the last dot of Version) and output
+                 ${lead}.${follow}+1.  If the extracted ${follow} is not a number, throw an error (manual setting of follow is needed in this case).
+
+                 NOTE: rpkg command-line utility sets the VERSION_BUMP variable into the preprocessing environment during execution of rpkg tag subcommand. Otherwise, it is unset.
+
+       ** "latest" is defined by a topological sort as the first criterion and rpm version sort as the second (supplementary) criterion where the topological sort is not  enough  to  decide.  The  tool  that
+       implements  this  sorting  algorithm  is called rpm-git-tag-sort. Note that in this article, we sometimes say only "the latest tag" while the real meaning is "the latest reachable annotated tag" (i.e.
+       "reachable" and "annotated" is always implied).
+
+                                                                                                         ----
+
+          git_release [name="${OUTPUT[git_name]}"] [lead=] [follow=]
+
+       Outputs release of a subpackage given by ${name}. The release string contains the same parts as the version string for git_version:
+          ${lead}.${follow}${commit_count_appendix}${dirty_appendix}
+
+       and is computed in a similar fashion to the version string, i.e. based on the current commit, state of the work tree, and based on the latest reachable annotated tag of N-V-R form with a matching Name
+       and Lead if lead is non-empty.
+
+       For  git_release,  however, we extract all the information from the Release part of that tag.  In other words, Lead, lead, and follow relate to Release for this macro but otherwise their meaning stays
+       the same as for git_version (i.e. Lead is the part of a version string before the last dot, lead is used to match against Lead, follow, if specified, is used instead of Follow of the latest tag).
+
+       Additionally, lead (the input parameter, therefore lowercase 'l', as opposed to Lead - the tag substring) is empty by default for git_release.
+
+          Optional arguments:
+
+                 name   name of a subpackage
+
+                 lead   major version substring, dynamically derived if not specified
+
+                 follow minor version substring, dynamically derived if not specified
+
+          Environment variables:
+                 RELEASE_BUMP: if set to a non-empty value, the same procedure is applied to get a bumped value as for git_version except we again apply the terms Lead, lead, and follow to Release instead of
+                 Version. Please, see git_version above for more information.
+
+                 NOTE: rpkg utility sets the RELEASE_BUMP variable into the preprocessing environment during execution of rpkg tag subcommand. Otherwise, it is unset.
+
+                                                                                                         ----
+
+          git_release_branched
+
+       Uses the current branch name as lead parameter for git_release. In other words, equivalent of:
+
+          git_release lead="$GIT_BRANCH"
+
+       NOTE: the output value will be cached under git_release, not under git_release_branched.
+
+                                                                                                         ----
+
+          git_changelog [name="${OUTPUT[git_name]}"] [since_tag=] [until_tag=] [header_locale=POSIX] [header_date_format="%a %b %d %Y"] [body_wrap=80]
+
+       Outputs rpm spec changelog as generated from tag messages for the subpackage given by name.
+
+          Optional arguments:
+
+                 name   name of the subpackage to generate the changelog for
+
+                 since_tag
+                        start the changelog records with this tag
+
+                 until_tag
+                        end the changelog records with this tag
+
+                 header_locale
+                        locale to be used when changelog record date is being generated
+
+                 header_date_format
+                        date format to be used in the changelog record headers
+
+                 body_wrap
+                        maximum allowed line length for changelog body
+
+       NOTE: When rpkg tag is called, it allows you to specify a tag message. This is the message that will be used as a changelog record body.
+
+                                                                                                         ----
+
+          git_vcs path=
+
+       Outputs  pseudo  repository  URL pointing to the respective path in the currently checked out tree.  Ideally, the output should contain a publicly available clone URL as a substring when this macro is
+       used for production purposes.
+
+       Example output:
+          git+https://pagure.io/test-project.git#dadef2a8b9554e94797a7336261192e02d5d9351:subdir
+
+          Required arguments:
+
+                 path   path to a subtree to generate the URL for
+
+                                                                                                         ----
+
+          git_pack path= [dir_name=] [source_name=]
+
+       Packs the whole work tree content into a gzipped source tarball and outputs ${source_name} which is a filename of the created tarball. It omits submodules,  untracked  and  also  git-ignored  content.
+       While submodules are being omitted when on subpath of the given path, you can actually point the path into a submodule (e.g. into its top-level directory), in which case, the submodule content will be
+       packed obeying the same rules as when the parent's git repository own path would be packed.
+
+       If work tree is dirty, it uses GNU tar to do the job but if the tree is clean, git_pack actually becomes a proxy to git_archive macro below and instead treeish from the current commit is used  as  the
+       source  content  instead  of the work tree (the two contents are the same at this point, however). The reason is that git archive packing method has an advantage that the resulting tarball will have a
+       PAX header identifying the source commit (see man git-get-tar-commit-id), which can be later used for package verification and further processing. This method allows packing  from  a  dirty  tree  for
+       testing purposes while producing trackable, production-ready archives when work tree is clean.
+
+          Required arguments:
+
+                 path   path to a specific subdirectory to be packed
+
+          Optional arguments:
+
+                 dir_name
+                        top-level directory name in the created tarball
+
+                 source_name
+                        filename of the created source tarball
+
+          Environment variables:
+                 OUTDIR: if empty, git_pack will not generate any sources, only the source filename will be output, otherwise determines where to put the generated tarball
+
+                 NOTE: rpkg utility sets OUTDIR, only if the tarball is actually needed to be generated.  It does not set it when just rpkg spec is called (without any additional arguments).
+
+                                                                                                         ----
+
+          git_archive path= [dir_name=] [source_name=]
+
+       Packs  the latest commit tree content into a gzipped source tarball and output ${source_name}, which is a filename of the created tarball. Uses git archive to do the job. The result will contain a PAX
+       header with the commit ID from which the tarball was created. This information can be later extracted by git-get-tar-commit-id.
+
+          Required arguments:
+
+                 path   path to a specific subdirectory to be packed
+
+          Optional arguments:
+
+                 dir_name
+                        top-level directory name in the created tarball
+
+                 source_name
+                        filename of the created source tarball
+
+          Environment variables:
+                 OUTDIR: if empty, git_archive will not generate any sources, only the source filename will be output, otherwise determines where to put the generated tarball
+
+                 NOTE: rpkg utility sets OUTDIR, only if the tarball is actually needed to be generated.  It does not set it when rpkg spec is called (without any additional arguments).
+
+                                                                                                         ----
+
+          git_setup_macro [dir_name=] [path=] [source_indices=0]
+
+       Outputs %setup rpm macro call with the appropriate parameters for the given path or dir_name. This will unpack one or multiple source tarballs defined by the Source definitions in a  spec  file.  This
+       macro is primarily designed to be called in %prep section of spec file to unpack sources for %build phase.
+
+       Either dir_name or path needs to be specified. This macro is complementary to git_pack and git_archive macros and is assumed to be used if one of those macros is used in a spec file.
+
+          Optional arguments:
+
+                 dir_name
+                        name of the top-level directory in the source-tarball
+
+                 path   path from which dir_name is derived if it is not specified
+
+                 source_indices
+                        Source numbers separated by comma to generate the %setup macro for, by default 0
+
+GIT_DIR MACROS
+       These macros operate on a directory level. In particular, on a directory where the input spec file is located. The location of the spec file is assumed to be stored in INPUT_PATH environment variable.
+       There is also INPUT_DIR_PATH which stores path to the directory where the spec file is located (i.e. INPUT_PATH with the last component stripped).
+
+       In essence, the git_dir macros are tiny wrappers over the base git macros which are being invoked with some input parameters set specifically for the spec-file's subdirectory operation.
+
+       The git_dir macros have the same input parameters as the respective base git macros and the values specified by user are directly passed down to the base macros and will also override values of  those
+       parameters that the derived macro sets itself (you will see those parameters in the definitions below).
+
+       NOTE:  the git_dir macros are the recommended ones to use from all the macro types. Use them unless you would need to override a value that the the macro sets itself. In that case, the base git macros
+       are a better choice.
+
+       NOTE: rpkg utility allows you to specify the INPUT_PATH environment variable through --spec <path> argument for certain rpkg subcommands that support it.
+
+       Below you can see to what the git_dir macros expand. Passing all input parameters down to the base git macro, if any are specified, is implicit (i.e. not mentioned below).
+
+                                                                                                         ----
+
+          git_dir_name
+
+              git_name append="$(git_prefix "$INPUT_DIR_PATH" | git_prefix_to_name_suffix)"
+
+       Outputs remote URL basename appended with the path (after slash to dash substitution) from the repository root to the spec file's directory.
+
+                                                                                                         ----
+
+          git_dir_version
+
+              git_version name="$(git_dir_name)"
+
+       Outputs version of a subpackage by name $(git_dir_name).
+
+                                                                                                         ----
+
+          git_dir_release
+
+              git_release name="$(git_dir_name)"
+
+       Outputs release of a subpackage by name $(git_dir_name).
+
+                                                                                                         ----
+
+          git_dir_release_branched
+
+              git_release_branched name="$(git_dir_name)"
+
+       Outputs branched release of a subpackage by name $(git_dir_name).
+
+                                                                                                         ----
+
+          git_dir_changelog
+
+              git_changelog name="$(git_dir_name)"
+
+       Outputs changelog of a subpackage by name $(git_dir_name).
+
+                                                                                                         ----
+
+          git_dir_vcs
+
+              git_vcs path="$INPUT_DIR_PATH"
+
+       Outputs VCS pseudo URL pointing to the spec file's subdirectory.
+
+                                                                                                         ----
+
+          git_dir_pack
+
+              git_pack path="$INPUT_DIR_PATH"
+
+       Packs spec file's subdirectory by using GNU tar (for a dirty repo) or git archive (for a clean repo).
+
+                                                                                                         ----
+
+          git_dir_archive
+
+              git_archive path="$INPUT_DIR_PATH"
+
+       Packs spec file's subdirectory by using git archive.
+
+                                                                                                         ----
+
+          git_dir_setup_macro
+
+              git_setup_macro path="$INPUT_DIR_PATH"
+
+       Outputs rpm's %setup macro with dir_name (-n argument of %setup) generated according to the remote URL basename and the spec file's subdirectory path. If you used git_dir_pack or  git_dir_archive  for
+       packing, use this macro in %prep spec file section for preparing the sources for rpm build.
+
+GIT_CWD MACROS
+       Similarly to git_dir macros, these macros operate on a directory level. In this case, it is the current working directory (obtained from PWD environment variable). These macros are, in fact, just tiny
+       wrappers over the base git macros with some input parameters specifically set for operation on the current working directory.
+
+       NOTE: With rpkg utility, you can influence the working dir from the command line by explicitly specifying its --path argument.
+
+       Below you can see to what the git_cwd macros expand. Passing all input parameters down to the base git macro, if any are specified, is implicit (i.e. not mentioned below).
+
+                                                                                                         ----
+
+          git_cwd_name
+
+              git_name append="$(git_prefix "$PWD" | git_prefix_to_name_suffix)"
+
+       Outputs remote URL basename appended with the path from the repository root to the current working directory (after slash to dash substitution).
+
+                                                                                                         ----
+
+          git_cwd_version
+
+              git_version name="$(git_cwd_name)"
+
+       Outputs version of a subpackage by name $(git_cwd_name).
+
+                                                                                                         ----
+
+          git_cwd_release
+
+              git_release name="$(git_cwd_name)"
+
+       Outputs release of a subpackage by name $(git_cwd_name).
+
+                                                                                                         ----
+
+          git_cwd_release_branched
+
+              git_release_branched name="$(git_cwd_name)"
+
+       Outputs branched release of a subpackage by name $(git_cwd_name).
+
+                                                                                                         ----
+
+          git_cwd_changelog
+
+              git_changelog name="$(git_cwd_name)"
+
+       Outputs changelog of a subpackage by name $(git_cwd_name).
+
+                                                                                                         ----
+
+          git_cwd_vcs
+
+              git_vcs path="$PWD"
+
+       Outputs VCS pseudo URL pointing to the current working directory.
+
+                                                                                                         ----
+
+          git_cwd_pack
+
+              git_pack path="$PWD"
+
+       Packs working directory by using GNU tar (for a dirty repo) or git archive (for a clean repo).
+
+                                                                                                         ----
+
+          git_cwd_archive
+
+              git_archive path="$PWD"
+
+       Packs working directory by using git archive.
+
+                                                                                                         ----
+
+          git_cwd_setup_macro
+
+              git_setup_macro path="$PWD"
+
+       Outputs rpm's %setup macro with dir_name (-n argument of %setup) automatically generated according to the remote URL basename and the current working  directory  path.  If  you  used  git_cwd_pack  or
+       git_cwd_archive for packing, use this macro in %prep spec file section for preparing the sources for rpm build.
+
+GIT_REPO MACROS
+       These macros operate on the root (top-level) directory of the current git repository. Path to that directory is stored in GIT_ROOT environment variable. Implementation-wise, these macros are just tiny
+       wrappers over the git base macros with some input values set specifically for repository-wide operation.
+
+       WARNING:
+          If your local git repository is not properly initialized or if, for example, the .git metadata directory in your local tree has been renamed or removed, operation of the repo macros can get out  of
+          the intended scope. It is therefore recommended to use more specific git_dir_* macros wherever possible, which are always bound to the directory where the input spec file is located.  This is espe‐
+          cially important for the tarball creating macros (i.e. *_pack and *_archive ones).
+
+       Below you can see to what the git_repo macros expand. Passing all input parameters down to the base git macro, if any are specified, is implicit (i.e. not mentioned below).
+
+                                                                                                         ----
+
+          git_repo_name
+
+              git_name
+
+       Outputs remote URL basename with .git suffix stripped. git_repo_name and git_name are direct equivalents.
+
+                                                                                                         ----
+
+          git_repo_version
+
+              git_version name="$(git_repo_name)"
+
+       Outputs version of a subpackage by name $(git_repo_name).
+
+                                                                                                         ----
+
+          git_repo_release
+
+              git_release name="$(git_repo_name)"
+
+       Outputs release of a subpackage by name $(git_repo_name).
+
+                                                                                                         ----
+
+          git_repo_release_branched
+
+              git_release_branched name="$(git_repo_name)"
+
+       Outputs branched release of a subpackage by name $(git_repo_name).
+
+                                                                                                         ----
+
+          git_repo_changelog
+
+              git_changelog name="$(git_repo_name)"
+
+       Outputs changelog of a subpackage by name $(git_repo_name).
+
+                                                                                                         ----
+
+          git_repo_vcs
+
+              git_vcs path="$GIT_ROOT"
+
+       Outputs VCS pseudo URL pointing to the repository.
+
+                                                                                                         ----
+
+          git_repo_pack
+
+              git_pack path="$GIT_ROOT"
+
+       Packs the whole repository (with the standard omissions like git-ignored content or git submodules, see documentation for git_pack regarding this) by using GNU tar (for a dirty repo)  or  git  archive
+       (for a clean repo).
+
+                                                                                                         ----
+
+          git_repo_archive
+
+              git_archive path="$GIT_ROOT"
+
+       Packs the git repository content by using git archive.
+
+                                                                                                         ----
+
+          git_repo_setup_macro
+
+              git_setup_macro path="$GIT_ROOT"
+
+       Outputs  rpm's  %setup  macro  with  dir_name (-n argument of %setup) generated from basename of the repository remote URL. If you used git_repo_pack or git_repo_archive for packing, use this macro in
+       %prep spec file section for preparing the sources for rpm build.
+
+                                                                                                   REFERENCE                                                                                        RPKG(MACRO)

@@ -1,0 +1,173 @@
+ShareLite(3)          User Contributed Perl Documentation         ShareLite(3)
+
+
+NAME
+       Tie::ShareLite - Tied hash interface to IPC::ShareLite
+
+SYNOPSIS
+         use Tie::ShareLite qw( :lock );
+
+         $ipc = tie %shared, 'Tie::ShareLite', -key     => 1971,
+                                               -mode    => 0600,
+                                               -create  => 'yes',
+                                               -destroy => 'no'
+           or die("Could not tie to shared memory: $!");
+
+         $shared{'myKey'} = "This is stored in shared memory");
+
+         $ipc->lock( LOCK_EX );
+         $shared{'var1'} = 'some value';
+         $shared{'var2'} = 'some other value';
+         $ipc->unlock();
+
+DESCRIPTION
+       Tie::ShareLite provides for a tied hash interface to the IPC::ShareLite
+       module that is very similar to the one provided by IPC::Shareable.
+       Only hashes can be tied at this time.  The hashes can be of any
+       complexity allowed by the Storable module, however, there are some
+       caveats covered below in the REFERENCES section.
+
+       To tie a hash to shared memory, use the tie command:
+
+         $ipc = tie %shared, 'Tie::ShareLite', -key     => 1971,
+                                               -mode    => 0600,
+                                               -create  => 'yes',
+                                               -destroy => 'no'
+           or die("Could not tie to shared memory: $!");
+
+       Any parameters you pass (such as -key, -mode, -create, etc) are passed
+       straight through to IPC::ShareLite.  After this call, the contents of
+       the hash %shared are now in shared memory, and the $ipc variable can be
+       used to lock the memory segment.
+
+       To update the shared memory, simply assign something to it like you
+       would any other hash:
+
+         $shared{'myKey'} = "This is stored in shared memory");
+
+       Each read and write to the hash is atomic.  In the background
+       IPC::ShareLite makes sure that each process takes their turn.
+
+       You can make several operations atomic by calling lock() and unlock():
+
+         $ipc->lock( LOCK_EX );
+         $shared{'var1'} = 'some value';
+         $shared{'var2'} = 'some other value';
+         $ipc->unlock();
+
+       I suggest locking any time you do multiple reads or writes.  If you
+       have a read or write operation in a loop, locking before the loop can
+       speed things up a lot.  This is because when a lock is in place, the
+       module thaws the data from shared memory once and keeps it in memory
+       until you unlock.  The following code illustrates how this works.  The
+       comments show you what happens behind the scenes.  fetch() means that
+       the data is read from shared memory and thawed.  store() means that the
+       data is frozen, then written to shared memory.  Both the fetch and
+       store operations are relatively expensive, so reducing how many times
+       they happen can speed up your code a lot.
+
+         $shared{'name'}  = 'Fred';                  # fetch(), update, store()
+         $shared{'title'} = 'Manager';               # fetch(), update, store()
+
+         $ipc->lock( LOCK_EX );
+         $shared{'age'}   = '45';                    # fetch(), update
+         $shared{'sex'}   = 'male';                  # update
+         $shared{'dept'}  = 'sales';                 # update
+         $ipc->unlock();                             # store()
+
+         print "Name:  " . $shared{'name'}  . "\n";  # fetch()
+         print "Title: " . $shared{'title'} . "\n";  # fetch()
+
+         $ipc->lock( LOCK_SH );
+         print "Age:   " . $shared{'age'}   . "\n";  # fetch()
+         print "Sex:   " . $shared{'sex'}   . "\n";
+         print "Dept:  " . $shared{'dept'}  . "\n";
+         $ipc->unlock();
+
+       Tie::ShareLite will keep tabs on locks and smartly fetch and store the
+       data only when needed.
+
+METHODS
+       lock( $mode )
+           Obtains a lock on the shared memory by calling
+           IPC::ShareLite::lock().
+
+       unlock()
+           Releases a lock on the shared memory by calling
+           IPC::ShareLite::unlock().
+
+       shlock( $mode )
+           Calls lock().  Here for drop-in compatibility with IPC::Shareable.
+
+       shunlock()
+           Calls unlock().  Here for drop-in compatibility with
+           IPC::Shareable.
+
+REFERENCES
+       Storing references in tied hashes is not very well supported by Perl.
+       There are a few gotchas that are not very obvious.  When you say
+       something like
+
+         $shared{'key'}{'subkey'} = 'value';
+
+       Perl actually creates a real anonymous hash with nothing in it, assigns
+       the reference of that hash to $shared{'key'}, then finally puts the
+       subkey => value part into the anonymous hash.  This anonymous hash only
+       exist in the current process, and after the whole shared hash is
+       serialized, that reference is lost.  Plus the tied hash is never told
+       about the change to the anonymouse hash.  So in other words, it doesn't
+       work.
+
+       IPC::Shareable "solved" this problem by tying the anonymous hash as
+       another shared hash.  This has the downside of using up a lot of shared
+       memory segments very fast.  Plus it has some weird side effects that
+       have caused me problems in the past.  In this module, for now I have
+       decided to forgo any kind of special hacks to get this to work.  So if
+       you want to share complex hashes then you have to copy the hash into
+       local memory, access it as you want, then assign it back to the shared
+       hash.  Example:
+
+         $ipc->lock();
+         my $tmp = $shared{'key'};
+         $tmp->{'subkey'} = 'value';
+         $shared{'key'} = $tmp;
+         $ipc->unlock();
+
+       I would suggest putting the lock there, otherwise another process could
+       change the contents of the 'key' between when you read it, and when you
+       write it back and thus your process would overwrite the others change.
+
+       Luckily, reads don't have this problem and are much simpler:
+
+         my $value = $shared{'key'}['subkey'};
+
+       I have played around with a possible solution to this, but I have a
+       feeling it would add some serious overhead that would slow the whole
+       module down.  I would be more than happy to hear from anyone that has
+       found a clean solution to this.
+
+EXPORT
+       Anything that IPC::ShareLite exports.
+
+AUTHOR
+       Copyright 2004, Nathan Shafer <nate-tiesharelite@seekio.com>.  All
+       rights reserved.
+
+       This module is free software; you may redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+CREDITS
+       Special thanks to Maurice Aubrey for his wonderful module,
+       IPC::ShareLite.
+
+SEE ALSO
+       perl, IPC::ShareLite.
+
+POD ERRORS
+       Hey! The above document had some coding errors, which are explained
+       below:
+
+       Around line 115:
+           You forgot a '=back' before '=head1'
+
+perl v5.40.2                      2004-08-03                      ShareLite(3)

@@ -1,0 +1,442 @@
+Palm::PDB(3pm)                                                                      User Contributed Perl Documentation                                                                      Palm::PDB(3pm)
+
+NAME
+       Palm::PDB - Parse Palm database files
+
+VERSION
+       This document describes version 1.400 of Palm::PDB, released March 7, 2015 as part of Palm-PDB version 1.400.
+
+SYNOPSIS
+           use Palm::PDB;
+           use SomeHelperClass;
+
+           $pdb = Palm::PDB->new;
+           $pdb->Load("myfile.pdb");
+
+           # Manipulate records in $pdb
+
+           $pdb->Write("myotherfile.pdb");
+
+       (Note: yes, you do want to use "Palm::PDB", even if you're dealing with some other type of database. $pdb will be reblessed to the appropriate type by "$pdb->Load".)
+
+DESCRIPTION
+       The Palm::PDB module provides a framework for reading and writing database files for use on PalmOS devices such as the PalmPilot. It can read and write both Palm Database (".pdb") and Palm
+       Resource (".prc") files.
+
+       By itself, the PDB module is not terribly useful; it is intended to be used in conjunction with supplemental modules for specific types of databases, such as Palm::Raw or Palm::Memo.
+
+       The Palm::PDB module encapsulates the common work of parsing the structure of a Palm database. The Load() function reads the file, then passes the individual chunks (header, records, etc.) to
+       application-specific functions for processing. Similarly, the Write() function calls application-specific functions to get the individual chunks, then writes them to a file.
+
+METHODS
+   new
+         $new = Palm::PDB->new;
+
+       Creates a new PDB. $new is a reference to an anonymous hash. Some of its elements have special significance. See Load().
+
+   RegisterPDBHandlers
+         &Palm::PDB::RegisterPDBHandlers("classname", typespec...);
+
+       Typically:
+
+         &Palm::PDB::RegisterPDBHandlers(__PACKAGE__,
+               [ "FooB", "DATA" ],
+               );
+
+       The $pdb->Load() method acts as a virtual constructor. When it reads the header of a ".pdb" file, it looks up the file's creator and type in a set of tables, and reblesses $pdb into a class
+       capable of parsing the application-specific parts of the file (AppInfo block, records, etc.)
+
+       RegisterPDBHandlers() adds entries to these tables; it says that any file whose creator and/or type match any of the typespecs (there may be several) should be reblessed into the class classname.
+
+       Note that RegisterPDBHandlers() applies only to record databases (".pdb" files). For resource databases, see RegisterPRCHandlers().
+
+       RegisterPDBHandlers() is typically called in the import() function of a helper class. In this case, the class is registering itself, and it is simplest just to use "__PACKAGE__" for the package
+       name:
+
+           package PalmFoo;
+           use Palm::PDB;
+
+           sub import
+           {
+               &Palm::PDB::RegisterPDBHandlers(__PACKAGE__,
+                   [ "FooZ", "DATA" ]
+                   );
+           }
+
+       A typespec can be either a string, or an anonymous array with two elements. If it is an anonymous array, then the first element is the file's creator; the second element is its type. If a typespec
+       is a string, it is equivalent to specifying that string as the database's creator, and a wildcard as its type.
+
+       The creator and type should be either four-character strings, or the empty string. An empty string represents a wildcard. Thus:
+
+           &Palm::PDB::RegisterPDBHandlers("MyClass",
+               [ "fOOf", "DATA" ],
+               [ "BarB", "" ],
+               [ "", "BazQ" ],
+               "Fred"
+               );
+
+       Class MyClass will handle:
+
+       •   Databases whose creator is "fOOf" and whose type is "DATA".
+
+       •   Databases whose creator is "BarB", of any type.
+
+       •   Databases with any creator whose type is "BazQ".
+
+       •   Databases whose creator is "Fred", of any type.
+
+   RegisterPRCHandlers
+         &Palm::PDB::RegisterPRCHandlers("classname", typespec...);
+
+       Typically:
+
+         &Palm::PDB::RegisterPRCHandlers(__PACKAGE__,
+               [ "FooZ", "CODE" ],
+               );
+
+       RegisterPRCHandlers() is similar to RegisterPDBHandlers(), but specifies a class to handle resource database (".prc") files.
+
+       A class for parsing applications should begin with:
+
+           package PalmApps;
+           use Palm::PDB;
+
+           sub import
+           {
+               &Palm::PDB::RegisterPRCHandlers(__PACKAGE__,
+                   [ "", "appl" ]
+                   );
+           }
+
+   Load
+         $pdb->Load($filename);
+
+       Reads the file $filename, parses it, reblesses $pdb to the appropriate class, and invokes appropriate methods to parse the application-specific parts of the database (see "HELPER CLASS METHODS").
+
+       $filename may also be an open file handle (as long as it's seekable). This allows for manipulating databases in memory structures.
+
+       Load()  uses  the typespecs given to RegisterPDBHandlers() and RegisterPRCHandlers() when deciding how to rebless $pdb. For record databases, it uses the typespecs passed to RegisterPDBHandlers(),
+       and for resource databases, it uses the typespecs passed to RegisterPRCHandlers().
+
+       Load() looks for matching typespecs in the following order, from most to least specific:
+
+       1.  A typespec that specifies both the database's creator and its type exactly.
+
+       2.  A typespec that specifies the database's type and has a wildcard for the creator (this is rarely used).
+
+       3.  A typespec that specifies the database's creator and has a wildcard for the type.
+
+       4.  A typespec that has wildcards for both the creator and type.
+
+       Thus, if the database has creator "FooZ" and type "DATA", Load() will first look for "FooZ"/"DATA", then ""/"DATA", then "FooZ"/"", and finally will fall back on ""/"" (the universal default).
+
+       After Load() returns, $pdb may contain the following fields:
+
+       $pdb->{"name"}
+           The name of the database.
+
+       $pdb->{"attributes"}{"ResDB"}
+       $pdb->{"attributes"}{"ReadOnly"}
+       $pdb->{"attributes"}{"AppInfoDirty"}
+       $pdb->{"attributes"}{"Backup"}
+       $pdb->{"attributes"}{"OKToInstallNewer"}
+       $pdb->{"attributes"}{"ResetAfterInstall"}
+       $pdb->{"attributes"}{"CopyPrevention"}
+       $pdb->{"attributes"}{"Stream"}
+       $pdb->{"attributes"}{"Hidden"}
+       $pdb->{"attributes"}{"LaunchableData"}
+       $pdb->{"attributes"}{"Recyclable"}
+       $pdb->{"attributes"}{"Bundle"}
+       $pdb->{"attributes"}{"Open"}
+           These are the attribute flags from the database header. Each is true iff the corresponding flag is set.
+
+           The "LaunchableData" attribute is set on PQAs.
+
+       $pdb->{"version"}
+           The database's version number. An integer.
+
+       $pdb->{"ctime"}
+       $pdb->{"mtime"}
+       $pdb->{"baktime"}
+           The database's creation time, last modification time, and time of last backup, in Unix "time_t" format (seconds since Jan. 1, 1970).
+
+       $pdb->{"modnum"}
+           The database's modification number. An integer.
+
+       $pdb->{"type"}
+           The database's type. A four-character string.
+
+       $pdb->{"creator"}
+           The database's creator. A four-character string.
+
+       $pdb->{"uniqueIDseed"}
+           The database's unique ID seed. An integer.
+
+       $pdb->{"2NULs"}
+           The two NUL bytes that appear after the record index and the AppInfo block. Included here because every once in a long while, they are not NULs, for some reason.
+
+       $pdb->{"appinfo"}
+           The AppInfo block, as returned by the $pdb->ParseAppInfoBlock() helper method.
+
+       $pdb->{"sort"}
+           The sort block, as returned by the $pdb->ParseSortBlock() helper method.
+
+       @{$pdb->{"records"}}
+           The list of records in the database, as returned by the $pdb->ParseRecord() helper method. Resource databases do not have this.
+
+       @{$pdb->{"resources"}}
+           The list of resources in the database, as returned by the $pdb->ParseResource() helper method. Record databases do not have this.
+
+       All of these fields may be set by hand, but should conform to the format given above.
+
+   Write
+         $pdb->Write($filename);
+
+       Invokes methods in helper classes to get the application-specific parts of the database, then writes the database to the file $filename.
+
+       $filename may also be an open file handle (as long as it's seekable). This allows for manipulating databases in memory structures.
+
+       Write() uses the following helper methods:
+
+       PackAppInfoBlock()
+       PackSortBlock()
+       PackResource() or PackRecord()
+
+       See also "HELPER CLASS METHODS".
+
+   new_Record
+         $record = Palm::PDB->new_Record();
+
+       Creates a new record, with the bare minimum needed:
+
+               $record->{'category'}
+               $record->{'attributes'}{'Dirty'}
+               $record->{'id'}
+
+       The ``Dirty'' attribute is originally set, since this function will usually be called to create records to be added to a database.
+
+       "new_Record" does not add the new record to a PDB. For that, you want "append_Record".
+
+   is_Dirty
+         $pdb->Write( $fname ) if $pdb->is_Dirty();
+
+       Returns non-zero if any of the in-memory elements of the database have been changed. This includes changes via function calls (any call that changes the $pdb's "last modification" time) as well as
+       testing the "dirty" status of attributes where possible (i.e. AppInfo, records, but not resource entries).
+
+   append_Record
+         $record  = $pdb->append_Record;
+         $record2 = $pdb->append_Record($record1);
+
+       If called without any arguments, creates a new record with new_Record(), and appends it to $pdb.
+
+       If given a reference to a record, appends that record to @{$pdb->{records}}.
+
+       Returns a reference to the newly-appended record.
+
+       This method updates $pdb's "last modification" time.
+
+   new_Resource
+         $resource = Palm::PDB->new_Resource();
+
+       Creates a new resource and initializes
+
+               $resource->{type}
+               $resource->{id}
+
+   append_Resource
+         $resource  = $pdb->append_Resource;
+         $resource2 = $pdb->append_Resource($resource1);
+
+       If called without any arguments, creates a new resource with new_Resource(), and appends it to $pdb.
+
+       If given a reference to a resource, appends that resource to @{$pdb->{resources}}.
+
+       Returns a reference to the newly-appended resource.
+
+       This method updates $pdb's "last modification" time.
+
+   findRecordByID
+         $record = $pdb->findRecordByID($id);
+
+       Looks through the list of records in $pdb, and returns a reference to the record with ID $id, or the undefined value if no such record was found.
+
+   delete_Record
+         $pdb->delete_Record($record, $expunge);
+
+       Marks $record for deletion, so that it will be deleted from the database at the next sync.
+
+       If $expunge is false or omitted, the record will be marked for deletion with archival. If $expunge is true, the record will be marked for deletion without archival.
+
+       This method updates $pdb's "last modification" time.
+
+   remove_Record
+               for (@{ $pdb->{'records'} })
+               {
+                       $pdb->remove_Record( $_ ) if $_->{attributes}{deleted};
+               }
+
+       Removes $record from the database. This differs from "delete_Record" in that it's an actual deletion rather than just setting a flag.
+
+       This method updates $pdb's "last modification" time.
+
+HELPER CLASS METHODS
+       "$pdb->Load()" reblesses $pdb into a new class. This helper class is expected to convert raw data from the database into parsed representations of it, and vice-versa.
+
+       A helper class must have all of the methods listed below. The Palm::Raw class is useful if you don't want to define all of the required methods.
+
+   ParseAppInfoBlock
+         $appinfo = $pdb->ParseAppInfoBlock($buf);
+
+       $buf is a string of raw data. ParseAppInfoBlock() should parse this data and return it, typically in the form of a reference to an object or to an anonymous hash.
+
+       This method will not be called if the database does not have an AppInfo block.
+
+       The return value from ParseAppInfoBlock() will be accessible as "$pdb->{appinfo}".
+
+   PackAppInfoBlock
+         $buf = $pdb->PackAppInfoBlock();
+
+       This is the converse of ParseAppInfoBlock(). It takes $pdb's AppInfo block, "$pdb->{appinfo}", and returns a string of binary data that can be written to the database file.
+
+   ParseSortBlock
+         $sort = $pdb->ParseSortBlock($buf);
+
+       $buf is a string of raw data. ParseSortBlock() should parse this data and return it, typically in the form of a reference to an object or to an anonymous hash.
+
+       This method will not be called if the database does not have a sort block.
+
+       The return value from ParseSortBlock() will be accessible as "$pdb->{sort}".
+
+   PackSortBlock
+         $buf = $pdb->PackSortBlock();
+
+       This is the converse of ParseSortBlock(). It takes $pdb's sort block, "$pdb->{sort}", and returns a string of raw data that can be written to the database file.
+
+   ParseRecord
+         $record = $pdb->ParseRecord(
+                 offset         => $offset,    # Record's offset in file
+                 attributes     =>             # Record attributes
+                     {
+                       expunged => bool,       # True iff expunged
+                       dirty    => bool,       # True iff dirty
+                       deleted  => bool,       # True iff deleted
+                       private  => bool,       # True iff private
+                       archive  => bool,       # True iff to be archived
+                     },
+                 category       => $category,  # Record's category number
+                 id             => $id,        # Record's unique ID
+                 data           => $buf,       # Raw record data
+               );
+
+       ParseRecord() takes the arguments listed above and returns a parsed representation of the record, typically as a reference to a record object or anonymous hash.
+
+       The output from ParseRecord() will be appended to "@{$pdb->{records}}". The records appear in this list in the same order as they appear in the file.
+
+       $offset argument is not normally useful, but is included for completeness.
+
+       The fields in %$attributes are boolean values. They are true iff the record has the corresponding flag set.
+
+       $category is an integer in the range 0-15, which indicates which category the record belongs to. This is normally an index into a table given at the beginning of the AppInfo block.
+
+       A typical ParseRecord() method has this general form:
+
+           sub ParseRecord
+           {
+               my $self = shift
+               my %record = @_;
+
+               # Parse $self->{data} and put the fields into new fields in
+               # $self.
+
+               delete $record{data};           # No longer useful
+               return \%record;
+           }
+
+   PackRecord
+         $buf = $pdb->PackRecord($record);
+
+       The converse of ParseRecord(). PackRecord() takes a record as returned by ParseRecord() and returns a string of raw data that can be written to the database file.
+
+       PackRecord() is never called when writing a resource database.
+
+   ParseResource
+         $record = $pdb->ParseResource(
+                 type   => $type,              # Resource type
+                 id     => $id,                # Resource ID
+                 offset => $offset,            # Resource's offset in file
+                 data   => $buf,               # Raw resource data
+               );
+
+       ParseResource() takes the arguments listed above and returns a parsed representation of the resource, typically as a reference to a resource object or anonymous hash.
+
+       The output from ParseResource() will be appended to "@{$pdb->{resources}}". The resources appear in this list in the same order as they appear in the file.
+
+       $type is a four-character string giving the resource's type.
+
+       $id is an integer that uniquely identifies the resource amongst others of its type.
+
+       $offset is not normally useful, but is included for completeness.
+
+   PackResource
+         $buf = $pdb->PackResource($resource);
+
+       The converse of ParseResource(). PackResource() takes a resource as returned by PackResource() and returns a string of raw data that can be written to the database file.
+
+       PackResource() is never called when writing a record database.
+
+SEE ALSO
+       Palm::Raw
+
+       Palm::Address
+
+       Palm::Datebook
+
+       Palm::Mail
+
+       Palm::Memo
+
+       Palm::ToDo
+
+       Palm Database Files, in the ColdSync distribution.
+
+       The Virtual Constructor (aka Factory Method) pattern is described in Design Patterns, by Erich Gamma et al., Addison-Wesley.
+
+CONFIGURATION AND ENVIRONMENT
+       Palm::PDB requires no configuration files or environment variables.
+
+INCOMPATIBILITIES
+       None reported.
+
+BUGS AND LIMITATIONS
+       These functions die too easily. They should return an error code.
+
+       Database manipulation is still an arcane art.
+
+       It may be possible to parse sort blocks further.
+
+AUTHORS
+       Andrew Arensburger "<arensb AT ooblick.com>"
+
+       Currently maintained by Christopher J. Madsen "<perl AT cjmweb.net>"
+
+       Please report any bugs or feature requests to "<bug-Palm-PDB AT rt.cpan.org>" or through the web interface at <http://rt.cpan.org/Public/Bug/Report.html?Queue=Palm-PDB>.
+
+       You can follow or contribute to Palm-PDB's development at <https://github.com/madsen/Palm-PDB>.
+
+COPYRIGHT AND LICENSE
+       This software is copyright (c) 2000 by Andrew Arensburger.
+
+       This is free software; you can redistribute it and/or modify it under the same terms as the Perl 5 programming language system itself.
+
+DISCLAIMER OF WARRANTY
+       BECAUSE THIS SOFTWARE IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY FOR THE SOFTWARE, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING  THE  COPYRIGHT  HOLDERS
+       AND/OR  OTHER  PARTIES  PROVIDE THE SOFTWARE "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+       FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU  ASSUME  THE  COST  OF  ALL  NECESSARY  SERVICING,
+       REPAIR, OR CORRECTION.
+
+       IN  NO  EVENT  UNLESS  REQUIRED  BY  APPLICABLE  LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR REDISTRIBUTE THE SOFTWARE AS PERMITTED BY THE ABOVE
+       LICENSE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE SOFTWARE (INCLUDING BUT  NOT  LIMITED  TO
+       LOSS  OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE SOFTWARE TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF SUCH HOLDER OR OTHER PARTY HAS
+       BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+perl v5.38.2                                                                                     2024-03-07                                                                                  Palm::PDB(3pm)

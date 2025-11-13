@@ -1,0 +1,375 @@
+FTP.PROXY(1)            FreeBSD General Commands Manual           FTP.PROXY(1)
+
+NAME
+       ftp.proxy - FTP proxy server
+
+SYNOPSIS
+       ftp.proxy [options] [server]
+
+DESCRIPTION
+       ftp.proxy is a proxy server for a subset of the file tranfer protocol
+       described in RFC 959.  It forwards traffic between a client and a
+       server without looking too much if both hosts do real FTP.  The FTP
+       server can be either given on the command line or supplied by the
+       client.
+
+       ftp.proxy can be started from a TCP superserver like inetd(1) or
+       tcpproxy(1).  but can also bind to a TCP/IP port on it's own and run in
+       standalone (or daemon) mode.
+
+   Protocol Support
+       ftp.proxy supports the following FTP commands:
+
+              ABOR, ACCT, APPE, CDUP, CWD, DELE, FEAT, LIST,
+              MDTM, MKD, MODE, NLIST, NOOP, PASS, PASV, PORT,
+              PWD, QUIT, RETR, REST, RNFR, RNTO, RMD, SITE,
+              SIZE, SMNT, STAT, STOR, SYST, TYPE, USER, XCUP,
+              XCWD, XMKD, XPWD, XRMD
+
+       Transfer of structured data is not supported.
+
+   Command Parameters
+       By default ftp.proxy does not accept blanks in command parameters.
+       This is to protect your UNIX server against users who work on computers
+       where these things are usual.
+
+       To allow blanks the option -b must be given on the command line.
+       Notice that blanks at the beginning or end of the parameter are still
+       not supported.
+
+       The `SITE' is in neither case affected by this limitation, ftp.proxy
+       accepts always blanks in `SITE' parameters.
+
+       The option -y enables ftp.proxy to accept data connections from
+       different remote interfaces.  Try to avoid using this option, because
+       it can cause security problems (see HISTORY for details).
+
+   Server Selection
+       If client-side server selection it turned on with the -e option the
+       user must select the FTP server he wants to use with the `@' notation.
+       Instead of specifying the real ftp server on the command line the user
+       has to connect to the gateway machine where ftp.proxy is running and to
+       enter the username in the form
+       The password that is send to the proxy server is the password required
+       for logging into remote-ftp-server with the account remote-user.
+
+       In situations where the FTP client doesn't support usernames containing
+       an `@' the percent sign `%' might be used for that.
+
+   Access Control
+       If an access control program is given with the -a option on the command
+       line the connection data is passed to the acp before the server is
+       contacted.  The acp should return 0 as exit code to grant access and
+       another value to deny.
+
+       The access controller receives the following variables:
+
+       PROXY_INTERFACE, PROXY_PORT
+              interface and port where the client is connected to the proxy.
+
+       PROXY_CLIENT, PROXY_CLIENTNAME
+              IP number an name of the connected client.
+
+       PROXY_SERVER, PROXY_SERVERPORT, PROXY_SERVERNAME
+              IP number, port and name of the FTP server the client wants to
+              contact.
+
+       PROXY_SERVERLOGIN
+              the supplied username for the FTP server.
+
+       PROXY_USERNAME, PROXY_PASSWD
+              supplied username and password for usage of the proxy server.
+
+       The values for PROXY_USERNAME and PROXY_PASSWD are taken from the
+       supplied remote username and password if they contain a colon `:'.  In
+       this case the local authentication data is taken from the left side of
+       the colon and the remaining right side is passed on to the server.
+
+       Furthermore the acp's stdout is connected to the FTP client and it's
+       stderr is read by ftp.proxy which writes the acp's stderr output to
+       syslog.
+
+       Notice also that a non-zero acp exit code signals ftp.proxy that
+       something's wrong and that ftp.proxy should terminate.
+
+   Connection Translation
+       Beginning with version 1.1.6 ftp.proxy supports connection translation
+       programs (ctp's).  A ctp can completly overwrite the user's server
+       selection and login.  If configured the ctp is called before the acp.
+       It receives the same environment variables like the acp and returns
+       server and login information that should ftp.proxy for the server
+       connection on it's stdout.  The format of the ctp output lines is
+       where variable is one of
+
+              SERVERNAME, SERVERLOGIN, SERVERPASSWD, SERVERPORT
+
+       and value the corresponding value.
+       Alternativly to these four variables you can use the shorter forms
+
+              SERVER, LOGIN, PASSWD, PORT
+
+       as variable names.
+       Furthermore the case of the variable names doesn't matter and any whitespace
+       around value is ignored.
+
+       The ctp can deny the proxy request by exiting with an non-zero exit code,
+       In which case ftp.proxy drops the connection immediately.
+       Alternativly the ctp can also print a line starting with -ERR,
+       which is written to syslog before the connection is closed.
+
+   Command Control
+       If a command control program (ccp) is given with the -c option this
+       program is called for the FTP commands
+
+              APPE, CDUP, CWD, DELE, LIST, MDTM, MKD,
+              NLST, RETR, RNFR, RNTO, RMD, SIZE, STAT,
+              STOR, STOU, XCUP, XCWD, XMKD, XRMD
+
+       The ccp returns an exit code of 0 to grant and any other to deny access
+       (the exit code to the `QUIT' command is ignored).  For the ccp the same
+       variables as for acp's are set with the addition of
+
+       PROXY_COMMAND, PROXY_PARAMETER
+              FTP command and parameter (if set).
+
+       PROXY_SESSION
+              a unique identifier for the proxy session.
+
+       PROXY_CCPCOLL,
+              the client's number of collisions with the ccp's permission
+              rules (number of `permission denied' responses).
+
+       The ccp's stdout and stderr are connected to ftp.proxy.  A one line
+       message written to stdout by the ccp goes to syslog, while a message
+       one stderr is sent to the client.  If this message does not contain a
+       status ftp.proxy substitutes a `553' code.  If the message is empty the
+       client gets a simle `553 permission denied'.  Notice that the stderr
+       message is only used if the ccp returns an exit code other the zero.
+
+       On normal program termination (`QUIT' command or timeout) the ccp is
+       called with the command `+EXIT' to do some final clean up.  It is not
+       reliable that the ccp receives the `+EXIT' event.  There are lots of
+       possiblities that the proxy terminates without generating it, e.g.
+       client timeout, server error or signal reciption by the proxy.
+
+   Monitor Mode
+       The -m option puts ftp.proxy into the monitor mode.  ftp.proxy will
+       then try to keep track of the client's current directory on the server
+       side.  With this information the file parameter for the commands
+
+              APPE, CDUP, CWD, DELE, LIST, MDTM, MKD
+              NLST, RETR, RNFR, RNTO, RMD, SIZE, STOR,
+              XCUP, XCWD, XMKD, XRMD
+
+       is converted into an absolute path.  This value is then used in syslog
+       messages and given to a ccp in the PROXY_FTPPATH variable.  Furthermore
+       the variable PROXY_FTPHOME contains the user's initial directory which
+       is assumed to be his home directory.
+
+       The `LIST' and `NLIST' command may have a parameter or not.  If it is
+       absent ftp.proxy sets the parameter to `*' but this affects only the
+       PROXY_FTPPATH variable, not the command that is sent to the server.
+
+       For the `CDUP' command PROXY_FTPPATH contains the full path of the
+       target directory.
+
+       Monitoring may not work with all server systems since the output of the
+       `PWD' command which is used by ftp.proxy to get the current directory
+       in not completely defined.  If the directory can not be clearly
+       determined ftp.proxy will terminate.
+
+CONFIGURATION FILE
+       ftp.proxy can take most of its command line options also from a
+       configuration file which can be set with the -f option.
+
+       The following options can be set:
+
+       acp /path/to/acp
+              sets the path to the access control program (-a option).
+
+       allow-anyremote yes|no
+              if enabled ftp.proxy does not check the remote's end in data
+              connection, required for some bad multi-homed servers and FXP
+              (-y option).
+
+       allow-blanks yes|no
+              allows blanks in FTP command parameters (-b option).
+
+       allow-passwdblanks yes|no
+              allows blanks in the FTP login password (-B option).
+
+       bind portnum
+              sets the port number to which ftp.proxy should bind to,
+              activates daemon mode (-D option).
+
+       ccp /path/to/ccp
+              sets the path to the command control command (-c option).
+
+       ctp /path/to/ctp
+              sets the path to the connection translation program (-x option).
+
+       debug yes|no
+              turns debugging mode on or off (-d option).
+
+       monitormode yes|no
+              enables monitor mode (-m option).
+
+       proxy-routing yes|no
+              if enabled ftp.proxy uses the last `@' in the username to
+              determine to which server it should connect.  This make proxy
+              hopping (or routing) possible (-u option).
+
+       selectserver yes|no
+              enables client side server selection, disables the server option
+              (-e option).
+
+       server ftpserver
+              sets the connection's FTP server, disables selectserver.
+
+       serverlist list-of-allowed-server
+              specifies a command separated list of servers to which the
+              clients are allowed to connect (-s option).
+
+       sourceip ip-number
+              defines the IP address for the outgoing control connection to
+              the remote server, which also determines the local IP address
+              for data transmissions.
+
+       timeout timeout
+              set the timeout in seconds.
+
+       xferlog filename
+              sets the location of the xferlog file and enables xferlog
+              logging.
+
+       Notice that the file can contain comments and blank lines (usual UN*X-
+       style) but ftp.proxy terminates immediately with an error code if an
+       unknown or invalid configuration option is found.
+
+   Interface specific configurations
+       ftp.proxy's configuration file supports interface specific
+       configuration sections.  Such section begin with a line that starts
+       with
+
+       [interface-ip]
+
+       followed by the configuration options for connections on this specific
+       interface.  ftp.proxy checks for such sections immidiately after the
+       client connection is accepted.  If it finds at least one interface
+       specific section in the configuration file but none for the current
+       interface it considers itself to be not configured for it and drops the
+       connection sending a `421 not available' message to the client.
+
+       ftp.proxy accepts all global configuration options from above
+       (allthough not all make sense, e.g. bind) in interface specific
+       section.  That is, ftp.proxy can have completely different
+       configurations on different interfaces.  But to deactivate a non-
+       boolean option, e.g. ctp you can not simply give the option without a
+       value, this would be considered as `bad configuration option'.  Instead
+       you must supply a single dash `-' to clear an option.
+
+   Configuration checking
+       ftp.proxy prints an error message and terminates immediately if it
+       finds an unknown or bad configuration option.  More worse, these error
+       messages are printed to ftp.proxy's stderr and not to syslog which
+       makes it a little bit difficult to observe.  ftp.proxy addresses this
+       issue by supporting the -F option.
+
+       The -F option sets the configuration file and the `check-and-print'
+       option, that is ftp.proxy will only read, check and print it's
+       configuration options as they are set after reading the configuration.
+       An interface IP-number may be given as optional command line parameter
+       to make ftp.proxy print the configuration for this particular
+       interface.
+
+OPTIONS
+       The following options are available:
+
+       -a acp specify an access control program that grants or denies access
+              via ftp.proxy.
+
+       -b     allows blanks in filenames.
+
+       -B     allows blanks and other special charackters in passwords.
+
+       -c ccp sets a command control program that grants or denies the usage
+              of FTP commands through ftp.proxy.
+
+       -d     enter debug mode, the communication between server and client is
+              written to stderr.
+
+       -f configfile
+              sets ftp.proxy's configuration file.
+
+       -F configfile [interface]
+              read and print the proxy configuration for interface from
+              configfile.  If interface is missing the global configuration is
+              printed.  This is a check-only option, after the configuration
+              has been printed ftp.proxy terminates, no connection handling is
+              done.
+
+       -e     enable client-side server selection.  With this option the
+              server argument isn't accepted.
+
+       -l     sets logging of most of the FTP commands.
+
+       -m     sets the monitor mode.
+
+       -p port
+              tell ftp.proxy to use port as source port for data transfers
+              (using port number 20 is FTP standard).  Keep in mind that port
+              numbers below 1024 require root permissions.
+
+       -P filename
+              tell ftp.proxy to write the PID of the master process into the
+              filename specified.
+
+       -q sourceip
+              sets the IP number for the outgoing control connection.
+
+       -s list
+              the FTP server selected by the client must match one of the
+              pattern from the comma separated list.  The wildcards `*' and
+              `?' can be used.
+
+       -t timeout
+              specify a different FTP timeout in seconds than the default of
+              900 (15 minutes).
+
+       -u     search for the last appearance of an '@' in the username. This
+              allows the use of usernames with a '@' in it. Be careful with
+              this option, this can be abused to do 'proxy hopping'!
+
+       -v prefix
+              set prefix as variable prefix for the variable passwd to the
+              access and command control program.
+
+       -x ctp set a connection translation program to overwrite the server and
+              login information supplied by the user.
+
+       -X file
+              write xferlog loggin to file.
+
+       -V     show version number
+
+       -y     allow any data ports on any remote interfaces (dangerous!).
+
+       -z size
+              sets the amount of data in bytes ftp.proxy tries to read with
+              one system call from either the client or the server.  The
+              default is 1024 bytes, valid values range from 1 to 4096.
+              Playing around with larger values than the default may increase
+              the proxy's data troughput.
+
+SYSLOG
+       ftp.proxy reports to FTP log facility on linux and BSD systems and
+       Daemon log facility on other.
+
+AUTHOR
+       Andreas Schoenberg <asg@ftpproxy.org>
+
+SEE ALSO
+       inetd(1), tcpproxy(1), syslogd(8), syslog.conf(5).
+
+
+                                23 JANUARY 2003                   FTP.PROXY(1)

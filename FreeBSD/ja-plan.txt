@@ -1,0 +1,182 @@
+NETPLAN(8)              FreeBSD System Manager's Manual             NETPLAN(8)
+
+NAME
+       netplan - IP server for plan(1) appointment lists
+
+
+SYNOPSIS
+       netplan [-f] [-d] [-v] [-a]
+
+
+DESCRIPTION
+       netplan is an IP server that serves calendar data to plan(1) programs.
+       It maintains the /var/lib/plan/netplan.dir directory, that contains
+       calendar files and an access list file.  plan users can name files and
+       hosts in their file list dialog, which causes plan to establish a
+       connection to netplan on the given host and request data from the file.
+       netplan handles multiple connections to the same file, sequences
+       updates to files such that no data can be lost if multiple simultaneous
+       updates are requested, and notifies connected plan programs of changes
+       so they can update their displays.
+
+
+   OPTIONS
+       -f     Runs in the foreground. This is useful for debugging.
+
+       -d     Debug mode. This implies -f. All connections and transactions
+              are logged to the terminal. Among other things, the program
+              version and file locations are printed.
+
+       -v     Verbose. Together with -d, the verbosity of the log messages is
+              increased to include data requests. this can generate large
+              numbers of messages.
+
+       -a     Authentication via IDENTD (RFC 1413) is mandatory.  If
+              authentication fails, map the client to UID/GID NOBODY. Use this
+              only if all connecting client hosts (running plan or pland )
+              support the identd authentication service (you can find out by
+              running ``telnet clienthost 113''; if telnet reports
+              ``Connected'' type Ctrl-D, clienthost support identd). If a
+              client host that does not support identd connects to a netplan
+              server run with -a, it will have no or restricted access. Also,
+              if you use -a, you must have a netplan-acl file or no access is
+              granted to anybody; see below.
+
+
+FILES
+       All files accessible to netplan are stored in the
+       /var/lib/plan/netplan.dir directory.  netplan will not access any files
+       that are not in this directory or in subdirectories of this directory.
+       It will also refuse to access softlinks and files with multiple hard
+       links. This prevents users from linking normally inaccessible files to
+       netplan.dir and accessing them through netplan .  Finally, files
+       beginning with a dot are rejected to prevent access to netplan-acl and
+       other future configuration files.
+
+
+       /etc/plan/ may also contain a file netplan-acl that controls which user
+       can access which file. If the file is missing, no restrictions are
+       imposed unless netplan is started with the -a option, in which case no
+       access to any file is granted. The syntax for netplan-acl file is a
+       sequence of rules like this:
+
+           name | owner | * : [permit | deny] [read] [write] [delete]
+                              [netmask n.n.n.n]
+                              [[user | group | host] data [data...]]
+
+       name is the file the rule applies to; an asterisk (*) applies to all
+       files.  The special name owner applies to the file by the name of
+       current user, containing that user's ``own'' appointments.
+
+       Permit is the default. If none of read, write, or delete are specified,
+       all three are the default. The netmask applies to the client's IP
+       address. The default netmask is 255.255.255.255.  data is one or more
+       user names or numerical UIDs, group names or numerical GIDs, or host
+       names or numerical n.n.n.n IP addresses for user, group, and host
+       clauses, respectively. In user clauses, values of the form user@host
+       are also accepted. Symbolic names will be looked up on the server host
+       (where netplan is running) and will be converted to numerical values
+       while the ACL file is read. This assumes that all hosts agree on
+       symbolic and numeric user, group, and host IDs; the plan/netplan
+       protocol always uses numerical IDs and assumes that they correspond to
+       the same symbolic names on both hosts. If no user, group, or host
+       keyword and data list is specified, the meaning is ``any''.
+
+       Trailing n=0 IP address components are not assumed to denote nets; use
+       the netmask specifier for subnet masking. All whitespace is ignored.
+
+       Pound signs (#) introduce comments that extend to the end of the line.
+
+
+       For example,
+
+           *: permit read
+           *: permit write host daphne
+           vacation: permit write user 207
+           thomas: deny user *
+           thomas: permit read write delete user 207 208
+           announce: permit write netmask 255.255.255.0 host 10.0.1.0
+
+       first permits reading all files to everybody, and restricts write
+       access to users on host daphne. The third line permits write access to
+       the file vacation to user 207, in addition to the read access permitted
+       in lines 1-2.  Next, read and write access for file thomas is granted
+       to users 207 and 208 only. Finally, the file announce can be written by
+       all users on hosts whose network address begins with 10.0.1. Trailing
+       ".0" parts need not be entered. The netmask basically specifies which
+       bits of the client address are compared; all addresses are binary-ANDed
+       with the netmask before comparison.
+
+
+       When opening a file, the rules are scanned sequentially. All rules
+       whose file part (before the colon) matches the opened file, set or
+       clear permission flags for reading and writing, based on the identity
+       of the plan client as given by his user ID, group IDs, and IP address.
+       The final settings of these flags determine the permissions of the file
+       for the client.  The final permission setting is the AND result of the
+       permissions derived for the host/netmask, and user/group part,
+       respectively.
+
+       netplan tries to verify the identity of the client user with the IDENTD
+       (RFC 1413) protocol.  If the identification succeeds, the client
+       username is mapped to UID and GIDs per the local passwd and group files
+       on the server host.  If RFC 1413 identification is unsuccessful,
+       netplan trusts the (numerical) identity provided by the client.
+
+       If the -a option is given on the invocation of netplan, RFC 1413
+       identification becomes mandatory, and a failed identification will map
+       the client to the NOBODY UID and GID.
+
+       Note that although the ACL syntax was roughly patterned after TIS fwtk
+       firewall configuration files, the code and interpretation is rather
+       different.
+
+
+SECURITY
+       netplan trusts IP addresses to determine host (network) access
+       restrictions.  If IP addresses cannot be trusted, host access
+       restrictions become meaningless.
+
+       Without RFC 1413 authetication, netplan trusts whatever user id and
+       group id the client provides.   If netplan is used through the regular
+       plan front-end application, the access list file specifications are
+       honored, but any half-witted programmer can fake his identity using
+       telnet or a hacked version of plan (the sources are, after all, freely
+       available) to circumvent the access restrictions.
+
+       If RFC 1413 authentication is mandatory (-a flag), netplan still trusts
+       whatever the remote identd provides.  If you cannot trust root on the
+       remote host, you cannot trust the identd result.  (And if you cannot
+       trust IP addresses, you effectively cannot trust the remote root any
+       more.)
+
+       In this version of netplan, no challenge-response encryption is used to
+       guarantee secure transactions.  This may or may not change in future
+       versions. In this version, access lists provide only a moderate
+       protection.
+
+
+   DEBIAN NOTE
+       The location for /etc/plan/netplan-acl is specific to Debian GNU/Linux.
+       For compliance with FSSTND/FHS, it has been moved there from its
+       traditional /var/lib/plan/netplan.dir/.netplan-acl location.  The
+       program still accesses that file via a symlink located at the
+       traditional location.
+
+
+   SEE ALSO
+       plan(1).
+
+
+   AUTHOR
+       Thomas Driemeyer <thomas@bitrot.de>
+
+       Please send all complaints, comments, bug fixes, and porting
+       experiences to me. Always include your plan version as reported by
+       "plan -v" in your mail.  To be added to the mailing list, send mail to
+       majordomo@bitrot.de with the line "subscribe plan" (without the quotes)
+       in the message body (not the subject).
+
+       See http://www.bitrot.de/plan.html for new releases.
+
+                                                                    NETPLAN(8)

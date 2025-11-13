@@ -1,0 +1,349 @@
+Text::xSV(3)          User Contributed Perl Documentation         Text::xSV(3)
+
+
+NAME
+       Text::xSV - read character separated files
+
+SYNOPSIS
+         use Text::xSV;
+         my $csv = new Text::xSV;
+         $csv->open_file("foo.csv");
+         $csv->read_header();
+         # Make the headers case insensitive
+         foreach my $field ($csv->get_fields) {
+           if (lc($field) ne $field) {
+             $csv->alias($field, lc($field));
+           }
+         }
+
+         $csv->add_compute("message", sub {
+           my $csv = shift;
+           my ($name, $age) = $csv->extract(qw(name age));
+           return "$name is $age years old\n";
+         });
+
+         while ($csv->get_row()) {
+           my ($name, $age) = $csv->extract(qw(name age));
+           print "$name is $age years old\n";
+           # Same as
+           #   print $csv->extract("message");
+         }
+
+         # The file above could have been created with:
+         my $csv = Text::xSV->new(
+           filename => "foo.csv",
+           header   => ["Name", "Age", "Sex"],
+         );
+         $csv->print_header();
+         $csv->print_row("Ben Tilly", 34, "M");
+         # Same thing.
+         $csv->print_data(
+           Age  => 34,
+           Name => "Ben Tilly",
+           Sex  => "M",
+         );
+
+DESCRIPTION
+       This module is for reading and writing a common variation of character
+       separated data.  The most common example is comma-separated.  However
+       that is far from the only possibility, the same basic format is
+       exported by Microsoft products using tabs, colons, or other characters.
+
+       The format is a series of rows separated by returns.  Within each row
+       you have a series of fields separated by your character separator.
+       Fields may either be unquoted, in which case they do not contain a
+       double-quote, separator, or return, or they are quoted, in which case
+       they may contain anything, and will encode double-quotes by pairing
+       them.  In Microsoft products, quoted fields are strings and unquoted
+       fields can be interpreted as being of various datatypes based on a set
+       of heuristics.  By and large this fact is irrelevant in Perl because
+       Perl is largely untyped.  The one exception that this module handles
+       that empty unquoted fields are treated as nulls which are represented
+       in Perl as undefined values.  If you want a zero-length string, quote
+       it.
+
+       People usually naively solve this with split.  A next step up is to
+       read a line and parse it.  Unfortunately this choice of interface
+       (which is made by Text::CSV on CPAN) makes it difficult to handle
+       returns embedded in a field.  (Earlier versions of this document
+       claimed impossible.  That is false.  But the calling code has to supply
+       the logic to add lines until you have a valid row.  To the extent that
+       you don't do this consistently, your code will be buggy.)  Therefore
+       you it is good for the parsing logic to have access to the whole file.
+
+       This module solves the problem by creating a xSV object with access to
+       the filehandle, if in parsing it notices that a new line is needed, it
+       can read at will.
+
+USAGE
+       First you set up and initialize an object, then you read the xSV file
+       through it.  The creation can also do multiple initializations as well.
+       Here are the available methods
+
+       "new"
+           This is the constructor.  It takes a hash of optional arguments.
+           They correspond to the following set_* methods without the set_
+           prefix.  For instance if you pass filename=>... in, then
+           set_filename will be called.
+
+           "set_sep"
+                   Sets the one character separator that divides fields.
+                   Defaults to a comma.
+
+           "set_filename"
+                   The filename of the xSV file that you are reading.  Used
+                   heavily in error reporting.  If fh is not set and filename
+                   is, then fh will be set to the result of calling open on
+                   filename.
+
+           "set_fh"
+                   Sets the fh that this Text::xSV object will read from or
+                   write to.  If it is not set, it will be set to the result
+                   of opening filename if that is set, otherwise it will
+                   default to ARGV (ie acts like <>) or STDOUT, depending on
+                   whether you first try to read or write.  The old default
+                   used to be STDIN.
+
+           "set_header"
+                   Sets the internal header array of fields that is referred
+                   to in arranging data on the *_data output methods.  If
+                   "bind_fields" has not been called, also calls that on the
+                   assumption that the fields that you want to output matches
+                   the fields that you will provide.
+
+                   The return from this function is inconsistent and should
+                   not be relied on to be anything useful.
+
+           "set_headers"
+                   An alias to "set_header".
+
+           "set_error_handler"
+                   The error handler is an anonymous function which is
+                   expected to take an error message and do something useful
+                   with it.  The default error handler is Carp::confess.
+                   Error handlers that do not trip exceptions (eg with die)
+                   are less tested and may not work perfectly in all
+                   circumstances.
+
+           "set_warning_handler"
+                   The warning handler is an anonymous function which is
+                   expected to take a warning and do something useful with it.
+                   If no warning handler is supplied, the error handler is
+                   wrapped with "eval" and the trapped error is warned.
+
+           "set_filter"
+                   The filter is an anonymous function which is expected to
+                   accept a line of input, and return a filtered line of
+                   output.  The default filter removes \r so that Windows
+                   files can be read under Unix.  This could also be used to,
+                   eg, strip out Microsoft smart quotes.
+
+           "set_quote_qll"
+                   The quote_all option simply puts every output field into
+                   double quotation marks.  This can't be set if "dont_quote"
+                   is.
+
+           "set_dont_quote"
+                   The dont_quote option turns off the otherwise mandatory
+                   quotation marks that bracket the data fields when there are
+                   separator characters, spaces or other non-printable
+                   characters in the data field.  This is perhaps a bit
+                   antithetical to the idea of safely enclosing data fields in
+                   quotation marks, but some applications, for instance
+                   Microsoft SQL Server's BULK INSERT, can't handle them.
+                   This can't be set if "quote_all" is.
+
+           "set_row_size"
+                   The number of elements that you expect to see in each row.
+                   It defaults to the size of the first row read or set.  If
+                   row_size_warning is true and the size of the row read or
+                   formatted does not match, then a warning is issued.
+
+           "set_row_size_warning"
+                   Determines whether or not to issue warnings when the row
+                   read or set has a number of fields different than the
+                   expected number.  Defaults to true.  Whether or not this is
+                   on, missing fields are always read as undef, and extra
+                   fields are ignored.
+
+           "set_close_fh"
+                   Whether or not to close fh when the object is DESTROYed.
+                   Defaults to false if fh was passed in, or true if the
+                   object has to open its own fh.  (This may be removed in a
+                   future version.)
+
+           "set_strict"
+                   In strict mode a single " within a quoted field is an
+                   error.  In non-strict mode it is a warning.  The default is
+                   strict.
+
+       "open_file"
+           Takes the name of a file, opens it, then sets the filename and fh.
+
+       "bind_fields"
+           Takes an array of fieldnames, memorizes the field positions for
+           later use.  "read_header" is preferred.
+
+       "read_header"
+           Reads a row from the file as a header line and memorizes the
+           positions of the fields for later use.  File formats that carry
+           field information tend to be far more robust than ones which do
+           not, so this is the preferred function.
+
+       "read_headers"
+           An alias for "read_header".  (If I'm going to keep on typing the
+           plural, I'll just make it work...)
+
+       "bind_header"
+           Another alias for "read_header" maintained for backwards
+           compatibility.  Deprecated because the name doesn't distinguish it
+           well enough from the unrelated "set_header".
+
+       "get_row"
+           Reads a row from the file.  Returns an array or reference to an
+           array depending on context.  Will also store the row in the row
+           property for later access.
+
+       "extract"
+           Extracts a list of fields out of the last row read.  In list
+           context returns the list, in scalar context returns an anonymous
+           array.
+
+       "extract_hash"
+           Extracts fields into a hash.  If a list of fields is passed, that
+           is the list of fields that go into the hash.  If no list, it
+           extracts all fields that it knows about.  In list context returns
+           the hash.  In scalar context returns a reference to the hash.
+
+       "fetchrow_hash"
+           Combines "get_row" and "extract_hash" to fetch the next row and
+           return a hash or hashref depending on context.
+
+       "alias"
+           Makes an existing field available under a new name.
+
+             $csv->alias($old_name, $new_name);
+
+       "get_fields"
+           Returns a list of all known fields in no particular order.
+
+       "add_compute"
+           Adds an arbitrary compute.  A compute is an arbitrary anonymous
+           function.  When the computed field is extracted, Text::xSV will
+           call the compute in scalar context with the Text::xSV object as the
+           only argument.
+
+           Text::xSV caches results in case computes call other computes.  It
+           will also catch infinite recursion with a hopefully useful message.
+
+       "format_row"
+           Takes a list of fields, and returns them quoted as necessary,
+           joined with sep, with a newline at the end.
+
+       "format_header"
+           Returns the formatted header row based on what was submitted with
+           "set_header".  Will cause an error if "set_header" was not called.
+
+       "format_headers"
+           Continuing the meme, an alias for format_header.
+
+       "format_data"
+           Takes a hash of data.  Sets internal data, and then formats the
+           result of "extract"ing out the fields corresponding to the headers.
+           Note that if you called "bind_fields" and then defined some more
+           fields with "add_compute", computes would be done for you on the
+           fly.
+
+       "print"
+           Prints the arguments directly to fh.  If fh is not supplied but
+           filename is, first sets fh to the result of opening filename.
+           Otherwise it defaults fh to STDOUT.  You probably don't want to use
+           this directly.  Instead use one of the other print methods.
+
+       "print_row"
+           Does a "print" of "format_row".  Convenient when you wish to
+           maintain your knowledge of the field order.
+
+       "print_header"
+           Does a "print" of "format_header".  Makes sense when you will be
+           using print_data for your actual data because the field order is
+           guaranteed to match up.
+
+       "print_headers"
+           An alias to "print_header".
+
+       "print_data"
+           Does a "print" of "format_data".  Relieves you from having to
+           synchronize field order in your code.
+
+TODO
+       Add utility interfaces.  (Suggested by Ken Clark.)
+
+       Offer an option for working around the broken tab-delimited output that
+       some versions of Excel present for cut-and-paste.
+
+       Add tests for the output half of the module.
+
+BUGS
+       When I say single character separator, I mean it.
+
+       Performance could be better.  That is largely because the API was
+       chosen for simplicity of a "proof of concept", rather than for
+       performance.  One idea to speed it up you would be to provide an API
+       where you bind the requested fields once and then fetch many times
+       rather than binding the request for every row.
+
+       Also note that should you ever play around with the special variables
+       $`, $&, or $', you will find that it can get much, much slower.  The
+       cause of this problem is that Perl only calculates those if it has ever
+       seen one of those.  This does many, many matches and calculating those
+       is slow.
+
+       I need to find out what conversions are done by Microsoft products that
+       Perl won't do on the fly upon trying to use the values.
+
+ACKNOWLEDGEMENTS
+       My thanks to people who have given me feedback on how they would like
+       to use this module, and particularly to Klaus Weidner for his patch
+       fixing a nasty segmentation fault from a stack overflow in the regular
+       expression engine on large fields.
+
+       Rob Kinyon (dragonchild) motivated me to do the writing interface, and
+       gave me useful feedback on what it should look like.  I'm not sure that
+       he likes the result, but it is how I understood what he said...
+
+       Jess Robinson (castaway) convinced me that ARGV was a better default
+       input handle than STDIN.  I hope that switching that default doesn't
+       inconvenience anyone.
+
+       Gyepi SAM noticed that fetchrow_hash complained about missing data at
+       the end of the loop and sent a patch.  Applied.
+
+       shotgunefx noticed that bind_header changed its return between
+       versions.  It is actually worse than that, it changes its return if you
+       call it twice.  Documented that its return should not be relied upon.
+
+       Fred Steinberg found that writes did not happen promptly upon closing
+       the object.  This turned out to be a self-reference causing a DESTROY
+       bug.  I fixed it.
+
+       Carey Drake and Steve Caldwell noticed that the default warning_handler
+       expected different arguments than it got.  Both suggested the same fix
+       that I implemented.
+
+       Geoff Gariepy suggested adding dont_quote and quote_all.  Then found a
+       silly bug in my first implementation.
+
+       Ryan Martin improved read performance over 75% with a small patch.
+
+       Bauernhaus Panoramablick and Geoff Gariepy convinced me to add the
+       ability to get non-strict mode.
+
+AUTHOR AND COPYRIGHT
+       Ben Tilly (btilly@gmail.com).  Originally posted at
+       http://www.perlmonks.org/node_id=65094.
+
+       Copyright 2001-2009.  This may be modified and distributed on the same
+       terms as Perl.
+
+perl v5.40.2                      2009-11-03                      Text::xSV(3)

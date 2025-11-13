@@ -1,0 +1,309 @@
+MsOffice::Word::Surgeon::PackagePart(3pm)                                           User Contributed Perl Documentation                                           MsOffice::Word::Surgeon::PackagePart(3pm)
+
+NAME
+       MsOffice::Word::Surgeon::PackagePart - Operations on a single part within the ZIP package of a docx document
+
+SYNOPSIS
+         my $part = $surgeon->document;
+         print $part->plain_text;
+         $part->replace(qr[$pattern], $replacement_callback);
+         $part->replace_image($image_alt_text, $image_PNG_content);
+         $part->unlink_fields;
+         $part->reveal_bookmarks;
+
+DESCRIPTION
+       This class is part of MsOffice::Word::Surgeon; it encapsulates operations for a single package part within the ZIP package of a ".docx" document.  It is mostly used for the document part, that
+       contains the XML representation of the main document body. However, other parts such as headers, footers, footnotes, etc. have the same internal representation and therefore the same operations
+       can be invoked.
+
+METHODS
+   new
+         my $part = MsOffice::Word::Surgeon::PackagePart->new(
+           surgeon   => $surgeon,
+           part_name => $name,
+         );
+
+       Constructor for a new part object. This is called internally from MsOffice::Word::Surgeon; it is not meant to be called directly by clients.
+
+       Constructor arguments
+
+       surgeon
+           a weak reference to the main surgeon object
+
+       part_name
+           ZIP member name of this part
+
+       Other attributes
+
+       Other attributes, not passed through the constructor but generated lazily on demand, are :
+
+       contents
+           the XML contents of this part
+
+       runs
+           a decomposition of the XML contents into a collection of MsOffice::Word::Surgeon::Run objects.
+
+       relationships
+           an  arrayref  of  Office  relationships  associated  with  this  part. This information comes from a ".rels" member in the ZIP archive, named after the name of the package part.  Array indices
+           correspond to relationship numbers. Array values are hashrefs with keys
+
+           Id  the full relationship id
+
+           num the numeric part of "rId"
+
+           Type
+               the full reference to the XML schema for this relationship
+
+           short_type
+               only the last word of the type, e.g. 'image', 'style', etc.
+
+           Target
+               designation of the target within the ZIP file. The prefix 'word/' must be added for having a complete Zip member name.
+
+       images
+           a hashref of images within this package part. Keys of the hash are image alternative texts.  If present, the alternative title will be preferred; otherwise the alternative description will  be
+           taken   (note   :   the   title   field   was   displayed   in   Office  2013  and  2016,  but  more  recent  versions  only  display  the  description  field  --  see  MsOffice  documentation
+           <https://support.microsoft.com/en-us/office/add-alternative-text-to-a-shape-picture-chart-smartart-graphic-or-other-object-44989b2a-903c-4d9a-b742-6a75b451c669>).
+
+           Images without alternative text will not be accessible through the current Perl module.
+
+           Values of the hash are zip member names for the corresponding image representations in ".png" format.
+
+   Contents restitution
+       contents
+
+       Returns a Perl string with the current internal XML representation of the part contents.
+
+       original_contents
+
+       Returns a Perl string with the XML representation of the part contents, as it was in the ZIP archive before any modification.
+
+       indented_contents
+
+       Returns an indented version of the XML contents, suitable for inspection in a text editor.  This is produced by "toString" in XML::LibXML::Document and therefore is returned  as  an  encoded  byte
+       string, not a Perl string.
+
+       plain_text
+
+       Returns the text contents of the part, without any markup.  Paragraphs and breaks are converted to newlines, all other formatting instructions are ignored.
+
+       runs
+
+       Returns a list of MsOffice::Word::Surgeon::Run objects. Each of these objects holds an XML fragment; joining all fragments restores the complete document.
+
+         my $contents = join "", map {$_->as_xml} $self->runs;
+
+   Modifying contents
+       cleanup_XML
+
+         $part->cleanup_XML(%args);
+
+       Apply several other methods for removing unnecessary nodes within the internal XML. This method successively calls "reduce_all_noises", "unlink_fields", "suppress_bookmarks" and "merge_runs".
+
+       Currently there is only one legal arg :
+
+       "no_caps"
+           If  true,  the  method  "remove_caps_property"  in  MsOffice::Word::Surgeon::Run  is  automatically  called for each run object. As a result, all texts within runs with the "caps" property are
+           automatically converted to uppercase.
+
+       reduce_noise
+
+         $part->reduce_noise($regex1, $regex2, ...);
+
+       This method is used for removing unnecessary information in the XML markup.  It applies the given list of regexes to the whole document, suppressing matches.  The final result  is  put  back  into
+       "$self->contents". Regexes may be given either as "qr/.../" references, or as names of builtin regexes (described below).  Regexes are applied to the whole XML contents, not only to run nodes.
+
+       noise_reduction_regex
+
+         my $regex = $part->noise_reduction_regex($regex_name);
+
+       Returns the builtin regex corresponding to the given name.  Known regexes are :
+
+         proof_checking       => qr(<w:(?:proofErr[^>]+|noProof/)>),
+         revision_ids         => qr(\sw:rsid\w+="[^"]+"),
+         complex_script_bold  => qr(<w:bCs/>),
+         page_breaks          => qr(<w:lastRenderedPageBreak/>),
+         language             => qr(<w:lang w:val="[^/>]+/>),
+         empty_run_props      => qr(<w:rPr></w:rPr>),
+         soft_hyphens         => qr(<w:softHyphen/>),
+
+       reduce_all_noises
+
+         $part->reduce_all_noises;
+
+       Applies all regexes from the previous method.
+
+       merge_runs
+
+         $part->merge_runs(no_caps => 1); # optional arg
+
+       Walks through all runs of text within the document, trying to merge adjacent runs when possible (i.e. when both runs have the same properties, and there is no other XML node inbetween).
+
+       This  operation  is  a  prerequisite  before  performing  replace operations, because documents edited in MsWord often have run boundaries across sentences or even in the middle of words; so regex
+       searches can only be successful if those artificial boundaries have been removed.
+
+       If the argument "no_caps => 1" is present, the merge operation will also convert runs with the "w:caps" property, putting all letters into uppercase and removing  the  property;  this  makes  more
+       merges possible.
+
+       replace
+
+         $part->replace($pattern, $replacement, %replacement_args);
+
+       Replaces all occurrences of $pattern regex within the text nodes by the given $replacement. This is not exactly like a search-replace operation performed within MsWord, because the search does not
+       cross boundaries of text nodes. In order to maximize the chances of successful replacements, the "cleanup_XML" method is automatically called before starting the operation.
+
+       The argument $pattern can be either a string or a reference to a regular expression.  It should not contain any capturing parentheses, because that would perturb text splitting operations.
+
+       The argument $replacement can be either a fixed string, or a reference to a callback subroutine that will be called for each match.
+
+       The %replacement_args hash can be used to pass information to the callback subroutine. That hash will be enriched with three entries :
+
+       matched
+           The string that has been matched by $pattern.
+
+       run The run object in which this text resides.
+
+       xml_before
+           The XML fragment (possibly empty) found before the matched text .
+
+       The callback subroutine may return either plain text or structured XML.  See "SYNOPSIS" in MsOffice::Word::Surgeon::Run for an example of a replacement callback.
+
+       The following special keys within %replacement_args are interpreted by the replace() method itself, and therefore are not passed to the callback subroutine :
+
+       keep_xml_as_is
+           if true, no call is made to the "cleanup_XML" method before performing the replacements
+
+       dont_overwrite_contents
+           if true, the internal XML contents is not modified in place; the new XML after performing replacements is merely returned to the caller.
+
+       cleanup_args
+           the argument should be an arrayref and will be passed to the "cleanup_XML" method. This is typically used as
+
+             $part->replace($pattern, $replacement, cleanup_args => [no_caps => 1]);
+
+   Operations on bookmarks
+       bookmark_boundaries
+
+         my $boundaries               = part->bookmark_boundaries;
+         my ($boundaries, $final_xml) = part->bookmark_boundaries;
+
+       Parses  the  XML  content  to  discover  bookmark  boundaries.   In scalar context, returns an arrayref of MsOffice::Word::Surgeon::BookmarkBoundary objects.  In list context, returns the arrayref
+       followed by a plain string containing the final XML fragment.
+
+       suppress_bookmarks
+
+         $part->suppress_bookmarks(full_range => [qw/foo bar/], markup_only => qr/^_/);
+
+       Suppresses bookmarks according to the specified options :
+
+       full_range
+           For bookmark names matching this option, the bookmark will be fully suppressed (not only the start and end markers, but also any content inbetween).
+
+       markup_only
+           For bookmark names matching this option, start and end markers are suppressed, but the inner content remains.
+
+       Options may be specified as lists of strings, or regexes, or coderefs ... anything suitable to be compared through match::simple. In absence of any options, the default is "markup_only =>  qr/./",
+       meaning that all bookmarks markup is suppressed.
+
+       Removing bookmarks is useful because MsWord may silently insert bookmarks in unexpected places; therefore some searches within the text may fail because of such bookmarks.
+
+       The "full_range" option is especially convenient for removing bookmarks associated with ASK fields. Such bookmarks contain ranges of text that are never displayed by MsWord.
+
+       reveal_bookmarks
+
+         $part->reveal_bookmarks(color => 'green');
+
+       Usually  bookmarks  boundaries  in  MsWord  are  not  visible;  the  only  way  to  have  a  visual  clue  is  to  turn  on  an  option  in  Advanced  /  Show  document  content  /  Show bookmarks
+       <https://support.microsoft.com/en-gb/office/troubleshoot-bookmarks-9cad566f-913d-49c6-8d37-c21e0e8d6db0> -- but this only displays  where  bookmarks  start  and  end,  without  the  names  of  the
+       bookmarks.
+
+       The  reveal_bookmarks()  method  will  insert  a  visible  run  before each bookmark start and after each bookmark end, showing the bookmark name. This is an interesting tool for documenting where
+       bookmarks are located in an existing document.
+
+       Options to this method are :
+
+       color
+           The highlighting color for visible marks. This should be a valid highlighting color, i.e black, blue, cyan, darkBlue, darkCyan, darkGray, darkGreen, darkMagenta,  darkRed,  darkYellow,  green,
+           lightGray, magenta, none, red, white or yellow. Default is yellow.
+
+       props
+           A  string  in  "sprintf"  format  for  building  the  XML  to  be  inserted  in "<w:rPr>" node when displaying bookmarks marks, i.e. the style for displaying such marks.  The default is just a
+           highlighting property :  "<w:highlight w:val="%s"/>".
+
+       start
+           A string in "sprintf" format for generating text before a bookmark start.  Default is "<%s>".
+
+       end A string in "sprintf" format for generating text after a bookmark end.  Default is "</%s>".
+
+       ignore
+           A regexp for deciding which bookmarks will not be revealed. Default is "qr/^_/", because bookmarks with an initial underscore are usually technical bookmarks inserted automatically by  MsWord,
+           such as "_GoBack" or "_Toc53196147".
+
+   Operations on fields
+       fields
+
+         my $fields               = part->fields;
+         my ($fields, $final_xml) = part->fields;
+
+       Parses  the  XML  content  to  discover MsWord fields.  In scalar context, returns an arrayref of MsOffice::Word::Surgeon::Field objects.  In list context, returns the arrayref followed by a plain
+       string containing the final XML fragment.
+
+       replace_fields
+
+         my $field_replacer = sub {my ($code, $result) = @_; return "...";};
+         $part->replace_fields($field_replacer);
+
+       Replaces MsWord fields by the product of the $field_replacer callback.  The callback receives two arguments :
+
+       $code
+           A plain string containing the field's full code instruction, i.e a keyword followed by optional arguments and switches, including initial and final spaces. Embedded fields are  represented  in
+           curly braces, like for example
+
+           "IF { DOCPROPERTY foo } = "bar" "is bar" "is not bar"".
+
+       $result
+           An XML fragment containing the current value for the field.
+
+       The callback should return an XML fragment suitable to be inserted within an MsWord run.
+
+       reveal_fields
+
+         $part->reveal_fields;
+
+       Replaces each field with a textual representation of its code instruction, embedded in curly braces.
+
+       unlink_fields
+
+         $part->unlink_fields;
+
+       Replaces each field with its current result, i.e removing the code instruction.  This is the equivalent of performing Ctrl-Shift-F9 in MsWord on the whole document.
+
+   Operations on images
+       replace_image
+
+         $part->replace_image($image_alt_text, $image_PNG_content);
+
+       Replaces an existing PNG image by a new image. All features of the old image will be preserved (size, positioning, border, etc.) -- only the image itself will be replaced. The $image_alt_text must
+       correspond to the alternative text set in Word for this image.
+
+       This operation replaces a ZIP member within the ".docx" file. If several XML nodes refer to the same ZIP member, i.e. if the same image is displayed at several locations, the new image will appear
+       at  all  locations,  even if they do not have the same alternative text -- unfortunately this module currently has no facility for duplicating an existing image into separate instances. So if your
+       intent is to only replace one instance of the image, your original document should contain several distinct copies of the ".PNG" file.
+
+       add_image
+
+         my $rId = $part->add_image($image_PNG_content);
+
+       Stores the given PNG image within the ZIP file, adds it as a relationship to the current part, and returns the relationship id. This operation is not sufficient to  make the image visible in  Word
+       :  it  just  stores  the image, but you still have to insert a proper "drawing" node in the contents XML, using the $rId.  Future versions of this module may offer helper methods for that purpose;
+       currently it must be done by hand.
+
+AUTHOR
+       Laurent Dami, <dami AT cpan DOT org<gt>
+
+COPYRIGHT AND LICENSE
+       Copyright 2019-2024 by Laurent Dami.
+
+       This program is free software, you can redistribute it and/or modify it under the terms of the Artistic License version 2.0.
+
+perl v5.40.1                                                                                     2025-10-05                                                       MsOffice::Word::Surgeon::PackagePart(3pm)

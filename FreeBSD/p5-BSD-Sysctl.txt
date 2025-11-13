@@ -1,0 +1,265 @@
+Sysctl(3)             User Contributed Perl Documentation            Sysctl(3)
+
+
+NAME
+       BSD::Sysctl - Manipulate kernel sysctl variables on BSD-like systems
+
+VERSION
+       This document describes version 0.12 of BSD::Sysctl
+
+SYNOPSIS
+         use BSD::Sysctl 'sysctl';
+
+         # exact values will vary
+         print sysctl('kern.lastpid'); # 20621
+
+         my $loadavg = sysctl('vm.loadavg');
+         print $loadavg->[1]; # 0.6127 (5 minute load average)
+
+         my $vm = sysctl('vm.vmtotal');
+         print "number of free pages: $vm->{pagefree}\n";
+
+DESCRIPTION
+       "BSD::Sysctl" offers a native Perl interface for fetching sysctl values
+       that describe the kernel state of BSD-like operating systems.  This is
+       around 80 times faster than scraping the output of the sysctl(8)
+       program.
+
+       This module handles the conversion of symbolic sysctl variable names to
+       the internal numeric format, and this information, along with the
+       details of how to format the results, are cached. Hence, the first call
+       to "sysctl" requires three system calls, however, subsequent calls
+       require only one call.
+
+ROUTINES
+       sysctl
+           Perform a sysctl system call. Takes the symbolic name of a sysctl
+           variable name, for instance "kern.maxfilesperproc",
+           "net.inet.ip.ttl".  In most circumstances, a scalar is returned (in
+           the event that the variable has a single value).
+
+           In some circumstances a reference to an array is returned, when the
+           variable represents a list of values (for instance,
+           "kern.cp_time").
+
+           In other circumstances, a reference to a hash is returned, when the
+           variable represents a heterogeneous collection of values (for
+           instance, "kern.clockrate", "vm.vmtotal"). In these cases, the hash
+           key names are reasonably self-explanatory, however, passing
+           familiarity with kernel data structures is expected.
+
+           A certain number of opaque variables are fully decoded (and the
+           results are returned as hashes), whereas the "sysctl" binary
+           renders them as a raw hexdump (for example, "net.inet.tcp.stats").
+
+       sysctl_set
+           Perform a system call to set a sysctl variable to a new value.
+
+             if( !sysctl_set( 'net.inet.udp.blackhole', 1 )) {
+                warn "That didn't work: $!\n";
+             }
+
+           Note: you must have "root" privileges to perform this, otherwise
+           your request will be politely ignored.
+
+       sysctl_description
+           Returns the description of the variable, instead of the contents of
+           the variable. The information is only as good as the developers
+           provide, and everyone knows that developers hate writing
+           documentation.
+
+             my $mib = 'kern.ipc.somaxconn';
+             print "$mib is ", sysctl_description($mib), $/;
+             # prints the following:
+             # kern.ipc.somaxconn is Maximum pending socket connection queue size
+
+       sysctl_exists
+           Check whether the variable name exists. Returns true or false
+           depending on whether the name is recognised by the system.
+
+           Checking whether a variable exists does not perform the conversion
+           to the numeric OID (and the attendant caching).
+
+METHODS
+       An object-oriented interface is also available. This allows you to set
+       up an object that stores the name of a "sysctl" variable, and then you
+       can retrieve its value as often as needed.
+
+         my $lastpid = BSD::Sysctl->new( 'kern.lastpid' );
+         while (1) {
+           print $lastpid->get(), $/;
+           sleep 1;
+         }
+
+       This is handy when you want to monitor a number of variables. Just
+       store the objects in an array and loop over them:
+
+         my @var;
+         for my $v (@ARGV) {
+           push @var, BSD::Sysctl->new($v);
+         }
+         print join(' ', map {"$$_:" . $_->get} @var), $/;
+
+       Note: the internal implementation uses a blessed scalar. Thus, you may
+       recover the name of the variable by dereferencing the object itself.
+
+       new     Create a new BSD::Sysctl object. Takes the name of the "sysctl"
+               variable to examine.
+
+       get     Returns the current value of the "sysctl" variable.
+
+                 my $value = $variable->get();
+
+       set     Set the value of the "sysctl" variable. Returns true on
+               success, "undef" on failure.
+
+                 $variable->set(99);
+
+       iterator
+               Creates an iterator that may be used to walk through the sysctl
+               variable tree. If no parameter is given, the iterator defaults
+               to the first entry of the tree. Otherwise, if a paramter is
+               given, it is decoded as a sysctl variable. If the decoding
+               fails, undef is returned.
+
+                 my $k = BSD::Sysctl->iterator( 'kern' );
+                 while ($k->next) {
+                   print $k->name, '=', $k->value, "\n";
+                 }
+
+               To force iteration through variables that are marked with
+               CTLFLAG_SKIP use 'noskip' argument:
+
+                 my $k = BSD::Sysctl->iterator( 'kern', ( noskip => 1 ));
+
+       next    Moves the iterator to the next sysctl variable and loads the
+               variable's name and its current value.
+
+       name    Returns the name of the sysctl variable that the iterator is
+               currently pointing at. If the iterator has not started to look
+               at the tree (that is, "next" has not yet been called), undef is
+               returned.
+
+       value   Returns the value of the sysctl variable that the iterator is
+               currently pointing at. If the iterator has not started to look
+               at the tree, undef is returned. Subsequent calls to value()
+               will perform a fresh fetch on the current sysctl variable that
+               the iterator is pointing at.
+
+               Some return values are references to hashes or arrays.
+
+       reset   The iterator is reset back to before the first sysctl variable
+               it initially began with (in other words, "next" must be called
+               afterwards, in order to fetch the first variable.
+
+NOTES
+       Yes, you could manipulate "sysctl" variables directly from Perl using
+       the "syscall" routine, however, you would have to have to jump through
+       various arduous hoops, such as performing the string->numeric OID
+       mapping yourself, packing arrays of "int"s and generally getting the
+       argument lists right. That would be a considerable amount of hassle,
+       and prone to error. This module makes it easy.
+
+       No distinction between ordinary and opaque variables is made on
+       FreeBSD. If you ask for a variable, you get it (for instance,
+       "kern.geom.confxml"). This is good.
+
+       When setting a variable to an integer value, the value is passed to the
+       C routine as is, which calls "strtol" (or "strtoul") to perform the
+       conversion. The C routine checks to see whether the conversion
+       succeeds.
+
+       The alternative would have been to let Perl handle the conversion.  The
+       problem with this is that Perl tries to do the right thing and returns
+       0 in the event of an invalid conversion, and setting many "sysctl"
+       variables to 0 could bring down a system (for instance, maximum number
+       of open files per process). This design makes the module handle bad
+       data more gracefully.
+
+DIAGNOSTICS
+         "invalid integer: '...'"
+
+       A variable was set via "sysctl_set", and the variable required an
+       integer value, however, the program was not able to convert the input
+       into anything that resembled an integer. Solution: check your input.
+
+       Similar warnings occur with unigned ints, longs and unsigned longs.  In
+       all cases, the value of the sysctl variable is unchanged.
+
+         "uncached mib: [sysctl name]"
+
+       A sysctl variable name was passed to the internal function
+       "_mib_lookup", but "_mib_lookup" doesn't now how to deal with it, since
+       "_mib_info" has not been called for this variable name. This is
+       normally impossible if you stick to the public functions.
+
+         "get sysctl [sysctl name] failed"
+
+       The kernel system call to get the value associated with a sysctl
+       variable failed. If "sysctl ..." from the command line succeeds (that
+       is, using the sysctl(8) program), this is a bug that should be
+       reported.
+
+         "[sysctl name] unhandled format type=[number]"
+
+       The sysctl call returned a variable that we don't know how to format,
+       at least for the time being. This is a bug that should be reported.
+
+LIMITATIONS
+       At the current time only officially supported FreeBSD versions are
+       supported.
+
+       I am looking for volunteers to help port this module to NetBSD and
+       OpenBSD (or access to such machines), and possibly even Solaris.  If
+       you are interested in helping, please consult the README file for more
+       information.
+
+BUGS
+       Please report all bugs at
+       <http://rt.cpan.org/NoAuth/Bugs.html?Dist=BSD-Sysctl|rt.cpan.org>.
+
+       A short snippet demonstrating the problem, along with the expected and
+       actual output, and the version of BSD::Sysctl used, will be
+       appreciated.
+
+       I try to keep an eye on
+       <http://portsmon.freebsd.org/portoverview.py?category=sysutils&portname=p5-BSD-Sysctl>
+       to see what problems are logged via the FreeBSD ports system, but using
+       the CPAN RT bug tracking system is your best bet.
+
+       The source code is on github: <https://github.com/dland/BSD-Sysctl>,
+       feel free to fork it and send me a pull request for enhancements and
+       bug fixes.
+
+SEE ALSO
+       BSD::Resource - process resource limit and priority functions.
+
+       IO::KQueue - monitor changes on sockets, files, processes and signals.
+
+ACKNOWLEDGEMENTS
+       Douglas Steinwand added support for the amd64 platform in release 0.04.
+
+       Sergey Skvortsov provided a patch to improve the handling of large XML
+       sysctl values, such as "kern.geom.confxml", and fixed the build for
+       FreeBSD 8.x in version 0.09.
+
+       Emil Mikulic supplied the code to have 64-bit variables retrieved
+       correctly in version 0.10.
+
+       Chris "BinGOs" Williams graciously provided me with access to a box
+       running FreeBSD 10 to allow me to sort out what broke, and the fix
+       appears in 0.11.
+
+       Various people keep the FreeBSD port up to date; their efforts are
+       greatly appreciated.
+
+AUTHOR
+       David Landgren.
+
+       Copyright (C) 2006-2014, all rights reserved.
+
+LICENSE
+       This library is free software; you may redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2022-09-20                         Sysctl(3)

@@ -1,0 +1,279 @@
+INNDUCT(8)                                                                                System Manager's Manual                                                                                INNDUCT(8)
+
+NAME
+       innduct - quickly and reliably stream Usenet articles to remote site
+
+SYNOPSIS
+       innduct [options] site [fqdn]
+
+DESCRIPTION
+       innduct  implements NNTP peer-to-peer news transmission including the streaming extensions, for sending news articles to a remote site.  It is intended as a replacement for innfeed or nntpsend and
+       innxmit.
+
+       You need to run one instance of innduct for each peer site.  innduct manages its interaction with innd, including flushing the feed as appropriate, etc., so that articles are transmitted  quickly,
+       and manages the retransmission of its own backlog.  innduct includes the locking necessary to avoid multiple simutaneous invocations.
+
+       By  default,  innduct reads the default feedfile corresponding to the site site (ie pathoutgoing/site) and feeds it via NNTP, streaming if possible, to the host fqdn.  If fqdn is not specified, it
+       defaults to site.
+
+       innduct daemonises after argument parsing, and all logging (including error messages) are sent to syslog (facility news).
+
+       The best way to run innduct is probably to periodically invoke it for each feed (e.g. from cron), passing the -q option to arrange that innduct silently exits if an instance is already running for
+       that site.
+
+GENERAL OPTIONS
+       -f|--feedfile=DIR/|PATH
+              Specifies the feedfile to read, and indirectly specifies the paths to be used for various associated files (see FILES, below).  If specified as DIR/ it is taken as a directory to  use,  and
+              the actual feed file used is path/site.  If PATH or DIR does not start with a /, it is taken to be relative to pathoutgoing from inn.conf.  The default is site.
+
+       -q|--quiet-multiple
+              Makes innduct silently exit (with status 0) if another innduct holds the lock for the site.  Without -q, this causes a fatal error to be logged and a nonzero exit.
+
+       --no-daemon
+              Do not daemonise.  innduct runs in the foreground, but otherwise operates normally (logging to syslog, etc.).
+
+       --interactive
+              Do  not  daemonise.   innduct  runs  in the foreground and all messages (including all debug messages) are written to stderr rather than syslog.  A control command line is also available on
+              stdin/stdout.
+
+       --no-streaming
+              Do not try to use the streaming extensions to NNTP (for use eg if the peer can't cope when we send MODE STREAM).
+
+       --no-filemon
+              Do not try to use the file change monitoring support to watch for writes by innd to the feed file; poll it instead.  (If file monitoring is not compiled in, this option just downgrades  the
+              log message which warns about this situation.)
+
+       -C|--inndconf=FILE
+              Read FILE instead of the default inn.conf.
+
+       --port=PORT
+              Connect to port PORT at the remote site rather than to the NNTP port (119).
+
+       --chdir=PATHRUN
+              Change directory to pathrun at startup.  The default is pathrun from inn.conf.
+
+       --cli=CLI-DIR/|CLI-PATH|none
+              Listen  for  control  command  line connections on CLI-DIR/site (if the value ends with a /) or CLI-PATH (if it doesn't).  See CONTROLLING INNDUCT, below.  Note that there is a fairly short
+              limit on the lengths of AF_UNIX socket pathnames.  If specified as CLI-DIR/, the directory will be created with mode 700 if necessary.  The default is innduct/ which means  to  create  that
+              directory in PATHRUN and listen on PATHRUN/innduct/site.
+
+       --help Just print a brief usage message and list of the options to stdout.
+
+       See TUNING OPTIONS below for more options.
+
+CONTROLLING INNDUCT
+       If  you  tell innd to drop the feed, innduct will (when it notices, which will normally be the next time it decides to flush) finish up the articles it has in hand now, and then exit.  It is harm‐
+       less to cause innd to flush the feed (but innduct won't notice and flushing won't start a new feedfile; you have to leave that to innduct).
+
+       If you want to stop innduct you can send it SIGTERM or SIGINT, or the stop control command, in which case it will report statistics so far and quickly exit.  If innduct  receives  SIGKILL  nothing
+       will be broken or corrupted; you just won't see some of the article stats.
+
+       innduct listens on an AF_UNIX socket (by default, pathrun/innduct/site), and provides a command-line interface which can be used to trigger various events and for debugging.  When a connection ar‐
+       rives, innduct writes a prompt, reads commands a line at a time, and writes any output back to the caller.  (Everything uses unix line endings.)  The cli can most easily be accessed with a program
+       like netcat-openbsd (eg nc.openbsd -U /var/run/news/innduct/site) or socat.  The prompt is site|.
+
+       The following control commands are supported:
+
+       h      Print a list of all the commands understood.  This list includes undocumented commands which mess with innduct's internal state and should only be used by a developer in conjuction with the
+              innduct source code.
+
+       flush  Start a new feed file and trigger a flush of the feed.  (Or, cause the FLUSH-FINISH-PERIOD to expire early, forcibly completing a previously started flush.)
+
+       stop   Log statistics and exit.  (Same effect as SIGTERM or SIGINT.)
+
+       logstats
+              Log statistics so far and zero the stats counters.  Stats are also logged periodically, when an input file is completed and just before tidy termination.
+
+       show   Writes summary information about innduct's state to the current CLI connection.
+
+       dump q|a
+              Writes  the  same  information  about innduct's state to a plain text file feedfile_dump.  This overwrites any previous dump.  innduct does not ever delete these dump files.  dump q gives a
+              summary including general state and a list of connections; dump a also includes information about each article innduct is dealing with.
+
+       next blscan
+              Requests that innduct rescan for new backlog files at the next PERIOD poll.  Normally innduct assumes that any backlog files dropped in by the administrator are not urgent, and it  may  not
+              get around to noticing them for BACKLOG-SCAN-PERIOD.
+
+       next conn
+              Resets the connection startup delay counter so that innduct may consider making a new connection to the peer right away, regardless of the setting of RECONNECT-PERIOD.  A connection attempt
+              will still only be made if innduct feels that it needs one, and innduct may wait up to PERIOD before actually starting the attempt.
+
+TUNING OPTIONS
+       You should not normally need to adjust these.  Time intervals may specified in seconds, or as a number followed by one of the following units: s m h d, sec min hour day, das hs ks Ms.
+
+       --max-connections=max
+              Restricts  the  maximum  number of simultaneous NNTP connections per peer to max.  There is no global limit on the number of connections used by all innducts, as the instances for different
+              sites are entirely independent.  The default is 10.
+
+       --max-queue-per-conn=per-conn-max
+              Restricts the maximum number of outstanding articles queued on any particular connection to max.  (Non-streaming connections can only handle one article at a time.)  The default is 200.
+
+       --max-queue-per-file=max
+              Restricts the maximum number articles read into core from any one input file to max.  The default is twice per-conn-max.
+
+       --feedfile-flush-size=bytes
+              Specifies that innduct should flush the feed and start a new feedfile when the existing feedfile size exceeds bytes; the effect is that the innduct will try to avoid the various  batchfiles
+              growing much beyond this size.  The default is 100000.
+
+       --period-interval=PERIOD-INTERVAL
+              Specifies  wakup interval and period granularity.  innduct wakes up every PERIOD-INTERVAL to do various housekeeping checks.  Also, many of the timeout and rescan intervals (those specified
+              in this manual as PERIOD) are rounded up to the next multiple of PERIOD-INTERVAL.  The default is 30s.
+
+       --connection-timeout=TIME
+              How long to allow for a connection setup attempt before giving up.  The default is 200s.
+
+       --stuck-flush-timeout=TIME
+              How long to wait for innd to respond to a flush request before giving up.  The default is 100s.
+
+       --feedfile-poll=TIME
+              How often to poll the feedfile for new articles written by innd if file monitoring (inotify or equivalent) is not available.  (When file monitoring is available, there is no need for  peri‐
+              odic checks and we wake immediately up whenever the feedfile changes.)  The default is 5s.
+
+       --no-check-proportion=PERCENT
+              If  the moving average of the proportion of articles being accepted (rather than declined) by the peer exceeds this value, innduct uses "no check mode" - ie it just sends the peer the arti‐
+              cles with TAKETHIS rather than checking first with CHECK whether the article is wanted.  This only affects streaming connections.  The default is 95 (ie, 95%).
+
+       --no-check-response-time=ARTICLES
+              The moving average mentioned above is an alpha-smoothed value with a half-life of ARTICLES.  The default is 100.
+
+       --reconnect-interval=RECONNECT-PERIOD
+              Limits initiation of new connections to one each RECONNECT-PERIOD.  This applies to reconnections if the peer has been down, and also to ramping up the number of connections  we  are  using
+              after startup or in response to an article flood.  The default is 1000s.
+
+       --flush-retry-interval=PERIOD
+              If our attempt to flush the feed failed (usually this will be because innd is not running), try again after PERIOD.  The default is 1000s.
+
+       --earliest-deferred-retry=PERIOD
+              When  the  peer  responds  to  our  offer of an article with a 431 or 436 NNTP response code, indicating that the article has already been offered to it by another of its peers, and that we
+              should try again, we wait at least PERIOD.  before offering the article again.  The default is 100s.
+
+       --backlog-rescan-interval=BACKLOG-SCAN-PERIOD
+              We scan the directory containing feedfile for backlog files at least every BACKLOG-SCAN-PERIOD, in case the administrator has manually dropped in a file there for processing.   The  default
+              is 300s.
+
+       --max-flush-interval=PERIOD
+              We flush the feed and start a new feedfile at least every PERIOD even if the current instance of the feedfile has not reached the size threshold.  The default is 100000s.
+
+       --flush-finish-timeout=FLUSH-FINISH-PERIOD
+              If  we flushed FLUSH-FINISH-PERIOD ago, and are still trying to finish processing articles that were written to the old feed file, we forcibly and violently make sure that we can finish the
+              old feed file: we abandon and defer all the work, which includes unceremoniously dropping any connections on which we've sent some of those articles but not  yet  had  replies,  as  they're
+              probably stuck somehow.  The default is 2000s.
+
+       --idle-timeout=PERIOD
+              Connections  which  have had no activity for PERIOD will be closed.  This includes connections where we have sent commands or articles but have not yet had the responses, so this same value
+              doubles as the timeout after which we conclude that the peer is unresponsive or the connection has become broken.  The default is 1000s.
+
+       --stats-log-interval=PERIOD
+              Log statistics at least every PERIOD The default is 2500s.
+
+       --low-volume-thresh=WIN-THRESH --low-volume-window=PERIOD
+              If innduct has only one connection to the peer, and has processed fewer than WIN-THRESH articles in the last PERIOD and also no articles in the last PERIOD-INTERVAL it will close  the  con‐
+              nection  quickly.   That  is,  innduct switches to a mode where it opens a connection for each article (or, perhaps, each handful of articles arriving together).  The default is to close if
+              fewer than 3 articles in the last 1000s.
+
+       --max-bad-input-data-ratio=PERCENT
+              We tolerate up to this proportion of badly-formatted lines in the feedfile and other input files.  Every badly-formatted line is logged, but if there are too many we conclude that the  cor‐
+              ruption to our on-disk data is too severe, and crash; to successfully restart, administrator intervention will be required.  This avoids flooding the logs with warnings and also arranges to
+              abort  earlyish  if an attempt is made to process a file in the wrong format.  We need to tolerate a small proportion of broken lines, if for no other reason than that a crash might leave a
+              half-blanked-out entry.  The default is 1 (ie, 1%).
+
+       --max-bad-input-data-init=LINES
+              Additionally, we tolerate this number of additional badly-formatted lines, so that if the badly-formatted lines are a few but at the start of the file, we don't crash immediately.  The  de‐
+              fault  is 30 (which would suffice to ignore one whole corrupt 4096-byte disk block filled with random data, or one corrupt 1024-byte disk block filled with an inappropriate text file with a
+              mean line length of at least 35).
+
+INNDUCT VS INNFEED/NNTPSEND/INNXMIT
+       innfeed
+              does roughly the same thing as innduct.  However, the way it receives information from innd can result in articles being lost (not offered to peers) if innfeed crashes for any reason.  This
+              is an inherent defect in the innd channel feed protocol.  innduct uses a file feed, constantly "tailing" the feed file, and where implemented uses inotify(2) to  reduce  the  latency  which
+              would come from having to constantly poll the feed file.  innduct is much smaller and simpler, at <5kloc to innfeed's ~25kloc.  innfeed needs a separate helper script or similar infrastruc‐
+              ture (of which there is an example in its manpage), whereas innduct can be run directly and doesn't need help from shell scripts.  However, innfeed is capable of feeding multiple peers from
+              a single innfeed instance, whereas each innduct process handles exactly one peer.
+
+       nntpsend
+              processes  feed  files  in  batch  mode.  That is, you have to periodically invoke nntpsend, and when you do, the feed is flushed and articles which arrived before the flush are sent to the
+              peer.  This introduces a batching delay, and also means that the NNTP connection to the peer needs to be remade at each batch.  nntpsend (which uses innxmit) cannot  make  use  of  multiple
+              connections  to  a  single peer site.  However, nntpsend automatically find which sites need feeding by looking in pathoutgoing, whereas the administrator needs to arrange to invoke innduct
+              separately for each peer.
+
+       innxmit
+              is the actual NNTP feeder program used by nntpsend.
+
+                                   innfeed   innduct   nntpsend/innxmit
+       realtime feed               Yes       Yes       No
+       reliable                    No        Yes       Yes
+       source code size            24kloc    4.6kloc   1.9kloc
+       invoke once for all sites   Yes       No        Yes
+       number of processes         one       1/site    2/site, intermittently
+
+EXIT STATUS
+       0      An instance of innduct is already running for this feedfile and -q was specified.
+
+       4      The feed has been dropped by innd, and we (or previous innducts) have successfully offered all the old articles to the peer site.  Our work is done.
+
+       8      innduct was invoked with bad options or command line arguments.  The error message will be printed to stderr, and also (if any options or arguments were passed at all) to syslog with sever‐
+              ity crit.
+
+       12     Things are going wrong, hopefully shortage of memory, system file table entries; disk IO problems; disk full; etc.  The specifics of the error will be logged to syslog with severity err (if
+              syslog is working!)
+
+       16     Things are going badly wrong in an unexpected way: system calls which are not expected to fail are doing so, or the protocol for communicating with innd is being  violated,  or  some  such.
+              Details will be logged with severity crit (if syslog is working!)
+
+       24-27  These exit statuses are used by children forked by innduct to communicate to the parent.  You should not see them.  If you do, it is a bug.
+
+FILES
+       innduct  dances  a somewhat complicated dance with innd to make sure that everything goes smoothly and that there are no races.  (See the two ascii-art diagrams in README.states for details of the
+       protocol.)  Do not mess with the feedfile and other associated files, other than as explained here:
+
+       pathrun
+              Default current working directory for innduct, and also default grandparent directory for the command line socket.
+
+       pathoutgoing/site
+              Default feedfile.
+
+       feedfile
+              Main feed file as specified in newsfeeds(5).  This and other batchfiles used by innduct contains lines each of which is of the form     token messageid where token is the  inn  storage  API
+              token.  Such lines can be written by Tf,Wnm in a newsfeeds(5) entry.  During processing, innduct overwrites lines in the batch files which correspond to articles it has processed: each such
+              line is replaced with one containing only spaces.  Only innd should create feedfile, and only innduct should remove it.
+
+       feedfile_lock
+              Lockfile,  preventing multiple innduct invocations for the same feed.  A process holds this lock after it has opened the lockfile, made an fcntl F_SETLK call, and then checked with stat and
+              fstat that the file it now has open and has locked still has the name feedfile_lock.  (Only) the lockholder may delete the lockfile.  For your convenience, after the lockfile is locked, in‐
+              nfeed's pid, the site, feedfile and fqdn are all written to the lockfile.  NB that stale lockfiles may contain stale data so this information should not be relied on other  than  for  trou‐
+              bleshooting.
+
+       feedfile_flushing
+              Batch file: the main feedfile is renamed to this filename by innduct before it asks inn to flush the feed.  Only innduct should create, modify or remove this file.
+
+       feedfile_defer
+              Batch file containing details of articles whose transmission has very recently been deferred at the request of the recipient site.  Created, written, read and removed (only) by innduct.
+
+       feedfile_backlog.time_t.inum
+              Batch  file  containing  details of articles whose transmission has less recently been deferred at the request of the recipient site.  Created by innduct, and will also be read, updated and
+              removed by innduct.  However you (the administrator) may also safely remove backlog files.
+
+       feedfile_backlogsomething
+              Batch file manually provided by the administrator.  innduct will automatically find, read and process any file matching this pattern (blanking out entries for processed articles) and  even‐
+              tually remove it.  something may not contain # ~ or /.
+
+              Be sure to have finished writing the file before you rename it to match the pattern feedfile_backlog*, as otherwise innduct may find and process the file, and even think it has finished it,
+              before you have written the complete file.  You may also safely remove backlog files.
+
+       pathrun/innduct/site
+              Default AF_UNIX listening socket for the control command line.  See CONTROLLING INNDUCT, above.
+
+       feedfile_dump
+              On request via a control connection innduct dumps a summary of its state to this text file.  This is mostly useful for debugging.
+
+       /etc/news/inn.conf
+              Used  for pathoutgoing (to compute default feedfile and associated paths), pathrun (to compute default PATHRUN and hence effective default CLI-DIR and CLI-PATH), for finding how to communi‐
+              cate with innd, and also for sourceaddress and/or sourceaddress6.
+
+HISTORY
+       Written by Ian Jackson <ijackson@chiark.greenend.org.uk>
+
+SEE ALSO
+       inn.conf(5), innd(8), newsfeeds(5)
+
+                                                                                                                                                                                                 INNDUCT(8)

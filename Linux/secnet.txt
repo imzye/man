@@ -1,0 +1,539 @@
+secnet(8)                                                                                 System Manager's Manual                                                                                 secnet(8)
+
+NAME
+       secnet - VPN router daemon
+
+SYNOPSIS
+       secnet [OPTIONS]
+
+DESCRIPTION
+       secnet allows virtual private networks to be constructed spanning multiple separate sites.
+
+OPTIONS
+       --verbose, -v
+              Enable extra diagnostics.
+
+       --nowarnings, -w
+              Suppress warnings.
+
+       --help Display usage message.
+
+       --version
+              Display version string.
+
+       --nodetach, -n
+              Don't go into background.  The default behaviour is to become a daemon during startup.
+
+       --silent, --quiet, -f
+              Suppress error messages.
+
+       --debug, -d
+              Enable debug messages.
+
+       --config, -c PATH
+              Specify configuration file.  The default is /etc/secnet/secnet.conf.
+
+       --just-check-config, -j
+              Check configuration and exit.
+
+       --sites-key, -s KEY
+              Configuration file key defining active sites.  The default is sites.
+
+CAPABILITY NEGOTIATION
+       Sites  negotiate  with  each other during key exchange in order to determine which cryptographic algorithms and other features – termed capabilities – they each support.  Capabilities are assigned
+       small integer numbers.  In many cases, capability numbers can be assigned in the configuration file, as described below; but secnet's default assignments will often be satisfactory.
+
+       Capability numbers between 0 and 7 inclusive are reserved for local use: secnet will never make use of them without explicit configuration.  This may be useful to migrate from one set  of  parame‐
+       ters  for  a  particular cryptographic algorithm to different, incompatible, parameters for the same algorithm.  Other capability numbers are assigned by default by various kinds of closures.  See
+       the descriptions below for details.
+
+       It is essential that a capability number mean the same thing to each of a pair of peers.  It's possible to configure a site so that it uses different capability numbers for the same  feature  when
+       it communicates with different peer sites, but this is likely to be more confusing than useful.
+
+CONFIGURATION FILE
+   Overview
+       The default configuration file is /etc/secnet/secnet.conf.  This can be overridden with the --config option.
+
+       The  configuration  file  defines a dictionary (a mapping from keys to values) of configuration information for secnet.  It is recursive in nature, i.e. values may themselves include dictionaries.
+       Any node in the nested structure thus defined can be identified by a path, which is the sequence of keys necessary to reach it from the root, separated by "/" characters.  See Paths below for  how
+       this is used.
+
+       Furthermore,  when  a key is looked up in a dictionary, if it cannot be found, it is sought in the parent dictionary, and so on back to the root.  For instance, each site must contain the resolver
+       key, but in a typical configuration there is no value in having different resolvers for each site.  Therefore resolver is defined at the root and thus automatically incorporated into all sites.
+
+   Whitespace
+       Whitespace, including newlines, is ignored except to the extent that it bounds other symbols.
+
+       Comment begin with "#" and continues to the end of the line.  Comments are ignored.
+
+   Inclusion
+       A file may be recursively included into the configuration file using a line of the form:
+
+              include PATH
+
+       This is handled at a higher level than the main parser and so precludes the possibility of using the string include for any other purpose.
+
+   Assignments
+       The configuration file contains one or more assigments.  Each assignment is written:
+
+              key [=] list;
+
+       i.e. the equals sign is optional.  The semicolon is mandatory in all contexts.
+
+       Keys start with a letter or "_" and continue with any numbers of letters, digits, "_" and "-".
+
+       Each key is a list of one or more values, separated by commas.  Possible values types are boolean, string, number, dictionary, path and closure evaluation.
+
+   Strings
+       Strings are contained within "double quotes".  There is (currently) no escape syntax and no way to include quotes inside strings.
+
+       Example:
+               filename "/var/log/secnet";
+
+   Numbers
+       Numbers are encoded in decimal and do not include a sign.  Numbers must lie in the range 0 to 4294967295.
+
+       Example:
+               mtu 1400;
+
+   Dictionaries
+       Dictionaries consist of one or more assignments, in the same syntax as given above, enclosed in "{" and "}".
+
+       Example:
+               system {
+                       userid "secnet";
+                       pidfile "/var/run/secnet.pid";
+               };
+
+   Paths
+       Paths allow a key already defined in the configuration to be aliased.
+
+       Paths consist of a sequence of keys separated by "/".  If the path starts with a "/" then it is an absolute path and the search starts at the root of the configuration.  Otherwise it is a relative
+       path and starts in the containing dictionary or in any of its parents, down to and including the root.  If there is more than one match, the one furthest from the root "wins".
+
+       The value of a path is the list assigned to the key it refers to.  Lists are flattened; for example if a key is defined as a list of two paths, and each of those refers to a list of two  integers,
+       the original key is therefore defined to be a list of four integers, not a list consisting of two lists.
+
+       It is not possible to refer to a later key using a path.
+
+       Example:
+               vpn {
+                 test {
+                   kakajou vpn-data/test/kakajou/kakajou;
+                   araminta vpn-data/test/araminta/araminta;
+                   deodand vpn-data/test/deodand/deodand;
+                   all-sites kakajou,araminta,deodand;
+                 };
+               };
+               all-sites vpn/test/all-sites;
+
+       Here, each of vpn/test/kakajou, vpn/test/araminta and vpn/test/deodand are defined as aliases to values defined elsewhere.  vpn/tests/all-sites is defined as the list of all three of those values,
+       and all-sites is then defined to be an alias for that.
+
+   Booleans
+       The (single-element) paths false, no and nowise are predefined and refer to a boolean false value.  Similarly true, yes and verily point at a boolean true value.
+
+       In all six cases, variants with just the first letter capitalized, and with all letters capitalized, are also provided.
+
+       Example:
+               random randomfile("/dev/urandom",no);
+
+   Closure Evaluation
+       Closure evaluation uses the following syntax:
+
+              CLOSURE ( ARGUMENTS )
+
+       CLOSURE may be a path referring to a closure, or may itself be a closure evaluation.
+
+       ARGUMENTS is a list of zero or more values, separated by commas.  As a shortcut, if the arguments consist of a single dictionary, the parentheses may be ommitted:
+
+              CLOSURE { ... }
+
+       Example:
+               sites map(site, vpn/test/all-sites);
+
+       When  a  closure  is  evaluated  it  returns a value (a list, much as above) and may also have side effects (which may be immediate or may be deferred to some later phase of execution).  A list of
+       built-in closures is given below.
+
+   Mandatory Keys
+       Two keys are mandatory.  system must be a dictionary in which the following keys can be looked up:
+
+       log    A log closure; see the logfile documentation below.  The destination for log messages.  Mandatory.
+
+       userid A string.  The userid to run as after dropping privilege.  Optional.
+
+       pidfile
+              A string.  The path to write a pidfile.  Optional.
+
+       sites should be a list of site closures; see the site documentation below.  This defines the collection of tunnel endpoints that secnet will communicate with.
+
+       Recall the recursive lookup logic described in Overview above: if (for instance) log is defined in the top level dictionary but not in system, it will nevertheless be found when looked up  in  the
+       latter.
+
+CLOSURES
+       secnet contains a collection of built-in closures with names (i.e. single-element paths) given below.
+
+       Most of them return anonymous closures of various types, which are described contextually.
+
+   adns
+       adns(DICT) => resolver closure
+
+       DICT   This either be empty or contain the single key config, with a string value giving configuration to supply to ADNS.  This might be read from a file using readfile.
+
+       A resolver closure is a means of converting hostnames into network addresses.
+
+   diffie-hellman
+       diffie-hellman(MODULUS, GENERATOR[, CHECK]) => dh closure
+
+       MODULUS
+              String.  The prime modulus p in hex.
+
+       GENERATOR
+              String.  The generator g in hex.
+
+       CHECK  Boolean.  If true (the default) then check if p is prime.
+
+       A dh closure defines a group to be used for key exchange.
+
+   logfile
+       logfile(DICT) => log closure
+
+       Valid keys in the DICT argument are:
+
+       filename
+              The path to log to.
+
+       class  A list of strings defining which classes of message to log.  The possible message classes are debug-config, debug-phase, debug, info, notice, warning, error, security and fatal.
+
+              all-debug  is  the  union  of  all  the debug... classes.  default is equivalent to warning, error, security, fatal.  verbose is equivalent to info, notice, warning, error, security, fatal.
+              quiet is equivalent to fatal.
+
+       A log closure is a means of saving log messages.  See also syslog below.
+
+   makelist
+       makelist(DICT) => LIST
+
+       Returns the (flattened) list of values from the dictionary, discarding the keys.
+
+   map
+       map(CLOSURE, INPUT...) => LIST
+
+       Applies CLOSURE to all its additional input arguments and returns the resulting list.
+
+   md5
+       md5 is a hash closure implementing the MD5 algorithm.
+
+   null-netlink
+       null-netlink(DICT) => netlink closure
+       null-netlink(DICT) => pure closure
+
+       Valid keys in the DICT argument are:
+
+       name   String.  The name for the netlink device.  The default is null-netlink.
+
+       networks
+              List of strings.  The networks on the host side of the netlink device.
+
+       remote-networks
+              List of strings.  Networks that may be claimed by remote sites using this netlink device.
+
+       secnet-address
+              String.  IP address of this netlink.  Incompatible with ptp-address.
+
+       ptp-address
+              String.  IP address of the other end of a point-to-point link.  Incompatible with secnet-address.
+
+       mtu    Number.  The MTU of the netlink device.  The default is 1000.
+
+       If ptp-address is used then the result is a netlink closure.  This can be used directly with the link key in the sites closure (see below).
+
+       If secnet-address is used then the result is a pure closure.  This must be evaluated to yield a netlink closure, using a dictionary argument with the following keys:
+
+       routes String list.  networks reachable via this tunnel, in address/bits format.
+
+       options
+              String list.  A list of options:
+
+              allow-route
+                     Allow packets received via this tunnel to be routed down other tunnels (without this option only packets from the host will be routed).
+
+              soft   Remove these routes from the host routing table when the link quality is 0.
+
+       mtu    Number.  Default MTU over this link.  The default is inherited from the pure closure.
+
+       priority
+              Number.  The priority of this link.  Higher values beat lower values.  The default is 0.
+
+       A netlink closure is a virtual IP link, and is supplied to the link key of a site closure.
+
+       The netlink created by null-netlink has no connection to the host.  See tun and userv-ipif below for more useful alternatives.
+
+   randomfile
+       randomfile(FILENAME[, BLOCKING]) => randomsource closure
+
+       FILENAME
+              String.  Path to random device, e.g. /dev/urandom.
+
+       BLOCKING
+              Boolean.  True if this is a blocking device and false otherwise (the default).  Blocking device support is not implemented so this must always be False or absent.
+
+       A randomsource closure is a source of random numbers.
+
+   readfile
+       readfile(PATH) => STRING
+
+       Read the contents of the file PATH (a string) and return it as a string.
+
+   eax-serpent
+       eax-serpent(DICT) => transform closure
+
+       Valid keys in the DICT argument are:
+
+       max-sequence-skew
+              The maximum acceptable difference between the sequence number in a received, decrypted message and the previous one.  The default is 10.  It may be necessary to increase this is if  connec‐
+              tivity is poor.
+
+       tag-length-bytes
+              The length of the message authentication tag.  The default is 16, for a 128-bit tag length.  It must be no longer than the Serpent blocksize, 16.  Must be have the same value at both ends.
+
+       padding-rounding
+              Messages are padded to a multiple of this many bytes.  This serves to obscure the exact length of messages.  The default is 16,
+
+       capab-num
+              The capability number to use when advertising this transform.  The default for serpent-eax is 9.
+
+       A transform closure is a reversible means of transforming messages for transmission over a (presumably) insecure network.  It is responsible for both confidentiality and integrity.
+
+   serpent256-cbc
+       serpent256-cbc(DICT) => transform closure
+
+       This transform is deprecated as its security properties are poor; it should be specified only alongside a better transform such as eax-serpent.
+
+       Valid keys in the DICT argument are:
+
+       capab-num
+              As above.  The default for serpent256-cbc is 8.
+
+       max-sequence-skew
+              As above.
+
+       Note that this uses a big-endian variant of the Serpent block cipher (which is not compatible with most other Serpent implementations).
+
+   rsa-private
+       rsa-private(PATH[, CHECK]) => sigprivkey closure
+
+       PATH   String.  The path to a file containing an RSA private key in SSH format (version 1).  There must be no passphrase.
+
+       CHECK  Boolean.  If true (the default) then check that the key is valid.
+
+   rsa-public
+       rsa-public(KEY, MODULUS) => sigpubkey closure
+
+       KEY    String.  The public key exponent (e), in decimal.
+
+       MODULUS
+              String.  The modulus (n), in decimal.
+
+   sha1
+       sha1 is a hash closure implementing the SHA-1 algorithm.
+
+   site
+       site(DICT) => site closure
+
+       Valid keys in the DICT argument are:
+
+       local-name
+              String.  The site's name for itself.
+
+       name   String.  The name of the site's peer.
+
+       link   A netlink closure.
+
+       comm   A comm closure.
+
+       resolver
+              A resolver closure.
+
+       random A randomsource closure.
+
+       local-key
+              An sigprivkey closure.  The key used to prove our identity to the peer.
+
+       address
+              String.  The DNS name of the peer.  Optional, but if it is missing then it will not be possible to initiate new connections to the peer.
+
+       port   Number.  The port to contact the peer.
+
+       key    An sigpubkey closure.  The key used to verify the peer's identity.
+
+       transform
+              One  or  more transform closures.  Used to protect packets exchanged with the peer.  These should all have distinct capab-num values, and the same capab-num value should have the same (or a
+              compatible) meaning at both ends.  The list should be in order of preference, most preferred first.  (The end which sends MSG1,MSG3 ends up choosing; the ordering at the other end is irrel‐
+              evant.)
+
+       dh     A dh closure.  The group to use in key exchange.
+
+       hash   The hash function used during setup.
+
+       key-lifetime
+              Number.  The maximum lifetime of a session key in milliseconds.  The default is one hour.
+
+       setup-retries
+              Number.  The maximum number of times a key negotiation packet will be transmitted before giving up.  The default is 5.
+
+       setup-timeout
+              Number.  The time between retransmissions of key negotiation packets, in milliseconds.  The default is one second.
+
+       wait-time
+              Number.  The time to wait after a failed key setup before making another attempt, in milliseconds.  The default is 20s.
+
+       renegotiate-time
+              Number.  The time after which a new session key will be negotiated, if there is traffic on the link, in milliseconds.  It must not be greater than the key-lifetime.  The default  5  minutes
+              less than the key lifetime, unless the lifetime is less than 10 minutes in which case the default is half the lifetime.
+
+       keepalive
+              Boolean.  If true then attempt to always maintain a live session key.  Not implemented.
+
+       log-events
+              String list.  Types of event to log for this site.
+
+              unexpected
+                     Unexpected key setup packets (including late retransmissions).
+
+              setup-init
+                     Start of attempt to setup a session key.
+
+              setup-timeout
+                     Failure of attempt to setup a session key, through timeout.
+
+              activate-key
+                     Activation of a new session key.
+
+              timeout-key
+                     Deletion of current session key through age.
+
+              security
+                     Anything potentially suspicious.
+
+              state-change
+                     Steps in the key setup protocol.
+
+              packet-drop
+                     Whenever we throw away an outgoing packet.
+
+              dump-packets
+                     Every key setup packet we see.
+
+              errors Failure of name resolution, internal errors.
+
+              all    Everything (too much!)
+
+       A site closure defines one site to communicate with.  secnet expects the (root) key site to be a list of site closures.
+
+   sysbuffer
+       sysbuffer([SIZE[, OPTIONS]]) => buffer closure
+
+       SIZE   Number.  The size of the buffer in bytes.  This must be between 64 and 131072.  The default is 4096.
+
+       OPTIONS
+              Dictionary.  Optional and presently unused.
+
+       A buffer closure is a means of buffering packets to send or that have been received.
+
+   syslog
+       syslog(DICT) => log closure
+
+       Valid keys in the DICT argument are:
+
+       ident  String.  The ident string to pass to openlog(3); this value will appear in each message.
+
+       facility
+              String.  The facility to log as.  The possible values are authpriv, cron, daemon, kern, local0-7, lpr, mail, news, syslog, user and uucp.
+
+       See also logfile above.
+
+   tun
+       tun(DICT) => netlink closure
+       tun(DICT) => pure closure
+
+       Valid keys in the DICT argument are those documented for null-netlink above, plus:
+
+       flavour
+              String.  The type of TUN interface to use.  Possible values are linux, bsd, streams and guess.  The default is guess.
+
+       device String.  The path to the TUN/TAP device file.  The default is /dev/net/tun for the linux flavour and /dev/tun for the others.
+
+       interface
+              String.  The interface to use.  The default is to pick one automatically.  This cannot be used with the streams flavour.
+
+       local-address
+              String.  IP address of the host's tunnel interface.
+
+       ifconfig-path
+              String.  The name of the ifconfig command.  The default is simply "ifconfig".
+
+       route-path
+              String.  The name of the route command.  The default is simply "route".
+
+       ifconfig-type
+              String.  The syntax expected by the ifconfig command.  Possible values are linux, bsd, ioctl, solaris-2.5 and guess.  The default is guess.
+
+       route-type
+              String.  The syntax expected by the ifconfig command.  Possible values are linux, bsd, ioctl, solaris-2.5 and guess.  The default is guess.
+
+       buffer A buffer closure to use for packets transferred from the host to secnet.  The buffer size must be at least 60 greater than the MTU.
+
+       The ifconfig-type and route-type values determine how those commands are executed.  If they are set to ioctl then low-level system calls are used directly instead of invoking the commands.
+
+       The netlink created by tun uses the tun device to communicate with the host kernel.
+
+   udp
+       udp(DICT) => comm closure
+
+       Valid keys in the DICT argument are:
+
+       address
+              String.  The IP address to bind on.  The default is 0.0.0.0, i.e. "any".
+
+       port   Number.  The port number to bind to.  The default is 0, i.e. the OS will choose one.  It is suggested that any given VPN agree a common port number.
+
+       buffer A buffer closure.  See the sysbuffer closure above.
+
+       authbind
+              String.  The path to a helper program to bind the socket.  Optional.
+
+              The program will be invoked with the address and port number as its arguments, and with the socket to bind as file descriptor 0.  It should either bind the socket as requested, or exit with
+              nonzero status.
+
+       A comm closure is a means of sending and receiving messages via a network.  It does not provide confidentiality, reliablity or availability.
+
+   userv-ipif
+       userv-ipif(DICT) => netlink closure
+       userv-ipif(DICT) => pure closure
+
+       Valid keys in the DICT argument are those documented for null-netlink above, plus:
+
+       local-address
+              String.  IP address of the host's SLIP interface.
+
+       userv-path
+              String.  Where to find userv(1).  The default is "userv".
+
+       service-user
+              String.  The name of the user that owns the service.  The default is "root".
+
+       service-name
+              String.  The name of the service to request.  The default is "ipif".
+
+       buffer A buffer closure to use for packets transferred from the host to secnet.
+
+       The netlink created by userv-ipif invokes the specified userv service with pipes connected to its standard input and output.  It uses SLIP to communicate with the host kernel via these pipes.
+
+FILES
+       /etc/secnet/secnet.conf
+              Configuration file.
+
+SEE ALSO
+       userv(1)
+
+                                                                                                                                                                                                  secnet(8)

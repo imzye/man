@@ -1,0 +1,181 @@
+nslint(8)                                                                                 System Manager's Manual                                                                                 nslint(8)
+
+NAME
+       nslint - perform consistency checks on dns files
+
+SYNOPSIS
+       nslint [ -d ] [ -c named.conf ] [ -C nslint.conf ]
+       nslint [ -d ] [ -b named.boot ] [ -B nslint.boot ]
+
+DESCRIPTION
+       Nslint  reads  the  nameserver configuration files and performs a number of consistency checks on the dns records. If any problems are discovered, error messages are displayed on stderr and nslint
+       exits with a non-zero status.
+
+       Here is a partial list of errors nslint detects:
+
+              Records that are malformed.
+
+              Names that contain dots but are missing a trailing dot.
+
+              PTR records with names that are missing a trailing dot.
+
+              Names that contain illegal characters (rfc1034).
+
+              A records without matching PTR records
+
+              PTR records without matching A records
+
+              Names with more than one address on the same subnet.
+
+              Addresses in use by more than one name.
+
+              Names with CNAME and other records (rfc1033).
+
+              Unknown service and/or protocol keywords in WKS records.
+
+              Missing semicolons and quotes.
+
+OPTIONS
+       -b     Specify an alternate named.boot file. The default is /etc/named.boot.
+
+       -c     Specify an alternate named.conf file. The default is /etc/named.conf.
+
+       -B     Specify an alternate nslint.boot file. The default is nslint.boot in the last directory line processed in named.boot (or the current working directory).  This file is processed like a  sec‐
+              ond named.boot.  The most common use is to tell nslint about A records that match PTR records that point outside the domains listed in named.boot.
+
+       -C     Specify  an alternate nslint.conf file. The default is nslint.conf in the last directory line processed in named.conf (or the current working directory).  This file is processed like a sec‐
+              ond named.conf.
+
+       -d     Raise the debugging level. Debugging information is displayed on stdout.
+
+       Nslint knows how to read BIND 8 and 9's named.conf configuration file and also older BIND's named.boot file. If both files exist, nslint will prefer named.conf (on the theory that  you  forgot  to
+       delete named.boot when you upgraded BIND).
+
+ADVANCED CONFIGURATION
+       There  are some cases where it is necessary to use the advanced configuration features of nslint.  Advanced configuration is done with the nslint.conf file. (You can also use nslint.boot which has
+       a syntax similar to named.boot but is not described here.)
+
+       The most common is when a site has a demilitarized zone (DMZ).  The problem here is that the DMZ network will have PTR records for hosts outside its domain. For example lets say we have  128.0.rev
+       with:
+
+              1.1     604800  in      ptr     gateway.lbl.gov.
+              2.1     604800  in      ptr     gateway.es.net.
+
+       Obviously  we  will  define  an  A  record  for  gateway.lbl.gov  pointing to 128.0.1.1 but we will get errors because there is no A record defined for gateway.es.net.  The solution is to create a
+       nslint.conf file (in the same directory as the other dns files) with:
+
+              zone "es.net" {
+                     type master;
+                     file "nslint.es.net";
+              };
+
+       And then create the file nslint.es.net with:
+
+              gateway 1       in      a       128.0.1.2
+
+       Another problem occurs when there is a CNAME that points to a host outside the local domains. Let's say we have info.lbl.gov pointing to larry.es.net:
+
+              info    604800  in      cname   larry.es.net.
+
+       In this case we would need:
+
+              zone "es.net" {
+                     type master;
+                     file "nslint.es.net";
+              };
+
+       in nslint.boot and:
+
+              larry   1       in      txt     "place holder"
+
+       nslint.es.net.
+
+       One last problem when a pseudo host is setup to allow two more more actual hosts provide a service. For, let's say that lbl.gov contains:
+
+              server  604800  in      a       128.0.6.6
+              server  604800  in      a       128.0.6.94
+              ;
+              tom     604800  in      a       128.0.6.6
+              tom     604800  in      mx 0    lbl.gov.
+              ;
+              jerry   604800  in      a       128.0.6.94
+              jerry   604800  in      mx 0    lbl.gov.
+
+       In this case nslint would complain about missing PTR records and ip addresses in use by more than one host.  To suppress these warnings, add you would the lines:
+
+              zone "lbl.gov" {
+                     type master;
+                     file "nslint.lbl.gov";
+              };
+
+              zone "0.128.in-addr.arpa" {
+                     type master;
+                     file "nslint.128.0.rev";
+              };
+
+       to nslint.conf and create nslint.lbl.gov with:
+
+              server  1       in      allowdupa       128.0.6.6
+              server  1       in      allowdupa       128.0.6.94
+
+       and create nslint.128.0.rev with:
+
+              6.6     604800  in      ptr     server.lbl.gov.
+              94.6    604800  in      ptr     server.lbl.gov.
+
+       In this example, the allowdupa keyword tells nslint that it's ok for 128.0.6.6 and 128.0.6.94 to be shared by server.lbl.gov, tom.lbl.gov, and jerry.lbl.gov.
+
+       Another nslint feature helps detect hosts that have mistakenly had two ip addresses assigned on the same subnet. This can happen when two different people request an ip address for the same  host‐
+       name or when someone forgets an address has been assigned and requests a new number.
+
+       To detect such A records, add a nslint section to your nslint.conf containing something similar to:
+
+              nslint {
+                     network "128.0.6/22";
+              };
+
+       or:
+
+              nslint {
+                     network "128.0.6 255.255.252.0";
+              };
+
+       These two examples are are equivalent ways of saying the same thing; that subnet 128.0.6 has a 22 bit wide subnet mask.
+
+       Using information from the above network statement, nslint would would flag the following A records as being in error:
+
+              server  1       in      a       128.0.6.48
+              server  1       in      a       128.0.7.16
+
+       Note that if you specify any network lines in your nslint.conf file, nslint requires you to include lines for all networks; otherwise you might forget to add network lines for new networks.
+
+       Sometimes you have a zone that nslint just can't deal with. A good example is a dynamic dns zone. To handle this, you can add the following to nslint.com:
+
+              nslint {
+                     ignorezone "dhcp.lbl.gov";
+              };
+
+       This will suppress "name referenced without other records" warnings.
+
+FILES
+       /etc/named.conf - default named configuration file
+       /etc/named.boot - old style named configuration file
+       nslint.conf - default nslint configuration file
+       nslint.boot - old style nslint configuration file
+
+SEE ALSO
+       named(8), rfc1033, rfc1034
+
+AUTHOR
+       Craig Leres of the Lawrence Berkeley National Laboratory, University of California, Berkeley, CA.
+
+       The current version is available via anonymous ftp:
+
+              ftp://ftp.ee.lbl.gov/nslint.tar.gz
+
+BUGS
+       Please send bug reports to nslint@ee.lbl.gov.
+
+       Not everyone is guaranteed to agree with all the checks done.
+
+4th Berkeley Distribution                                                                        2 May 2002                                                                                       nslint(8)

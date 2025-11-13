@@ -1,0 +1,426 @@
+bdep(1)                     General Commands Manual                    bdep(1)
+
+NAME
+       bdep - project dependency manager
+
+SYNOPSIS
+       bdep --help
+       bdep --version
+       bdep help [command | topic]
+       bdep [common-options] command [command-options] command-args
+
+DESCRIPTION
+       The  build2  project dependency manager is used to manage the dependen‐
+       cies of a project during development.
+
+       For a detailed description of any command or help topic, use  the  help
+       command or see the corresponding man page (the man pages have the bdep-
+       prefix, for example bdep-help(1)). Note also that  command-options  and
+       command-args  can  be  specified in any order and common-options can be
+       specified as part of command-options.
+
+       A bdep project is a directory, normally under a version control  system
+       such  as  git(1),  called project repository. A project contains one or
+       more packages. If it contain several, then they are  normally  related,
+       for example, the libhello library and the hello program.
+
+       Packages  in  a  project  may  depend  on other packages outside of the
+       project. To distinguish between the two we call them  project  packages
+       and dependency packages, respectively.  Naturally, our project packages
+       may be someone else's dependency packages.
+
+       A simple, single-package project contains the package in  the  root  of
+       the  project  repository. For example (note the location of the package
+       manifest and lockfile):
+
+       hello/
+       ├── .git/
+       ├── ...
+       ├── lockfile
+       └── manifest
+
+       See Package Manifest (#manifest-package) for details  on  the  manifest
+       file.
+
+       If a project contains multiple packages or we wish to place the package
+       into a subdirectory, then the root of the project repository must  con‐
+       tain  the  packages.manifest file that specifies the package locations.
+       For example:
+
+       hello/
+       ├── .git/
+       ├── hello/
+       │   ├── ...
+       │   ├── lockfile
+       │   └── manifest
+       ├── libhello/
+       │   ├── ...
+       │   ├── lockfile
+       │   └── manifest
+       └── packages.manifest
+
+       For this project, packages.manifest would have the following contents:
+
+       : 1
+       location: hello/
+       :
+       location: libhello/
+
+       A project repository root would  usually  also  contain  the  reposito‐
+       ries.manifest  file that lists the repositories that provide the depen‐
+       dency packages. For example:
+
+       hello/
+       ├── ...
+       ├── manifest
+       └── repositories.manifest
+
+       If our hello project wanted to use libhello as  a  dependency  package,
+       then its repositories.manifest could look like this:
+
+       : 1
+       summary: hello project repository
+       :
+       role: prerequisite
+       location: https://example.com/libhello.git
+
+       See Repository List Manifest (#manifest-repository-list) for details on
+       the repositories.manifest file.
+
+       For development a bdep project is associated with one or  more  bpkg(1)
+       build  configurations.  These  configuration  are used as a backing for
+       building project packages and their dependencies.
+
+       The list of the associated build configuration as well as the  list  of
+       project  packages  initialized  in each configuration are stored in the
+       bdep project database under the .bdep/ subdirectory of the project root
+       directory. For example:
+
+       hello-gcc/     # Build configuration for gcc.
+       hello-clang/   # Build configuration for clang.
+       hello/
+       ├── .bdep/
+       ├── .git/
+       └── ...
+
+       The  core  of  bdep  functionality is state synchronization between the
+       project and one or more associated build configurations.  For  example,
+       if  we  list a new dependency in the package's manifest file, then bdep
+       fetches and configures this dependency in a build configuration.  Simi‐
+       larly,  if  we  upgrade or downgrade a dependency in a build configura‐
+       tion, then bdep updates the corresponding entry in the package's  lock‐
+       file.
+
+       A typical bdep workflow would consist of the following steps.
+
+       Obtain the Project
+              Normally  we  would use the version control system to obtain the
+              project we want to develop:
+
+              $ git clone ssh://example.com/hello.git
+
+              Alternatively, we can use the bdep-new(1) command to start a new
+              project (see Package Name (#package-name) for details on project
+              naming):
+
+              $ bdep new -l c++ -t exe hello
+
+              Similar to version control tools, we normally run bdep from  the
+              project's directory or one of its subdirectories:
+
+              $ cd hello
+
+              See bdep-projects-configs(1) for alternative ways to specify the
+              project location.
+
+       Initialize the Project
+              Next we use the bdep-init(1) command to create new or add exist‐
+              ing  build  configurations  and  initialize our project in these
+              configurations:
+
+              $ bdep init -C ../hello-gcc @gcc cc config.cxx=g++
+              $ bdep init -A ../hello-clang @clang
+
+              If the configuration directory is next to the  project  and  its
+              name is in the prj-name-cfg-name form, then the shortcut version
+              of the init can be used instead:
+
+              $ bdep init -C @gcc cc config.cxx=g++
+              $ bdep init -A @clang
+
+              After initialization we can use the  bdep-status(1)  command  to
+              examine the status of our project in its configurations:
+
+              $ bdep status -a
+              in configuration @gcc:
+              hello configured 0.1.0-a.0.19700101000000
+
+              in configuration @clang:
+              hello configured 0.1.0-a.0.19700101000000
+
+              Most  bdep  commands operate on one or more build configurations
+              associated with the project. If we don't specify one explicitly,
+              then  the default configuration (usually the first added; gcc in
+              our case) is used. Alternatively, we can specify the  configura‐
+              tions  by  name  (if assigned), as directories, or with --all|-a
+              (see bdep-projects-configs(1) for details). For example:
+
+              $ bdep status @clang @gcc      # by name
+              $ bdep status -c ../hello-gcc  # as a directory
+
+              If a command is operating on multiple configurations (like  sta‐
+              tus -a in the previous example), then it will print a line iden‐
+              tifying each configuration before printing the command's result.
+
+              By default the project's source directory is configured to  for‐
+              ward to the default build configuration. That is, we can run the
+              build system in the source directory and it  will  automatically
+              build in the forwarded configuration as well as link the results
+              back to the source directory using symlinks or another  suitable
+              mechanism (see bdep-config(1) for details). For example:
+
+              $ b        # build in gcc
+              <...>
+
+              $ ./hello  # run the result
+
+              Using the build system directly on configurations other than the
+              default requires explicitly specifying their paths. To make this
+              more  convenient,  the  bdep-update(1),  bdep-test(1), and bdep-
+              clean(1) commands allow us to refer to them  by  names,  perform
+              the  desired  build system operation on several of them at once,
+              and, in case of test, perform it on immediate or  all  dependen‐
+              cies or a project. For example:
+
+              $ bdep test @gcc @clang
+              in configuration @gcc:
+              <...>
+
+              in configuration @clang:
+              <...>
+
+              To deinitialize a project in one or more build configurations we
+              can use the bdep-deinit(1) command. For example:
+
+              $ bdep deinit -a
+
+       Add, Remove, or Change Dependencies
+              Let's say we found libhello that we would like  to  use  in  our
+              project.  First we edit our project's repositories.manifest file
+              and add the libhello's repository as our prerequisite:
+
+              $ cat repositories.manifest
+              ...
+              role: prerequisite
+              location: https://example.com/libhello.git
+              ...
+
+              Next we edit our manifest file and specify a dependency on  lib‐
+              hello:
+
+              $ cat manifest
+              ...
+              depends: libhello ^1.0.0
+              ...
+
+              If  we  now run bdep-status(1), we will notice that a new itera‐
+              tion of our project is available for synchronization:
+
+              $ bdep status
+              hello configured 0.1.0-a.0.19700101000000
+                    available  0.1.0-a.0.19700101000000#1
+
+              See Package Version (#package-version) for  details  on  package
+              versions and iterations.
+
+       Synchronize the Project with Configurations
+              To  synchronize  changes in the project's dependency information
+              with its build configurations we use the  bdep-sync(1)  command.
+              Continuing  with our example, this will result in libhello being
+              downloaded and configured since our project now depends on it:
+
+              $ bdep sync
+              synchronizing:
+                build libhello/1.0.0 (required by hello)
+                upgrade hello/0.1.0-a.0.19700101000000#1
+
+              $ bdep status -i
+              hello configured 0.1.0-a.0.19700101000000#1
+                libhello ^1.0.0 configured 1.0.0
+
+              Note that by default build configurations are automatically syn‐
+              chronized  on  every build system invocation (see bdep-config(1)
+              for details). As a result, we rarely need to run the  sync  com‐
+              mand  explicitly and instead can just run the desired build sys‐
+              tem operation (for instance, update or test) directly. For exam‐
+              ple:
+
+              $ b test
+              synchronizing:
+                build libhello/1.0.0 (required by hello)
+                upgrade hello/0.1.0-a.0.19700101000000#1
+              <...>
+
+              It  is  also possible for several projects to share a build con‐
+              figuration. In this case all the projects  are  synchronized  at
+              once  regardless  of the originating project. For example, if we
+              were also the authors of libhello and hosted it  in  a  separate
+              version control repository (as opposed to being a package in the
+              hello repository), then it would have been natural to develop it
+              together with hello in the same configurations:
+
+              $ cd ../libhello
+              $ bdep init -A ../hello-gcc @gcc
+              $ bdep sync  # synchronizes both hello and libhello
+
+       Upgrade or Downgrade Dependencies
+              The  bdep-sync(1)  command  is also used to upgrade or downgrade
+              dependencies (and it is also executed as the last step of init).
+              Let's  say we learned a new version of libhello was released and
+              we would like to try it out.
+
+              To refresh the list of available dependency packages we use  the
+              bdep-fetch(1)  command  (or,  as a shortcut, the -f flag to sta‐
+              tus):
+
+              $ bdep fetch
+
+              $ bdep status libhello
+              libhello configured 1.0.0 available [1.1.0]
+
+              Without an explicit version or the --patch|-p option, sync  will
+              upgrade  the  specified  dependency to the latest available ver‐
+              sion:
+
+              $ bdep sync libhello
+              synchronizing:
+                upgrade libhello/1.1.0
+                reconfigure hello/0.1.0
+
+              $ bdep status -i
+              hello configured 0.1.0-a.0.19700101000000#1
+                libhello ^1.0.0 configured 1.1.0
+
+              Let's say we didn't like the new version and would  like  to  go
+              back  to using the old one. To downgrade a dependency we have to
+              specify its version explicitly:
+
+              $ bdep status -o libhello
+              libhello configured 1.1.0 available [1.0.0] (1.1.0)
+
+              $ bdep sync libhello/1.0.0
+              synchronizing:
+                downgrade libhello/1.1.0
+                reconfigure hello/0.1.0
+
+COMMANDS
+       help [topic]
+              bdep-help(1) – show help for a command or help topic
+
+       new    bdep-new(1) – create and initialize new project
+
+       init   bdep-init(1) – initialize project in build configurations
+
+       sync   bdep-sync(1) – synchronize project and build configurations
+
+       fetch  bdep-fetch(1) – fetch list of available project dependencies
+
+       status bdep-status(1) – print status of project and/or its dependencies
+
+       ci     bdep-ci(1) – submit project test request to CI server
+
+       release
+              bdep-release(1) – manage project's version during release
+
+       publish
+              bdep-publish(1) – publish project to archive repository
+
+       deinit bdep-deinit(1) – deinitialize project in build configurations
+
+       config bdep-config(1) – manage project's build configurations
+
+       test   bdep-test(1) – test project in build configurations
+
+       update bdep-update(1) – update project in build configurations
+
+       clean  bdep-clean(1) – clean project in build configurations
+
+HELP TOPICS
+       common-options
+              bdep-common-options(1) – details on common options
+
+       default-options-files
+              bdep-default-options-files(1) – specifying default options
+
+       projects-configs
+              bdep-projects-configs(1) – specifying  projects  and  configura‐
+              tions
+
+COMMON OPTIONS
+       The  common  options are summarized below with a more detailed descrip‐
+       tion available in bdep-common-options(1).
+
+       -v     Print essential underlying commands being executed.
+
+       -V     Print all underlying commands being executed.
+
+       --quiet|-q
+              Run quietly, only printing error messages.
+
+       --verbose level
+              Set the diagnostics verbosity to level between 0 and 6.
+
+       --jobs|-j num
+              Number of jobs to perform in parallel.
+
+       --no-progress
+              Suppress progress indicators for long-lasting  operations,  such
+              as network transfers, building, etc.
+
+       --bpkg path
+              The  package  manager program to be used for build configuration
+              management.
+
+       --bpkg-option opt
+              Additional option to be passed to the package manager program.
+
+       --build path
+              The build program to be used to build packages.
+
+       --build-option opt
+              Additional option to be passed to the build program.
+
+       --curl path
+              The curl program to be used for network operations.
+
+       --curl-option opt
+              Additional option to be passed to the curl program.
+
+       --pager path
+              The pager program to be used to show long text.
+
+       --pager-option opt
+              Additional option to be passed to the pager program.
+
+       --options-file file
+              Read additional options from file.
+
+       --default-options dir
+              The directory to load additional default options files from.
+
+       --no-default-options
+              Don't load default options files.
+
+EXIT STATUS
+       Non-zero exit status is returned in case of an error.
+
+BUGS
+       Send bug reports to the users@build2.org mailing list.
+
+COPYRIGHT
+       Copyright (c) 2014-2020 the build2 authors.
+
+       Permission is granted to copy, distribute and/or modify  this  document
+       under the terms of the MIT License.
+
+bdep 0.13.0                        July 2020                           bdep(1)

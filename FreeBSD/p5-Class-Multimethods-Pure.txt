@@ -1,0 +1,490 @@
+Class::Multimethods::Pure(3)               User Contributed Perl Documentation
+
+
+NAME
+       Class::Multimethods::Pure - Method-ordered multimethod dispatch
+
+SYNOPSIS
+           use Class::Multimethods::Pure;
+
+           package A;
+               sub magic { rand() > 0.5 }
+           package B;
+               use base 'A';
+           package C;
+               use base 'A';
+
+           BEGIN {
+               multi foo => ('A', 'A') => sub {
+                   "Generic catch-all";
+               };
+
+               multi foo => ('A', 'B') => sub {
+                   "More specific";
+               };
+
+               multi foo => (subtype('A', sub { $_[0]->magic }), 'A') => sub {
+                   "This gets called half the time instead of catch-all";
+               };
+
+               multi foo => (any('B', 'C'), 'A') => sub {
+                   "Accepts B or C as the first argument, but not A"
+               };
+           }
+
+DESCRIPTION
+   Introduciton to Multimethods
+       When you see the perl expression:
+
+           $animal->speak;
+
+       You're asking for "speak" to be performed on $animal, based on
+       $animal's current type.  For instance, if $animal were a Tiger, it
+       would say "Roar", whereas if $animal were a Dog, it would say "Woof".
+       The information of the current type of $animal need not be known by the
+       caller, which is what makes this mechanism powerful.
+
+       Now consider a space-shooter game.  You want to create a routine
+       "collide" that does something based on the types of two arguments.  For
+       instance, if a Bullet hits a Ship, you want to deliver some damage, but
+       if a Ship hits an Asteroid, you want it to bounce off.  You could write
+       it like this:
+
+           sub collide {
+               my ($a, $b) = @_;
+               if ($a->isa('Bullet') && $b->isa('Ship')) {...}
+               elsif ($a->isa('Ship') && $b->isa('Asteroid')) {...}
+               ...
+           }
+
+       Just as you could have written "speak" that way.  But, above being
+       ugly, this prohibits the easy addition of new types.  You first have to
+       create the type in one file, and then remember to add it to this list.
+
+       However, there is an analog to methods for multiple arguments, called
+       multimethods.  This allows the logic for a routine that dispatches on
+       multiple arguments to be spread out, so that you can include the
+       relevant logic for the routine in the file for the type you just added.
+
+   Usage
+       You can define multimethods with the "multi" declarator:
+
+           use Class::Multimethods::Pure;
+
+           multi collide => ('Bullet', 'Ship') => sub {
+               my ($a, $b) = @_;  ...
+           };
+
+           multi collide => ('Ship', 'Asteroid') => sub {
+               my ($a, $b) = @_;  ...
+           };
+
+       It is usually wise to put such declarations within a BEGIN block, so
+       they behave more like Perl treats subs (you can call them without
+       parentheses and you can use them before you define them).
+
+       If you think BEGIN looks ugly, then you can define them inline as you
+       use the module:
+
+           use Class::Multimethods::Pure
+               multi => collide => ('Bullet', 'Ship') => sub {...};
+
+       But you miss out on a couple of perks if you do that.  See "Special
+       Types" below.
+
+       After these are declared, you can call "collide" like a regular
+       subroutine:
+
+           collide($ship, $asteroid);
+
+       If you defined any variant of a multimethod within a package, then the
+       multi can also be called as a method on any object of that package (and
+       any package derived from it). It will be passed as the first argument.
+
+           $ship->collide($asteroid);  # same as above
+
+       If you want to allow a multi to be called as a method on some package
+       without defining any variants in that package, use the null
+       declaration:
+
+           multi 'collide';
+           # or
+           use Class::Multimethods::Pure multi => collide;
+
+       This is also used to import a particular multi into your scope without
+       defining any variants there.
+
+       All multis are global; that is, "collide" always refers to the same
+       multi, no matter where/how it is defined.  Allowing scoped multis is on
+       the TODO list.  But you still have to import it (as shown above) to use
+       it.
+
+   Non-package Types
+       In addition to any package name, there are a few special names that
+       represent unblessed references.  These are the strings returned by
+       "ref" when given an unblessed reference.   For the record:
+
+           SCALAR
+           ARRAY
+           HASH
+           CODE
+           REF
+           GLOB
+           LVALUE
+           IO
+           FORMAT
+           Regexp
+
+       For example:
+
+           multi pretty => (Any) => sub { $_[0] };
+           multi pretty => ('ARRAY') => sub {
+               "[ " . join(', ', map { pretty($_) } @{$_[0]}) . " ]";
+           };
+           multi pretty => ('HASH')  => sub {
+               my $hash = shift;
+               "{ " . join(', ',
+                       map { "$_ => " . pretty($hash->{$_}) } keys %$hash)
+               . " }";
+           };
+
+   Special Types
+       There are several types which don't refer to any package.  These are
+       Junctive types, Any, and Subtypes.
+
+       Junctive types represent combinations of types.  "any('Ship',
+       'Asteroid')" represents an object that is of either (or both) of the
+       classes "Ship" and "Asteroid".  "all('Horse', 'Bird')" represents an
+       object that is of both types "Horse" and "Bird" (probably some sort of
+       pegasus).  Finally, none('Dog') represents an object that is not a
+       "Dog" (or anything derived from "Dog").
+
+       For example:
+
+           multi fly => ('Horse') => sub { die "Horses don't fly!" };
+           multi fly => ('Bird')  => sub { "Flap flap chirp" };
+           multi fly => (all('Horse', 'Bird')) => sub { "Flap flap whinee" };
+
+       The "Any" type represents anything at all, object or not.  Use it like
+       so:
+
+           multi fly => (Any) => sub { die "Most things can't fly." };
+
+       Note that it is not a string.  If you give it the string "Any", it will
+       refer to the "Any" package, which generally doesn't exist.  "Any" is a
+       function that takes no arguments and returns an "Any" type object.
+
+       Finally, there is a "subtype" function which allows you to specify
+       constrained types.  It takes two arguments: another type and a code
+       reference.  The code reference is called on the argument that is being
+       tested for that type (after checking that the first argument---the base
+       type---is satisfied), and if it returns true, then the argument is of
+       that type.  For example:
+
+           my $ZeroOne = subtype(Any, sub { $_[0] < 2 });
+
+       We have just defined a type object that is only true when its argument
+       is less than two and placed it in the type variable $ZeroOne.  Now we
+       can define the Fibonacci sequence function:
+
+           multi fibo => (Any) => sub { fibo($_[0]-1) + fibo($_[0]-2) };
+           multi fibo => ($ZeroOne) => sub { 1 };
+
+       Of course, we didn't have to use a type variable; we could have just
+       put the "subtype" call right where $ZeroOne appears in the definition.
+
+       Consider the follwing declarations:
+
+           multi describe => (subtype(Any, sub { $_[0] > 10 })) => sub {
+               "Big";
+           };
+           multi describe => (subtype(Any, sub { $_[0] == 42 })) => sub {
+               "Forty-two";
+           };
+
+       Calling describe(42) causes an ambiguity error, stating that both
+       variants of "describe" match.  We can clearly see that the latter is
+       more specific than the former (see "Semantics" for a precise definition
+       of how this relates to dispatch), but getting the computer to see that
+       involves solving the halting problem.
+
+       So we have to make explicit the relationships between the two subtypes,
+       using type variables:
+
+           my $Big      = subtype(Any,  sub { $_[0] > 10 });
+           my $FortyTwo = subtype($Big, sub { $_[0] == 42 });
+           multi describe => ($Big) => sub {
+               "Big";
+           };
+           multi describe => ($FortyTwo) => sub {
+               "Forty-two";
+           };
+
+       Here we have specified that $FortyTwo is more specific than $Big, since
+       it is a subtype of $Big.  Now calling describe(42) results in "Forty-
+       two".
+
+       In order to get the definitions of "all", "any", "none", "Any", and
+       "subtype", you need to import them from the module.  This happens by
+       default if you use the module with no arguments.  If you only want to
+       export some of these, use the "import" command:
+
+           use Class::Multimethods::Pure import => [qw<Any subtype>];
+
+       This will accept a null list for you folks who don't like to import
+       anything.
+
+   Semantics
+       I've put off explaining the method for determing which method to call
+       until now.  That's mostly because it will either do exactly what you
+       want, or yell at you for being ambiguous[1].  I'll take a moment to
+       define it precisely and mathematically, and then explain what that
+       means for Mere Mortals.
+
+       First, think of a class simply as the set of all of its possible
+       instances.  When you say "Foo" is derived from  "Bar", you're saying
+       that "anything that is a "Foo" is also a "Bar"", and therefore that
+       "Foo" is a subset of "Bar".
+
+       Now define a partial order "<" on the variants of a multimethod.  This
+       will represent the relationship "is more specific than".  This is
+       defined as follows:
+
+       Variant A < variant B if and only if
+
+       •   Every parameter type in A is a subset of the corresponding
+           parameter in B.
+
+       •   At least one of them is a proper subset (that is, a subset but not
+           equal).
+
+       A particular argument list matches a variant A if:
+
+       •   Each argument is an element of the corresponding parameter type.
+
+       •   For every variant B, if B matches then A <= B.
+
+       In other words, we define "is more specific than" in the most
+       conservative possible terms.  One method is more specific than the
+       other only when all of its parameters are either equal or more
+       specific.
+
+       A couple of notes:
+
+       •   Both A and B are more specific than any(A, B), unless one is a
+           subset of the other, in which case the junction is equivalent the
+           more general one.
+
+       •   all(A, B) is more specific than both A and B, unless one is a
+           subset of the other, in which case the junction is equivalent to
+           the more specific one.
+
+       •   A subtype with base type X is always more specific than X.  This is
+           true even if the constraint is "sub { 1 }", unfortunately.  That's
+           one of those halting problem thingamajiggers.
+
+       •   Everything is more specific than "Any", except "Any" itself.
+
+       [1] Unlike Manhattan Distance as implemented by Class::Multimethods,
+       which does what you want more often, but does what you don't want
+       sometimes without saying a word.
+
+   Dispatch Straegties (and speed)
+       Class::Multimethods::Pure currently has three different strategies it
+       can use for dispatch, named Cores.  If you're having issues with speed,
+       you might want to play around with the different cores (or write a new
+       one and send it to me ":-)".  The three cores are:
+
+       Class::Multimethods::Pure::Method::Slow
+           This is the default core.  It implements the algorithm described
+           above in an obvious and straightforward way: it loops through all
+           the defined variants and sees which ones are compatible with your
+           argument list, eliminates dominated methods, and returns.  The
+           performance of this core can be miserable, especially if you have
+           many variants.  However, if you only have two or three variants, it
+           might the best one for your job.
+
+       Class::Multimethods::Pure::Method::DumbCache
+           This core implements the semantics above by asking the slow core
+           what it would do, then caching the result based on the ref type of
+           the arguments.  It can guzzle memory if you pass many different
+           types into the multi.  For example, even if you only have one
+           variant (A,A), but you subclass A n times and pass instances of the
+           subclass into the multi instead, the DumbCache core will use memory
+           proportional to n squared.  If all your variants have the same
+           arity, they don't use junctions or subtypes, and you're sure that
+           the number of subclasses of the classes defined in the variants is
+           bounded (and small), then this will be the fastest core.
+
+       Class::Multimethods::Pure::Method::DecisionTree
+           This core implements the semantics above by building a decision
+           tree of type membership checks.   That is, it does all its logic
+           (like the Slow core) by asking whether arguments are of type X,
+           without any magic caching or ref checking or anything.  It also
+           minimizes the numbers of such checks necessary in the worst case.
+           It takes some time to compile the multimethod the first time you
+           dispatch to it after a change.  If you don't meet the conditions
+           for DumbCache to be efficient, and you are not making frequent
+           changes to the dispatch table (almost nobody does), then this is
+           going to be the fastest core.
+
+       To enable a different core for all multimethods, set
+       $Class::Multimethods::Pure::DEFAULT_CORE to the desired core.  For
+       example:
+
+           use Class::Multimethods::Pure;
+           $Class::Multimethods::Pure::DEFAULT_CORE = 'DecisionTree';
+
+       (If the name given to core is not already a class, then the module will
+       try prepending Class::Multimethods::Pure::Method.  I suppose you could
+       get in trouble if you happened to have a package named Slow, DumbCache,
+       DecisionTree in your program.  When in doubt, fully qualify.)
+
+       A more courteous and versatile approach is to specify the core as an
+       option to the method definition; i.e.:
+
+           use Class::Multimethods::Pure foo => ('A', 'B'),
+                                        -Core => 'DecisionTree',
+                                         sub {...}
+
+       or:
+
+           multi foo => ('A', 'B'), -Core => 'DecisionTree', sub {
+               ...
+           };
+
+       You may also set options separately from definiton, like:
+
+           use Class::Multimethods::Pure 'foo', -Core => 'DecisionTree';
+
+       or:
+
+           multi 'foo', -Core => 'DecisionTree';
+
+       which sets the core but defines no variant.
+
+   Combinator Factoring
+       One of the things that I find myself wanting to do most when working
+       with multimethods is to have combinator types.  These are types that
+       simply call the multimethod again for some list of aggregated objects
+       and perform some operation on them (like a Junction). They're easy to
+       make if they're by themselves.
+
+           multi foo => ('Junction', 'Object') => sub {...}
+           multi foo => ('Object', 'Junction') => sub {...}
+           multi foo => ('Junction', 'Junction') => sub {...}
+
+       However, you find yourself in a major pickle if you want to have more
+       of them.  For instance:
+
+           multi foo => ('Kunction', 'Object') => sub {...}
+           multi foo => ('Object', 'Kunction') => sub {...}
+           multi foo => ('Kunction', 'Kunction') => sub {...}
+
+       Now they're both combinators, but the module yells at you if you pass
+       (Kunction, Junction), because there are two methods that would satisfy
+       that.
+
+       The way to define precedence with these combinators is similar to the
+       way you define precedence in a recursive descent grammar.  You create a
+       cascade of empty classes at the top of your heirarchy, and derive each
+       of your generics from a different one of those:
+
+           package AnyObject;
+           package JunctionObject;
+               use base 'AnyObject';
+           package KunctionObject;
+               use base 'JunctionObject';
+           package Object;
+               use base 'KunctionObject';
+               # derive all other classes from Object
+
+           package Junction;
+               use base 'JunctionObject';
+               ...
+           package Kunction;
+               use base 'KunctionObject';
+               ...
+
+       Now define your multis using these:
+
+           multi foo => ('Junction', 'JunctionObject') => {...}
+           multi foo => ('JunctionObject', 'Junction') => {...}
+           multi foo => ('Junction', 'Junction') => {...}
+           multi foo => ('Kunction', 'KunctionObject') => {...}
+           multi foo => ('KunctionObject', 'Kunction') => {...}
+           multi foo => ('Kunction', 'Kunction') => {...}
+
+       Then the upper one (Junction in this case) will get threaded first,
+       because a Junction is not a KunctionObject, so it doesn't fit in the
+       latter three methods.
+
+   Extending
+       Class::Multimethods::Pure was written to be extended in many ways, but
+       with a focus on adding new types of, er, types.  Let's say you want to
+       add Perl 6-ish roles to the Class::Multimethods::Pure dispatcher.  You
+       need to do four things:
+
+       •   Create a class, say My::Role derived from
+           Class::Multimethods::Pure::Type.
+
+       •   Define the method My::Role::matches, which takes a scalar and
+           returns whether it is a member of that class (including subclasses,
+           etc.).
+
+       •   Define the method My::Role::string, which returns a reasonable
+           string representation of the type, for the user's sake.
+
+       •   Define as many multimethod variants of "subset" as necessary, which
+           return whether an object which is a member of the left type implies
+           that it is a member of the right type.  Construct a
+           Class::Multimethods::Pure::Type::Package type for your type for the
+           multimethod.  For a role, you'd need to define:
+
+               $Class::Multimethods::Pure::Type::SUBSET->add_variant(
+                   [ Class::Multimethods::Pure::Type::Package->new('My::Role'),
+                     Class::Multimethods::Pure::Type::Package->new('My::Role') ] =>
+                   sub {...});
+
+           And:
+
+               $Class::Multimethods::Pure::Type::SUBSET->add_variant(
+                   [ Class::Multimethods::Pure::Type::Package->new(
+                         'Class::Multimethods::Pure::Type::Package'),
+                     Class::Multimethods::Pure::Type::Package->new('My::Role') ] =>
+                   sub {...});
+
+           (Ugh, I wish my module name weren't so long).
+
+       After you have defined these, you have fulfilled the
+       Class::Multimethods::Pure::Type interface, and now you can pass an
+       object of type My::Role to multi() and it will be dispatched using the
+       pure-ordered scheme.  It is nice to give the user a concise constructor
+       for your object type.
+
+       You can also automatically promote strings into objects by defining
+       variants on the (unary) multimethod
+       $Class::Multimethods::Pure::Type::PROMOTE.  So to promote strings that
+       happen to be the names of roles, do:
+
+           $Class::Multimethods::Pure::Type::PROMOTE->add_variant(
+               [ Class::Multimethods::Pure::Type::Subtype->new(
+                   Class::Multimethods::Pure::Type::Any->new,
+                   sub { is_a_role_name($_[0]) })
+               ] =>
+                   sub { My::Role->new($_[0]) });
+
+       Now when you pass strings to "multi", if is_a_role_name returns true on
+       them, they will be promoted to a My::Role object.
+
+AUTHOR
+       Luke Palmer <lrpalmer@gmail.com>
+
+COPYRIGHT
+       Copyright (C) 2005 by Luke Palmer (lrpalmer@gmail.com)
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself, either Perl version 5.8.5 or, at
+       your option, any later version of Perl 5 you may have available.
+
+perl v5.40.2                      2007-02-04      Class::Multimethods::Pure(3)

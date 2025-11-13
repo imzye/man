@@ -1,0 +1,210 @@
+YAML::AppConfig(3pm)                                                                User Contributed Perl Documentation                                                                YAML::AppConfig(3pm)
+
+NAME
+       YAML::AppConfig - Manage configuration files with YAML and variable references.
+
+SYNOPSIS
+           use YAML::AppConfig;
+
+           # An extended example.  YAML can also be loaded from a file.
+           my $string = <<'YAML';
+           ---
+           root_dir: /opt
+           etc_dir: $root_dir/etc
+           cron_dir: $etc_dir/cron.d
+           var_dir $root_dir/var
+           var2_dir: ${var_dir}2
+           usr: $root_dir/usr
+           usr_local: $usr/local
+           libs:
+               system: $usr/lib
+               local: $usr_local/lib
+               perl:
+                   vendor: $system/perl
+                   site: $local/perl
+           escape_example: $root_dir/\$var_dir/\\$var_dir
+           YAML
+
+           # Load the YAML::AppConfig from the given YAML.
+           my $conf = YAML::AppConfig->new(string => $string);
+
+           # Get settings in two different ways, both equivalent:
+           $conf->get("etc_dir");    # returns /opt/etc
+           $conf->get_etc_dir;       # returns /opt/etc
+
+           # Get raw settings (with no interpolation) in three equivalent ways:
+           $conf->get("etc_dir", 1); # returns '$root_dir/etc'
+           $conf->get_etc_dir(1);    # returns '$root_dir/etc'
+           $conf->config->{etc_dir}; # returns '$root_dir/etc'
+
+           # Set etc_dir in three different ways, all equivalent.
+           $conf->set("etc_dir", "/usr/local/etc");
+           $conf->set_etc_dir("/usr/local/etc");
+           $conf->config->{etc_dir} = "/usr/local/etc";
+
+           # Changing a setting can affect other settings:
+           $config->get_var2_dir;          # returns /opt/var2
+           $config->set_var_dir('/var/');  # change var_dr, which var2_dir uses.
+           $config->get_var2_dir;          # returns /var2
+
+           # Variables are dynamically scoped:
+           $config->get_libs->{perl}->{vendor};  # returns "/opt/usr/lib/perl"
+
+           # As seen above, variables are live and not static:
+           $config->usr_dir('cows are good: $root_dir');
+           $config->get_usr_dir();               # returns "cows are good: /opt"
+           $config->resolve('rm -fR $root_dir'); # returns "rm -fR /opt"
+
+           # Variables can be escaped, to avoid accidental interpolation:
+           $config->get_escape_example();  # returns "/opt/$var_dir/\$var_dir"
+
+           # Merge in other configurations:
+           my $yaml =<<'YAML';
+           ---
+           root_dir: cows
+           foo: are good
+           YAML
+           $config->merge(string => $yaml);
+           $config->get_root_dir();  # returns "cows"
+           $config->get_foo();  # returns "are good"
+
+           # Get the raw YAML for your current configuration:
+           $config->dump();  # returns YAML as string
+           $config->dump("./conf.yaml");  # Writes YAML to ./conf.yaml
+
+DESCRIPTION
+       YAML::AppConfig extends the work done in Config::YAML and YAML::ConfigFile to allow more flexible configuration files.
+
+       Your configuration is stored in YAML and then parsed and presented to you via YAML::AppConfig.  Settings can be referenced using "get" and "set" methods and settings can refer to one another by
+       using variables of the form $foo, much in the style of "AppConfig".  See "USING VARIABLES" below for more details.
+
+       The underlying YAML parser is either YAML, YAML::Syck or one of your choice.  See "THE YAML LIBRARY" below for more information on how a YAML parser is picked.
+
+THE YAML LIBRARY
+       At this time there are two API compatible YAML libraries for Perl.  YAML and YAML::Syck.  YAML::AppConfig chooses which YAML parser to use as follows:
+
+       yaml_class
+           If  "yaml_class"  is  given to "new" then it used above all other considerations.  You can use this to force use of YAML or YAML::Syck when YAML::AppConfig isn't using the one you'd like.  You
+           can also use it specify your own YAML parser, as long as it's API compatible with YAML and YAML::Syck.
+
+       The currently loaded YAML Parser
+           If you don't specify "yaml_class" then YAML::AppConfig will default to using an already loaded YAML parser, e.g. one of YAML or YAML::Syck.  If both are loaded then YAML::Syck is preferred.
+
+       An installed YAML Parser.
+           If no YAML parser has already been loaded then YAML::AppConfig will attempt to load YAML::Syck and failing that it will attempt to load YAML.  If both fail then  YAML::AppConfig  will  "croak"
+           when you create a new object instance.
+
+USING VARIABLES
+   Variable Syntax
+       Variables  refer  to  other settings inside the configuration file.  YAML::AppConfig variables have the same form as scalar variables in Perl.  That is they begin with a dollar sign and then start
+       with a letter or an underscore and then have zero or more letters, numbers, or underscores which follow.  For example, $foo, $_bar, and $cat_3 are all valid variable names.
+
+       Variable names can also be contained in curly brackets so you can have a variable side-by-side with text that might otherwise be read as the name of the variable itself.  For example,  "${foo}bar"
+       is the the variable $foo immediately followed by the literal text "bar".  Without the curly brackets YAML::AppConfig would assume the variable name was $foobar, which is incorrect.
+
+       Variables can also be escaped by using backslashes.  The text "\$foo" will resolve to the literal string $foo.  Likewise "\\$foo" will resolve to the literal string "\$foo", and so on.
+
+   Variable Scoping
+       YAML is essentially a serialization language and so it follows that your configuration file is just an easy to read serialization of some data structure.  YAML::AppConfig assumes the top most data
+       structure is a hash and that variables are keys in that hash, or in some hash contained within.
+
+       If every hash in the configuration file is thought of as a namespace then the variables can be said to be dynamically scoped.  For example, consider the following configuration file:
+
+           ---
+           foo: world
+           bar: hello
+           baz:
+               - $foo
+               - {foo: dogs, cats: $foo}
+               - $foo $bar
+           qux:
+               quack: $baz
+
+       In  this sample configuration the array contained by $baz has two elements.  The first element resolves to the value "hello", the second element resolves to the value "dogs", and the third element
+       resolves to "hello world".
+
+   Variable Resolving
+       Variables can also refer to entire data structures.  For example, $quack will resolve to the same three element array as $baz.  However, YAML natively gives you this ability  and  then  some.   So
+       consider using YAML's ability to take references to structures if YAML::AppConfig is not providing enough power for your use case.
+
+       In  a  YAML::AppConfig object the variables are not resolved until you retrieve the variable (e.g. using get().  This allows you to change settings which are used by other settings and update many
+       settings at once.  For example, if I call "set("baz", "cows")" then get("quack") will resolve to "cows".
+
+       If a variable can not be resolved because it doesn't correspond to a key currently in scope then the variable will be left verbatim in the text.  Consider this example:
+
+           ---
+           foo:
+               bar: food
+           qux:
+               baz: $bar
+               qix: $no_exist
+
+       In this example $baz resolves to the literal string $bar since $bar is not visible within the current scope where $baz is used.  Likewise, $qix resolves to the literal string $no_exist since there
+       is no key in the current scope named "no_exist".
+
+METHODS
+   new(%args)
+       Creates a new YAML::AppConfig object and returns it.  new() accepts the following key values pairs:
+
+       file    The name of the file which contains your YAML configuration.
+
+       string  A string containing your YAML configuration.
+
+       object  A YAML::AppConfig object which will be deep copied into your object.
+
+       no_resolve
+               If true no attempt at variable resolution is done on calls to get().
+
+       yaml_class
+               The name of the class we should use to find our "LoadFile" and "Load" functions for parsing YAML files and strings, respectively.  The named class should provide both "LoadFile" and "Load"
+               as functions and should be loadable via "require".
+
+   get(key, [no_resolve])
+       Given $key the value of that setting is returned, same as "get_$key".  If $no_resolve is true then the raw value associated with $key is returned, no variable interpolation is done.
+
+       It is assumed that $key refers to a setting at the top level of the configuration file.
+
+   set(key, value)
+       The setting $key will have its value changed to $value.  It is assumed that $key refers to a setting at the top level of the configuration file.
+
+   get_*([no_resolve])
+       Convenience methods to retrieve values using a method, see "get".  For example if "foo_bar" is a configuration key in top level of your YAML file then "get_foo_bar"  retrieves  its  value.   These
+       methods are curried versions of "get".  These functions all take a single optional argument, $no_resolve, which is the same as "get()'s" $no_resolve.
+
+   set_*(value)
+       Convenience methods to set values using a method, see "set" and "get_*".  These methods are curried versions of "set".
+
+   config
+       Returns the hash reference to the raw config hash.  None of the values are interpolated, this is just the raw data.
+
+   config_keys
+       Returns the keys in config() sorted from first to last.
+
+   merge(%args)
+       Merge  takes  another  YAML  configuration and merges it into this one.  %args are the same as those passed to new(), so the configuration can come from a file, string, or existing YAML::AppConfig
+       object.
+
+   resolve($scalar)
+       resolve() runs the internal parser on non-reference scalars and returns the result.  If the scalar is a reference then it is deep copied and a copy is returned where the  non-reference  leaves  of
+       the data structure are parsed and replaced as described in "USING VARIABLES".
+
+   dump([$file])
+       Serializes  the  current  configuration  using the YAML parser's Dump or, if $file is given, DumpFile functions.  No interpolation is done, so the configuration is saved raw.  Things like comments
+       will be lost, just as they would if you did "Dump(Load($yaml))", because that is what what calling dump() on an instantiated object amounts to.
+
+AUTHORS
+       Matthew O'Connor <matthew@canonical.org>
+
+       Original implementations by Kirrily "Skud" Robert (as YAML::ConfigFile) and Shawn Boyette (as Config::YAML).
+
+       Currently maintained by Grzegorz Rożniecki <xaerxess@gmail.com>.
+
+SEE ALSO
+       YAML, YAML::Syck, Config::YAML, YAML::ConfigFile
+
+COPYRIGHT AND LICENSE
+       Copyright 2006 Matthew O'Connor, All Rights Reserved.
+
+       This program is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+perl v5.38.2                                                                                     2024-03-08                                                                            YAML::AppConfig(3pm)

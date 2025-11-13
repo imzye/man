@@ -1,0 +1,1015 @@
+KC(1)                   FreeBSD General Commands Manual                  KC(1)
+
+NAME
+     kc – console based username and password management application
+
+SYNOPSIS
+     kc [-k database file] [-c keychain name/idx] [-C keychain name] [-r]
+        [-A key-type,key-comment [‘,password’]]
+        [-Y key-slot [,device-index|serial-number [‘,password’]]]
+        [-p password file] [-P kdf] [-K key length] [-R kdf iterations]
+        [-e cipher] [-m cipher mode] [-b] [-B] [-v] [-h]
+
+DESCRIPTION
+     kc is a console-based username and password management application using
+     an encrypted XML document as its database.  The database file is
+     encrypted with a key that is generated from a user-supplied password
+     and/or a security key and/or an SSH agent.  Database encryption (and thus
+     decryption) can be interactive or non-interactive in that it could
+     require user input (i.e. a password), or a response for a challenge from
+     a security key or a signature from an SSH agent.  See the PASSWORDS
+     section on how these work in terms of generating a password.
+
+     A database file can contain multiple keychains, and keychains in turn can
+     contain multiple keys (usernames if you like) and values (passwords if
+     you like).
+
+     After starting kc the help command shows the available commands, and
+     usage information for them.  If you're in a hurry, for starters, you
+     create a new entry with the new command and save it with write.  You can
+     see the stored keys with the list command, then entering only a number in
+     the command line will display the entry with the given index.  You quit
+     from the value display with ‘q’ or EOT (usually CTRL+d).
+
+     The CLI supports tab-completion for commands and keychains.
+
+     When saving the database (write command) kc will create a temporary file
+     (under the same directory as the opened database file), and will first
+     try to save the whole database to that temporary database file.  When
+     this succeeds, only then will kc replace the old database with the new
+     one, so you will always have a usable and intact (but potentially older)
+     version of your database file.
+
+     On OpenBSD kc tries to use pledge(2) but see also the CAVEATS section.
+
+   PARAMETERS
+        -k file
+           Use file as database.  The default is ~/.kc/default.kcd.
+
+        -c keychain
+           Change to the specified keychain after opening the database.
+
+        -C keychain
+           Same as -c, but force keychain to be the keychain's name, instead
+           of its index number.  More on this is in the c and cc commands'
+           description.
+
+        -r
+           Open the database in read-only mode.  kc will not try to lock the
+           database file, and commands which could modify the database will
+           not be available.
+
+        -A key-type,key-comment [,password]
+           Use a signature from SSH agent as the database password.  For this,
+           kc asks ssh-agent(1) (using the SSH_AUTH_SOCK environment variable)
+           to sign the IV and the salt of the database (and optionally a
+           password) with a private key loaded into ssh-agent(1).  This
+           private key is looked up based on the key type and key comment
+           separated by a comma (with no whitespaces around it).
+
+           Key types supported and tested so far are RSA and ED25519, by using
+           the type names
+
+              ssh-rsa
+
+              ssh-ed25519
+
+           respectively.  Due to the nature of *DSA keys, kc cannot use them
+           in this specific way for this specific purpose.
+
+           Key comments cannot contain comma (,) characters.
+
+           If the word ‘password’ is appended to the key comment after a comma
+           (with no whitespaces around it), then kc will also use the password
+           (along with the IV and salt) as the input for the SSH agent
+           signature request.  Thus making it interactive (by requesting a
+           password for decryption) instead of an automatic database opening.
+
+           E.g.:
+
+              ssh-ed25519,daniel-private,password
+                 Search for an ‘ed25519’ type key with a comment
+                 ‘daniel-private’ and also ask for a password to use when
+                 opening the database.
+
+           Also worth mentioning that this actually works with agent
+           forwarding as well, so on a remote machine one doesn't even have to
+           have the actual private key file — just like in any other case when
+           you'd use SSH agent forwarding.
+
+        -Y key-slot [,device-index|serial-number [‘,password’]]
+           Use a YubiKey to utilize its challenge-response mechanism to
+           construct the password for the database.  This can be either an
+           automatic or an interactive mode of operation (just like with SSH
+           agent support).  Without the ‘password’ parameter the challenge
+           will be the database salt value, thus facilitating an automatic
+           database open.
+
+           This is a comma-sperated list of parameters, and the only mandatory
+           argument to this option is the slot number.  If the device index or
+           serial number in the second field is missing, the first available
+           device (index #0) is used. The third (or second, if the index or
+           serial is missing) field can be the literal word ‘password’.
+
+           E.g.:
+
+              2  means slot 2 and implicitly device 0 (the first device).
+
+              2,password
+                 means slot 2 and implicitly device 0 (the first device), and
+                 also use a user-supplied password.
+
+              1,0
+                 means slot 1 and device 0 (the first device).
+
+              2,0
+                 means slot 2 and device 0 (the first device).
+
+              2,1
+                 means slot 2 and device 1 (the second device).
+
+              2,3,password
+                 means slot 2 and device 3 (the third device), and also use a
+                 user-supplied password.
+
+              2,12345678,password
+                 means slot 2 and the device with the serial number 12345678,
+                 and also use a user-supplied password.
+
+           If the ‘password’ parameter is specified, then the user-supplied
+           password is used as the challenge with the security key — otherwise
+           the database's salt is the challenge (stored in the database).
+           When using this option, the password can be at most 64 bytes long.
+           E.g.:
+
+              2,0,password
+                 Use the frist device, the second slot, and ask for a password
+                 to use as the challenge.
+
+           Using multiple security keys:
+
+           It's possible to use multiple security keys by specifying this
+           option two or more times.  In this case kc will use the specified
+           security keys in the order these options are specified, and each
+           subsequent device will re-use the previous output (response) as its
+           challenge, chaining together the security keys. The database can
+           only be opened when using all of the provided security keys, and by
+           specifying these options in the same exact order.  To work around
+           the dynamic assignment of device numbers based on the order one
+           plugs in their security keys, serial numbers can be used instead of
+           the device index number to explicitly specify which security key to
+           use.
+
+           When using multiple security keys, any one of the ‘password’
+           parameters turns on the usage of the user-supplied password.
+
+        -p file
+           Read password from file.
+
+        -P kdf
+           KDF to use with the password.  Valid parameters are:
+
+              sha3
+                 OpenSSL's PKCS5 PBKDF2 with SHA-3 512.
+
+              sha512
+                 OpenSSL's PKCS5 PBKDF2 with SHA-2 512.  This is the default.
+
+              bcrypt
+                 Bcrypt PBKDF based on Blowfish.  This is slower than the
+                 SHA-* or scrypt variants.  On Linux, a bundled bcrypt
+                 implementation from OpenBSD is used, and its version is the
+                 one that was available at the time of this kc release.
+
+              scrypt
+                 If compiled with libscrypt, kc can use the scrypt KDF.  The
+                 speed of this is somewhere between SHA-* and bcrypt.  The -R
+                 option is ignored when using this.
+
+           More information is in the KDF section.
+
+        -K key length
+           Key length in bytes to use for encryption (and decryption).  A
+           valid length is between 16 and 32 (default).  Some combinations of
+           an encryption cipher and key length don't make sense with low or
+           high values.  If it's not really necessary, I suggest leaving it at
+           the default: 32 bytes == 256 bits.
+
+        -R iterations
+           Number of iterations or rounds to use with the KDF.
+
+           More information is in the KDF section.
+
+        -e cipher
+           Encryption cipher for database encryption.  Valid parameters are:
+
+              aes256
+                 This is the default
+
+              blowfish
+
+        -m cipher mode
+           Cipher mode for database encryption.  Different encryption ciphers
+           can have different modes.  The valid parameters are:
+
+             When using aes256
+
+                   cbc
+                      This is the default
+
+                   cfb
+
+                   ofb
+
+                   ctr
+
+             When using blowfish
+
+                   cbc
+
+                   cfb
+
+                   ofb
+
+           More information is in the CIPHERS section.
+
+        -b
+           Batch mode.  Enable reading commands and the password from standard
+           input.  In this case, the password must be on the first line (like
+           it would be in interactive mode).
+
+        -B
+           Batch mode.  Enable reading commands from standard input, but
+           prompt for the password.
+
+        -v
+           Display version.
+
+        -h
+           Display help.
+
+   COMMANDS
+     These commands are available in the CLI:
+
+        new [name]
+           Create a new key in the current keychain.  Both key and value will
+           be prompted for, except when name is specified; then it will be
+           used as the key's name.
+
+           Character sequences can be used in values:
+
+           "\n" - create a new line, and make the result a multiline value.
+
+           "\r", "\R" - these will be replaced with 2 and 4 (respectively)
+           random printable characters.
+
+           "\a", "\A" - these will be replaced with 2 and 4 (respectively)
+           random alpha-numeric characters.
+
+           Character sequences are to be used in values, regardless of their
+           order or count, and can be escaped using double backslashes (eg.:
+           "\\a").
+
+        list [pager [offset]]
+           List pager number of keys per page from the current keychain,
+           skipping offset indices if specified.  Every key gets prefixed by
+           its index number.  If pager is not specified, the default value of
+           20 is used.  The special value 0 means to not use the pager.  If
+           offset is not specified, it is not used.
+
+        ls [pager [offset]]
+           Alias of list.
+
+        edit index
+           Edit a key.  index is the key's index number in the current
+           keychain.
+
+           Character sequence rules in values apply to this command also.  See
+           command new for more information about this.
+
+        swap index index
+           Swap two keys, exchanging their index numbers.  The two index
+           parameters are the keys' index numbers in the current keychain.
+
+        insert index index
+           Move the key at the first index parameter to the index at the
+           second index parameter in the current keychain.  Surrounding
+           indices will be shifted backwards or forwards.
+
+        search string
+           Search for string in key names in the current keychain.
+
+           Optional modifiers:
+
+           ‘!’ suffix (eg.: search!): show non-matching keys.
+
+           ‘*’ suffix (eg.: search*): search in every keychain.
+
+           ‘i’ suffix (eg.: searchi): case of characters doesn't matter.
+
+           You can combine the modifiers.
+
+        / pattern
+           Search for pattern regular expression in key names in the current
+           keychain.
+
+           Optional modifiers:
+
+           ‘!’ suffix (eg.: /!): show non-matching keys.
+
+           ‘*’ suffix (eg.: /*): search in every keychain.
+
+           ‘i’ suffix (eg.: /i): case of characters doesn't matter.
+
+           You can combine the modifiers.
+
+        near index [context]
+           Display the keyname of key at index position, and also print the
+           surrounding keys' name in at most context vicinity.  Only the keys'
+           names and index numbers get displayed.
+
+        csearch string
+           Search for string in keychain names.
+
+           Optional modifiers:
+
+           ‘!’ suffix (eg.: csearch!): show non-matching keychains.
+
+           ‘i’ suffix (eg.: csearchi): case of characters doesn't matter.
+
+           You can combine the modifiers.
+
+        c/ pattern
+           Search for pattern regular expression in keychain names.
+
+           Optional modifiers:
+
+           ‘!’ suffix (eg.: c/!): show non-matching keychains.
+
+           ‘i’ suffix (eg.: c/i): case of characters doesn't matter.
+
+           You can combine the modifiers.
+
+        c keychain
+           Change the current keychain.  keychain can be the keychain's index
+           number or name.  Index number takes priority when addressing a
+           keychain.
+
+           (see command cc)
+
+        cc keychain_name
+           Works like c, but the keychain's name takes priority over its index
+           number.
+
+           (see command c)
+
+        cdel keychain
+           Delete a keychain.  keychain can be the keychain's index number or
+           name.  Index number takes priority when addressing a keychain.
+
+           (see command ccdel)
+
+        ccdel keychain_name
+           Works like cdel, but the keychain's name takes priority over its
+           index number.
+
+           (see command cdel)
+
+        clear [count]
+           Emulate a screen clearing.  Scrolls a 100 lines by default, which
+           can be multiplied by count times if specified.
+
+        clist
+           List all keychain names and their descriptions.  Every keychain
+           gets prefixed by its index number.
+
+        cls
+           Alias of clist.
+
+        cnew [name]
+           Create a new keychain.  If name is not given then prompt for one.
+
+        cedit
+           Edit the current keychain's name and description.
+
+        copy index keychain
+           Copy a key from the current keychain to another keychain.  index is
+           the key's index number to copy and keychain is the destination
+           keychain's index number or name.  Index number takes priority when
+           addressing a keychain.
+
+        cp index keychain
+           Alias of copy.
+
+        move index keychain
+           Move a key from the current keychain to another keychain.  index is
+           the key's index number to move and keychain is the destination
+           keychain's index number or name.  Index number takes priority when
+           addressing a keychain.
+
+        mv index keychain
+           Alias of move.
+
+        del index
+           Delete a key.  index is the key's index number in the current
+           keychain.
+
+        rm index
+           Alias of del.
+
+        passwd [-A key-type,key-comment [,password [-Y
+           Key-slot,Device-index|Serial-number [,password [-P kdf [-K key
+           length [-R kdf iterations [-e cipher [-m cipher mode]]]]]]]]]
+           Change the database password or SSH public key identity being used
+           to encrypt.  Optionally, SSH key, security key information, KDF,
+           key length, KDF iterations, cipher and cipher mode can also be
+           changed.  All changes will be written immediately.
+
+           More information about the kdf, cipher, cipher mode optional
+           arguments are in their respective command line parameter
+           description and the KDF and CIPHERS sections of this manual.
+
+        help [command]
+           Print application help or describe a command.
+
+        status
+           Display information about the database.
+
+        export -k filename [-A key-type,key-comment [,password [-Y
+           Key-slot,Device-index|Serial-number [,password [-P kdf [-K key
+           length [-R kdf iterations [-e cipher [-m cipher mode [-c
+           keychain]]]]]]]]]]
+           Export the database to a kc compatible encrypted database file
+           named filename (if no extension specified, ".kcd" will be
+           appended).
+
+           Optional arguments kdf, cipher and cipher mode can be used to
+           specify a different KDF, encryption cipher and cipher mode to be
+           used while exporting the database.  This doesn't change the current
+           database's parameters, but when importing this exported database,
+           the parameters in use must be the same (or specified explicitly
+           when using the import command).
+
+           When specifying keychain, export only that keychain.  keychain can
+           be the keychain's index number or name.  Index number takes
+           priority when addressing a keychain.
+
+           (see commands dump, import, append)
+
+        dump -k filename [-c keychain]
+           Dump the database to a kc compatible XML file named filename (if no
+           extension specified, ".xml" will be appended).
+
+           When specifying a keychain, dump only that keychain to the XML
+           file.  keychain can be the keychain's index number or name.  Index
+           number takes priority when addressing a keychain.
+
+           NOTE: the created XML file will be plain text.
+
+           (see command export)
+
+        import -k filename [-A key-type,key-comment [,password [-Y
+           Key-slot,Device-index|Serial-number [,password [-P kdf [-K key
+           length [-R kdf iterations [-e cipher [-m cipher mode [-o]]]]]]]]]]
+           Import and overwrite the current database with the one from a kc
+           compatible encrypted database file named filename.  filename must
+           be a proper kc database.
+
+           The SSH key, Security key information, kdf, key length, kdf
+           iterations, encryption cipher and cipher mode optional arguments
+           can be used to specify these parameters if they differ from the
+           current database's.
+
+           With the -o option you can import legacy (<v2.5) databases with
+           missing attributes.
+
+           (see commands importxml, export, append)
+
+        importxml -k filename [-o]
+           Import and overwrite the current database with the one from a kc
+           compatible XML file named filename.  filename must contain a
+           properly formatted kc XML document.
+
+           With the -o option you can import legacy (<v2.5) XML files with
+           missing attributes.
+
+           (see commands import, export, append)
+
+        append -k filename [-A key-type,key-comment [,password [-Y
+           Key-slot,Device-index|Serial-number [,password [-P kdf [-K key
+           length [-R kdf iterations [-e cipher [-m cipher mode [-o]]]]]]]]]]
+           Append new and merge existing keychains to the database from a kc
+           compatible encrypted database file named filename.  filename must
+           be a proper kc database.
+
+           See command import for description of parameters.
+
+           See the LIMITS section for information about how kc deals with
+           limits reached while appending.
+
+           (see commands appendxml, export, import)
+
+        appendxml -k filename [-o]
+           Append new and merge existing keychains to the database from a kc
+           compatible XML file named filename.  filename must contain a
+           properly formatted kc XML document.
+
+           With the -o option you can import legacy (<v2.5) databases with
+           missing attributes.
+
+           See the LIMITS section for information about how kc deals with
+           limits reached while appending.
+
+           (see commands append, export, import)
+
+        info [index]
+           Print information about a key in the current keychain or the
+           keychain itself.  If index is specified, it is the key's index
+           number in the current keychain.  If omitted, information is about
+           the current keychain.
+
+        quit
+           Quit the program.  If the database has been modified, then ask if
+           it should be saved.
+
+        exit
+           Alias of quit.
+
+        tmux index [line]
+           Copy the value of index to tmux's paste buffer.  index is the key's
+           index number in the current keychain.  line can be used to specify
+           the line number to copy, if index is a multiline value (defaults to
+           1).  This will try to execute the tmux(1) binary with the
+           set-buffer command passing the value as its parameter.
+
+           Check the CAVEATS section about the clipboard commands.
+
+        Xclip index [line]
+
+        xclip index [line]
+           Copy the value of index to the CLIPBOARD (aka.: CTRL+c - CTRL+v) or
+           PRIMARY X11 selection (ie.: middle mouse button), depending on the
+           first ‘x’ character's case, respectively.  index is the key's index
+           number in the current keychain.  line can be used to specify the
+           line number to copy, if index is a multiline value (defaults to 1).
+
+           These will try to execute the xclip(1) binary, piping the value to
+           its standard input.
+
+           Check the CAVEATS section about the clipboard commands.
+
+        version
+           Display the program version.
+
+        write
+           Save the database.
+
+        save
+           Alias of write.
+
+        any number
+           To display a key's value, you enter the key's index (ie.: only a
+           number) into the command line, then it will display the entry with
+           the given index. You quit from the display with 'q' or EOT (usually
+           CTRL+d).
+
+           Rarely one needs to actually look at the passwords being stored,
+           there are convenient commands (Xclip xclip tmux)
+
+           By specifying another number after the index (eg.: '12 2' — here 12
+           is the index, and 2 is the extra number (spice) after it), that
+           many random characters will be displayed between the value's
+           characters. You can navigate up/down through a multiline value's
+           lines with keys j/k, n/p, f/b, +/-, [/], {/}, </>, <SPACE>,
+           <ENTER>, <BACKSPACE>.  Typing a number between 1-9 will jump
+           directly to that line.
+
+           It is possible to copy the displayed value to a clipboard (or such)
+           with these hotkeys:
+
+              t  Copy the value to the tmux paste buffer like the tmux kc
+                 command.
+
+              x  Copy the value to the PRIMARY X selection like the xclip kc
+                 command.
+
+              X  Copy the value to the CLIPBOARD X selection like the Xclip kc
+                 command.
+
+           Check the CAVEATS section about the clipboard commands.
+
+           Perhaps the extra number (spice) after a key's index and its
+           usefulness can use some further explanation. Let's say you want to
+           display a password to use it on a website's form, but you don't
+           want the people walking by or around you to recognize words,
+           numbers or parts of it.  You can use this nifty "trick" to tell kc
+           to display that many random characters between the value's original
+           characters when showing it to you.  Granted, it will look like a
+           mess (although, that is what we wanted), but you can copy-paste it
+           to the password entry in the website form in question.  Then you
+           can start to "blindly" delete the given number of characters from
+           it by moving your cursor to the beginning (eg.: HOME key), pressing
+           'spice' numbers of DEL, then jump over one character to the right
+           (with the right arrow key), then delete the random characters
+           again, then repeating this until you reach the end of your original
+           password (those who played Mortal Kombat will feel a bit
+           nostalgic).  You can catch on to this, because the random character
+           padding is of fixed length, so the pattern remains the same for the
+           whole password.  You don't even have to pay attention to the
+           original length of the password, because after you've completed the
+           pattern (DELs-move-DELs-move...) and removed the spice (ie.: every
+           padding random character), you end up with your original password,
+           and you'll just be deleting nothing after the end of the string.
+           This of course only makes sense if the form is a password input
+           field, so you (and everybody else) just see stars or dots in place
+           of the password.
+
+   CIPHERS
+     Databases are encrypted with the AES-256 cipher in CBC mode, if another
+     cipher and mode was not specified explicitly (see the -e and -m options).
+     Ciphers use a key generated with a KDF from the user-supplied password
+     (and optionally a signature from an SSH agent or a HMAC response from a
+     YubiKey), and an IV (initialization vector) that is read when first
+     creating a database from the host's specific random device (/dev/urandom
+     on Linux and /dev/random on everything else).
+
+     To change the encryption cipher and/or its mode, you can use the passwd
+     or export command.
+
+     See also the CAVEATS section.
+
+   KDF
+     The KDF (key derivation function) converts the constructed password
+     (either directly from the user input or after being treated with one of
+     the relevant functions like an SSH agent or a security key) with a
+     generated salt to a strong key that can be used safely during encryption.
+
+     Every SHA-* based PBKDF2 function uses 100000 iterations and the bcrypt
+     KDF uses 36 rounds by default.  If you're using kc on an old enough
+     (quite old) hardware, you might reckon that these numbers are too high,
+     or in other words, opening a database takes too much time.  See option -R
+     if you really think you should change this.  And remember, after
+     saving/exporting a database with a certain number of KDF rounds or
+     iterations, you must use the same number when trying to open it.
+
+     On changing the KDF being used, see the passwd command and the -P option.
+
+   PASSWORDS
+     Although kc uses a key generated with a KDF to encrypt (and decrypt) a
+     database, one of the inputs of that is usually (but not necessarily) a
+     user-supplied password.  There are currently a couple of options to
+     consider when deciding how to create and/or use a database.
+
+     A single password
+        Most simple one (doesn't need any specific parameter to be specified),
+        just type in a password when creating a database and use the same one
+        when opening it.  Old school.
+
+     A signature based on an SSH key loaded into an SSH agent
+        This method — when used with the [-A] option — takes the database IV
+        and salt (both available when reading the database file) and the SSH
+        agent generates a ‘new password’ from them.  This will be the kind of
+        gibberish that's essentially harder to guess than your average
+        password, but takes data as input that's available directly from the
+        database file.  Thus, when someone has read access to the database
+        file and the SSH agent that has the required key loaded (or the
+        private key directly), they can open the database.  This method is
+        convenient because one doesn't have to input a password (the database
+        open is non-interactive) so it works neatly when combined with other
+        tools — I've used this e.g. with mutt(1) to get my IMAP/SMTP password
+        without having to type in anything when I started it.
+
+        Additionally one can use a user-supplied password on top all of this
+        (by supplying the ,password parameter), that will be mixed in with the
+        input when getting the signature from the SSH agent.  Thus adding an
+        interactive layer to the database opening, and making it harder for
+        someone to open the database if they steal it along with the required
+        SSH private key.
+
+        What kc actually does is not only mixing in the password when getting
+        the signature, but also directly appending it to the signature when
+        using it as input with the KDF.  In this case, when opening the
+        database kc will ask for a password and the SSH agent for a signature
+        based on the correct private key.
+
+        See the [-A] option on how this works.
+
+     A challenge-response from a security key
+        kc supports the YubiKey's HMAC challenge-response mode (using the [-Y
+        option]) and the response is used as the password input for the KDF.
+        This too can have an added conveniency of not having to type in
+        anything when opening the database, because kc can use only the
+        database salt as the challenge, and so the response from the security
+        key will be based on this.  The salt is directly available from the
+        database file, so if someone steals it and the required security key,
+        they can open the database.
+
+        There is however the ,password parameter here as well, with which one
+        can add an interactive layer on top all of this, and use the user-
+        supplied password (combined with the salt if it's not long enough) as
+        the challenge. In this case, when opening the database kc will ask for
+        a password and the correct security key.
+
+        More than one security key can be used in order for kc to require all
+        of them in the right order when opening a database.
+
+        See the [-Y] option on how this works.
+
+     Combining authentication features
+        Now, knowing that database passwords can be generated with the help of
+        an SSH agent and a YubiKey security key with a user-supplied password,
+        another thing one can do besides using either one of the above
+        functions, is to combine any of these.  If — and only if — SSH agent
+        signing and security key challenge-response are used with a password
+        (see ,password parameter for both of these) then kc will treat the
+        user-supplied password first with the SSH agent and then subsequently
+        with the security key, thus requiring the user's password, the SSH
+        private key and the security key to open the database later on.  This
+        may sound convoluted, and I'm not even sure if it's worth the
+        "trouble", nevertheless, it is a possibility and I think it shows how
+        the separate features are built up.
+
+     At the end of the day, all these functions do is provide a password to be
+     used with the KDF to generate a key from it.  Choose one that you deem
+     secure enough, is convenient and works for you.
+
+   LIMITS
+     kc has its limits when it comes to dealing with keychains and keys in
+     keychains.  The maximum number of elements for both is the upper limit an
+     unsigned long integer can store on the running platform, minus one.
+     These limits are enforced every time a new keychain or key is being
+     created (or moved, copied, etc...).  Appending is done in a non-atomic
+     fashion.  This means that kc will not create a keychain if it would not
+     fit in the limit, and it will not append keys to an existing keychain if
+     they would not fit in the limit.  However, for example, if a database
+     that is being appended contains a keychain whose keys could not fit in
+     the existing keychain, and also contains a keychain whose keys could fit
+     in the existing keychain, then the one that could fit will be appended,
+     and the one that could not will not be appended.  This means that
+     appending is atomic on the keychain level (or keys level, if you like),
+     and not atomic on the database level.
+
+   SUPPORTED DEVICES
+     SSH agent
+        OpenSSH agent support is based on RFC ‘draft-miller-ssh-agent-01’,
+        available at: https://tools.ietf.org/id/draft-miller-ssh-agent-01.html
+
+     Security key
+        YubiKey 5 NFC has been used during testing.
+
+EXAMPLES
+     Creating a new database:
+
+        Using a password with the encryption key generated by bcrypt:
+
+           $ kc -P bcrypt -k ~/.kc/my_passwords.kcd
+           Creating '/home/user/.kc/my_passwords.kcd'
+           Using '/home/user/.kc/my_passwords.kcd' database.
+           New password (empty to cancel):
+           New password again (empty to cancel):
+           <default% >
+
+           <default% > status
+           Database file: /home/user/.kc/my_passwords.kcd (/home/user/.kc/my_passwords.kcd)
+           XML structure size: 148 bytes
+           Password: yes
+           SSH agent: no
+           YubiKey: no
+           Password function: bcrypt (36 rounds)
+           Encryption: aes256, cbc
+           Read-only: no
+           Modified: yes
+           <default% >
+
+        Using an SSH agent without a password:
+
+           $ ssh-add -l
+           256 SHA256:3fxFML/VoUOvFr5WDPsiJH8E8dwM0/27IZtoVW7Cz/g my_private_key (ED25519)
+
+           $ kc -A ssh-ed25519,my_private_key -k ~/.kc/my_secrets.kcd
+           Using '(ssh-ed25519) my_private_key' identity for decryption
+           Creating '/home/user/.kc/my_secrets.kcd'
+           Using '/home/user/.kc/my_secrets.kcd' database.
+           <default% >
+
+           <default% > status
+           Database file: /home/user/.kc/my_secrets.kcd (/home/user/.kc/my_secrets.kcd)
+           XML structure size: 148 bytes
+           Password: no
+           SSH agent: (ssh-ed25519) my_private_key
+           YubiKey: no
+           Password function: sha512 (100000 iterations)
+           Encryption: aes256, cbc
+           Read-only: no
+           Modified: yes
+           <default% >
+
+        Using a YubiKey security key and a password:
+
+           $ kc -Y 2,password -k .kc/passwords_and_secrets.kcd
+           Using YubiKey slot #2 on device #0 and a password
+           Creating '/home/user/.kc/passwords_and_secrets.kcd'
+           Using '/home/user/.kc/passwords_and_secrets.kcd' database.
+           New password (empty to cancel):
+           New password again (empty to cancel):
+           Remember to touch your YubiKey if necessary
+           <default% >
+
+           <default% > status
+           Database file: .kc/passwords_and_secrets.kcd (/home/user/.kc/passwords_and_secrets.kcd)
+           XML structure size: 148 bytes
+           Password: yes
+           SSH agent: no
+           YubiKey: Slot #2, Device #0
+           Password function: sha512 (100000 iterations)
+           Encryption: aes256, cbc
+           Read-only: no
+           Modified: yes
+           <default% >
+
+     Adding new entries:
+
+        Simple:
+
+           <default% > new testuser
+           <default% NEW value> testpass
+
+        Prompt for both key and value:
+
+           <default% > new
+           <default% NEW key> testuser2
+           <default% NEW value> test_\r_pass_with_random_characters:\A
+
+        Using the 'key' only as an indication:
+
+           <default% > new www.mysecuresite.com
+           <default% NEW value> user_name\npass-word
+
+        Using the random and newline character sequences:
+
+           <default% > new testuser3
+           <default% NEW value> \r\R\n\a\A\nthis is a multiline value!
+
+        Creating new keychains:
+
+           <default% > cnew email_accounts
+           <default% > cnew
+           <default% NEW keychain name> WebSite Accounts
+           <default% NEW keychain description> description
+
+           <default% > cnew 2
+           <default% NEW keychain description> Two
+           Created keychain: 3. 2
+
+     Displaying, listing entries:
+
+        Listing the keys in the current keychain:
+
+           <default% > list
+           0. testuser
+           1. testuser2
+           2. www.mysecuresite.com
+           3. testuser3
+
+        Displaying values in the current keychain:
+
+           <default% > 0
+           [testuser] testpass
+           <default% > 1
+           [testuser2] test_,x_pass_with_random_characters:6nzm
+           <default% > 2
+           [www.mysecuresite.com] [1/2] user_name
+           [www.mysecuresite.com] [2/2] pass-word
+           <default% > 3
+           [testuser3] [1/3] v#)z!9
+           [testuser3] [2/3] HwRz7i
+           [testuser3] [3/3] this is a multiline value!
+
+        Listing keychains:
+
+           <default% > clist
+           0. default
+           1. email_accounts
+           2. WebSite Accounts
+           3. 2
+
+        Switch to another keychains:
+
+           <default% > c email_accounts
+           <email_accounts% > c 2
+           <WebSite Accounts% > c 3
+           <2% > c 2
+           <WebSite Accounts% > cc 2
+           <2% >
+
+     Editing existing entries:
+
+        Edit an entry in the current keychain:
+
+           <default% > edit 1
+           <default% EDIT key> testuser2
+           <default% EDIT value> test_pass_with_random_characters:6nzm
+           <default% > 1
+           [testuser2] test_pass_with_random_characters:6nzm
+
+        Rename a keychain:
+
+           <default% > cedit
+           <default% EDIT keychain name> my_own keychain
+           <default% EDIT keychain description> description
+           my_own keychain% >
+
+     pwsafe_to_kc.pl:
+
+        # Export the pwsafe database to a cleartext file:
+        $ pwsafe --exportdb > pwsafe_export
+        Enter passphrase for .pwsafe.dat:
+
+        # Convert the cleartext pwsafe database to a kc XML database file:
+        $ pwsafe_to_kc.pl pwsafe_export kc_db.xml
+        opening pwsafe_export for reading.
+        opening kc_db.xml for writing.
+        Converting...
+        Done.
+
+        After the above commands, you should end up with a kc compatible XML
+        database.  You can import it to kc using the importxml command.
+
+AUTHORS
+     kc was written by LEVAI Daniel <leva@ecentrum.hu>
+
+     Source, information, bugs: https://github.com/levaidaniel/kc
+
+CAVEATS
+     Fair warnings before using the clipboard features:
+
+        1. If you don't trust the system where you're running kc then don't
+           use these features, as you can not be sure that the binaries in
+           your PATH are not tampered with and would record the passwords.
+
+        2. Removal of the values from the clipboards are not being dealt with.
+           This should be the user's responsibility.
+
+     SSH agent support:
+
+        1. The password (signature) coming from ssh-agent(1) varies between
+           different types of SSH keys — different keys/key bit lengths
+           produce different signature lengths.
+
+        2. kc cannot handle spaces in the key comment when using the export or
+           import commands.  Opening a database however, works with spaces in
+           the key comment.
+
+     YubiKey HMAC challenge-response:
+
+        1. Supports an at most 64 bytes long password.
+
+        2. Only HMAC mode is supported by kc
+
+        3. Maybe it goes without saying, but this method of password
+           protection is not quite useful over network connections (e.g.: SSH
+           on a remote machine), as the actual device is not plugged in there.
+           There is, however, a USB-over-IP implementation for Linux that
+           could overcome this.
+
+     Miscellaneous:
+
+        1. It is considered a good practice, to periodically manually backup
+           the database file(s) you use with kc.  This could just mean a
+           simple:
+
+              $ cp ~/.kc/default ~/.kc/default-bkp
+
+        2. kc doesn't try excessively hard to recover from hard and/or non-
+           recoverable errors (OS, memory, disk etc...), and in some cases
+           this could mean that it will simply exit (without saving the
+           database) with an appropriate error message. No need to worry, but
+           keep this in mind like you would with a common word processor or
+           text editor and save periodically, for example when you edit many
+           keys at once.
+
+        3. There is no character set conversion taking place in the program.
+           In this case this means you must be ready to display anything you
+           type in.  If somehow you still end up with texts you can not
+           display properly, and for whatever reason you can not edit them in
+           kc, you can "repair" such database by dumping its content to a kc
+           XML file (see the dump command), converting the plain text XML file
+           to a working character set, then importing back that XML file (see
+           the importxml command).
+
+        4. If you use cfb, ctr or ofb as the cipher mode, there is no specific
+           sign if you enter a wrong password during opening a database; in
+           this case the database will seem to be corrupt after decrypting,
+           and kc simply will not be able to open it.
+
+        5. On OpenBSD kc uses pledge(2) to restrict its access to certain
+           functions, but only when not compiled with YubiKey support.
+           Currently the way yubikey libraries access USB devices cannot be
+           allowed by any promise for pledge(2).
+
+        6. There is a Perl script in the source package (available from the
+           project website) that converts an exported pwsafe database to a kc
+           compatible XML database, which can be imported using the importxml
+           command.  NOTA BENE: This script is really old and not maintained.
+
+FreeBSD 14.1-RELEASE           February 13, 2024          FreeBSD 14.1-RELEASE

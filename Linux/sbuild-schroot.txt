@@ -1,0 +1,190 @@
+SBUILD-SETUP(7)                                                                                Debian sbuild                                                                                SBUILD-SETUP(7)
+
+NAME
+       sbuild-setup - sbuild setup procedure
+
+DESCRIPTION
+       sbuild uses chroots to build packages within, to provide a minimal and consistent build environment.  This man page describes the procedure to create a chroot by hand using debootstrap.  These are
+       only guidelines; depending upon the setup required, several of the steps may be omitted entirely.
+
+QUICK START
+       Simply running sbuild-createchroot will perform all the setup steps described in detail below.  See the section “sbuild-createchroot” below, as well as sbuild-createchroot(8).
+
+CHROOT SETUP
+       This guide sets up a lenny chroot on a powerpc machine.  Adjust the names for other suites and architectures.
+
+   1. Run debootstrap to create the chroot
+       # mkdir -p /srv/chroot/lenny
+
+       The author has each chroot as a separate LVM logical volume (LV).  Create and mount an LV here if required:
+
+       # lvcreate -L 4G -n lenny_chroot -Z y volume-group
+
+       Add to /etc/fstab and mount (see next section for full fstab example).  Finally, run debootstrap to create the chroot:
+
+       # debootstrap --variant=buildd lenny /srv/chroot/lenny http://deb.debian.org/debian/
+
+   2. Set up additional mounts
+       An example /etc/fstab:
+
+       /dev/volume-group/lenny_chroot \
+                      /srv/chroot/lenny               ext3    defaults   0   2
+       /dev/pts       /srv/chroot/lenny/dev/pts       none    rw,bind    0   0
+       tmpfs          /srv/chroot/lenny/dev/shm       tmpfs   defaults   0   0
+       proc           /srv/chroot/lenny/proc          proc    defaults   0   0
+       /dev/volume-group/home \
+                      /srv/chroot/lenny/home          ext3    quota      0   0
+       /tmp           /srv/chroot/lenny/tmp           none    rw,bind    0   0
+       /etc/passwd    /srv/chroot/lenny/etc/passwd    none    ro,bind    0   0
+       /etc/shadow    /srv/chroot/lenny/etc/shadow    none    ro,bind    0   0
+       /etc/group     /srv/chroot/lenny/etc/group     none    ro,bind    0   0
+       /etc/gshadow   /srv/chroot/lenny/etc/gshadow   none    ro,bind    0   0
+       /etc/resolv.conf \
+                      /srv/chroot/lenny/etc/resolv.conf \
+                                                      none    ro,bind    0   0
+
+       If the bind mountpoints don't exist in the chroot, touch them:
+
+       # touch /srv/chroot/lenny/etc/resolv.conf
+
+       Next, mount them all.
+
+       Depending  on your kernel version and security considerations, you may wish to do this part slightly differently.  With a Linux kernel, at least version 2.6 is required for bind mounts, and devpts
+       (CONFIG_UNIX98_PTYS) for /dev/pts.  Other guides recommend copying the files, but this method keeps them up-to-date at no cost.
+
+       If using sbuild with schroot, passwd, shadow, group, gshadow and resolv.conf can be updated automatically at the start of each build, so no action is required here.  schroot can also automatically
+       mount all of the extra filesystems, so all the other mounts may be omitted.
+
+       To disable networking, don't bind mount /etc/resolv.conf.  This will prevent APT from working inside the chroot, but prevents package building from having working network access (no nameservers).
+
+   3. Edit sources.list
+       Create or edit /srv/chroot/lenny/etc/apt/sources.list, and add all the APT sources required to obtain binary and source packages for your chosen distribution:
+
+       deb http://security.debian.org/ lenny/updates main
+       deb-src http://security.debian.org/ lenny/updates main
+
+       deb http://deb.debian.org/debian/ lenny main
+       deb-src http://deb.debian.org/debian/ lenny main
+
+   4. Configure dchroot or schroot
+       This is entirely optional, but will make the chroot environment easier to access and administer.
+
+       For dchroot, add the following line to /etc/dchroot.conf:
+
+       lenny /srv/chroot/lenny
+
+       For schroot, add a group to /etc/schroot/schroot.conf (or a new file /etc/schroot/chroot.d/lenny), for example:
+
+       [lenny]
+       type=directory
+       description=Debian lenny (stable)
+       location=/srv/chroot/lenny
+       priority=2
+       groups=root,sbuild
+       root-groups=sbuild
+       aliases=stable
+       run-setup-scripts=true
+       run-session-scripts=true
+
+   5. Log into chroot
+       # dchroot -c lenny
+
+       or
+
+       $ schroot -c lenny -u root
+
+   6. Set up packages for sbuild
+       While running as root inside the chroot:
+
+       # apt-get update
+       # apt-get dist-upgrade
+       # apt-get install debconf
+       # dpkg-reconfigure -plow debconf
+
+       Answer the debconf questions as follows:
+
+       interface
+              choose 6/Noninteractive
+
+       priority
+              choose 1/Critical
+
+       You only need to run dpkg-reconfigure if you weren't asked the questions during the debconf install.  Next, install the packages required for building packages:
+
+       # apt-get install fakeroot build-essential
+       # apt-get install makedev
+       # cd /dev/
+       # /sbin/MAKEDEV generic
+       # touch /etc/mtab
+
+       For some security, we don't bind mount /dev, so it can't access e.g. USB devices
+
+   7. sbuild setup
+       While running as root inside the chroot:
+
+       # mkdir /build
+       # chown root:sbuild /build
+       # chmod 02775 /build
+       # mkdir -p /var/lib/sbuild/srcdep-lock
+       # chown -R root:sbuild /var/lib/sbuild
+       # chmod -R 02775 /var/lib/sbuild
+
+       Note that when using sbuild with schroot, this setup is done at the start of each build, so is not required here.
+
+   8. Finished
+       Congratulations!  You should now have a fully configured and operational chroot.
+
+SBUILD-CREATECHROOT
+       This script will automatically perform a number of the steps described above, including:
+
+       •      Running debootstrap.
+
+       •      Setting up APT sources in /etc/apt/sources.list.
+
+       •      Setting up a minimal /etc/passwd
+
+       •      Setting up /build and /var/lib/sbuild with appropriate ownership and permissions.
+
+       After it has done this, you do still need to do some manual setup, completing the steps it missed out above, for example.
+
+USER SETUP
+   1. Group membership
+       As root, run:
+
+       # sbuild-adduser user
+
+       Alternatively, add the user to the sbuild group by hand:
+
+       # adduser user sbuild
+
+   2. ~/.sbuildrc
+       Configure the user's ~/.sbuildrc:
+
+       $ cp /usr/share/doc/sbuild/examples/example.sbuildrc ~user/.sbuildrc
+
+       Edit to set the correct mail address to send log files to, and the correct maintainer name and/or uploader name.
+
+   3. Build directories
+       Create directories to contain packages and log files.  (.sbuildrc may have configured different locations; the default build directory is  the  current  directory,  and  the  default  $log_dir  is
+       ~/logs):
+
+       $ mkdir ~/logs
+
+   4. Finished
+       The user should now be able to run sbuild.
+
+       $ sbuild ...
+
+AUTHORS
+       Roger Leigh.
+
+COPYRIGHT
+       Copyright © 2005-2008  Roger Leigh <rleigh@debian.org>
+
+       This  program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the Li‐
+       cense, or (at your option) any later version.
+
+SEE ALSO
+       debootstrap(1), sbuild(1), sbuild-adduser(8), sbuild-createchroot(8).
+
+Version 0.91.1                                                                                08 October 2025                                                                               SBUILD-SETUP(7)

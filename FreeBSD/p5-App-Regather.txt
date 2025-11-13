@@ -1,0 +1,202 @@
+REGATHER(1)           User Contributed Perl Documentation          REGATHER(1)
+
+
+NAME
+       regather - LDAP syncrepl consumer script to perform actions desired on
+       syncrepl event.
+
+SYNOPSIS
+       regather [-h|--help|-? -F] <-c regather.conf> [ -C
+       section.option=value, ... ]
+
+DESCRIPTION
+       regather is a LDAP syncrepl consumer to generate ( re-gather ) files on
+       LDAP syncrepl events or even more, it can perform any action you set
+       (like create/delete directories or other).
+
+       regather performs all actions through plugins. Plugins currently
+       implemented you can know with option --plugin-list
+
+       It uses Net::LDAP(3) to do all LDAP related stuff and Template to
+       generate files. Config file is processed with Config::Parser (look
+       CONFIG FILE section bellow)
+
+       As an example, regather can re-write each OpenVPN client config file on
+       change done to client LDAP configured data, or re-write CRL file on
+       update in LDAP or change sieve script for mail user.
+
+       regather is configured via it's configuration file. Each configuration
+       option can be set/overidden via CLI options like -C
+       section.subsection.subsubsection.option=value
+
+       regather connects to LDAP ldap.opt.uri configured and performs search
+       with ldap.srch.filter which has to provide search result for all
+       configured services
+
+       Search results are used to provide data for plugins.
+
+       Module Template(3) is used to write target file, using configured
+       core.tt_path/service.XXX.tt_file
+
+       Net::DNS(3) is used to nsupdate dyn zones.
+
+OPERATIONS
+       On LDAP repl event, consumer receives syncstate, we process these
+       three:
+
+       •   LDAP_SYNC_ADD
+
+       •   LDAP_SYNC_MODIFY
+
+       •   LDAP_SYNC_DELETE
+
+       on LDAP_SYNC_ADD and LDAP_SYNC_MODIFY we just overwrite all configured
+       for the service things (files, directories e.t.c.)
+
+       ModRDN event comes as LDAP_SYNC_MODIFY, and since in DN it has the new
+       RDN, the only way to know the old one (to delete all resources related
+       to it, first) we need search accesslog DB (see slapo-accesslog(5)) for
+       the attribute reqNewRDN=new-RDN
+
+       LDAP_SYNC_DELETE differs a bit, it can be spawned by deletion of LDAP
+       object itself or by deletion of some attribute of the object. So, on
+       that event we restore previous state of the object from accesslog DB
+       (which is mandatory for our work) and look at the attribute reqType
+       value.
+
+       There are two cases we take care of:
+
+       reqType = delete
+           this is the deletion of the whole object and we destroy all related
+           stuff, configured for that service.
+
+       reqType = modify
+           this is (except the case with ModRDN) the deletion of an attribute
+           and we need to know whether it was ctrl_attr one (look CONFIG FILE
+           section bellow). If it is, then we destroy all related stuff,
+           configured in service.
+
+OPTIONS
+       -c | --config
+           absolute (or relative to core.altroot directory) path to config
+           file, it must be owned by root and must not be group and world
+           accessible. (mandatory)
+
+       -f | --foreground
+           run in foreground (optional)
+
+       -F | --force
+           force re-generation of resources configured regardless existent
+           file mtime and LDAP object modifiedTimestamp
+
+       -S | --strict
+           exit on serverside LDAP errors (connection, server restart, etc).
+           If not set, regather will try connect infinetely. (default: not
+           set)
+
+       --colors
+           terminal colors are used in foreground debug output. (optional)
+
+       -C | --cli section.option = value
+           CLI equivalent to config file options. (optional, can be multiple)
+
+           for example core.dryrun=1 (for full list of options available see
+           Regather::Conf(3))
+
+       --config-help
+           print config file lexicon (require option -c, set)
+
+       --plugin-list
+           available plugins list
+
+       -v  verbosity (optional, incremental)
+
+       -h | --help
+           help page
+
+       --version
+           shows version
+
+EXAMPLES
+           regather -c /some/regather.conf.config-tiny
+                    -C core.altroot=/tmp/regather-altroot.d
+                    -C core.tt_path=/path/regather.d
+                    --colors -f -Fvvv
+
+       this does next:
+
+       •   use separate config file
+
+       •   use alternate-to-config-file-defined directory to place the results
+           to
+
+       •   use alternate-to-config-file-defined directory for templates
+
+       •   use terminal colors in foreground and force re-generation of
+           service files
+
+FILES
+           /usr/local/etc/regather.d/*.tt templates to generate files from
+           /usr/local/etc/regather.conf   config file
+
+           /usr/local/etc/openldap/ldap.conf
+           /etc/ldap.conf
+           /etc/ldap/ldap.conf
+           /etc/openldap/ldap.conf
+
+CONFIG FILE
+       config file format is described in Regather::Config documentation.
+
+SIGNALS
+       HUP - restart
+
+       INT, QUIT, ABRT, TERM - terminate
+
+BUGS
+       •   replication related missfunction can not be identified
+
+           It is rather feature than bug. Sometimes replication related
+           problem/s which does not break slapd(8c) functionality, occures.
+           For example, when master ACL are not set properly, some needed
+           object, finally will be absent on replica side and in slapd log
+           file you can see this:
+
+           "LDAP_RES_SEARCH_RESULT (53) Server is unwilling to perform"
+
+           for now I don't know the way to catch it.
+
+       •   no action can be taken for objects not present in accesslog DB
+
+           It is, as well, rather feature than bug. While creatin of target
+           resource (LDAP_SYNC_ADD) uses currently present in LDAP objects,
+           delete (LDAP_SYNC_DELETE) event is using accesslog information. If
+           for some reason this information is absent, then target resource
+           which was created before, won't be deleted.
+
+           So you need to delete it by hands. Or you can delete all target
+           directory files and restart regather.
+
+SEE ALSO
+       Net::LDAP(3), Net::LDAP::Control::SyncRequest(3) Template(3),
+       App::Regather::Config(3) slapo-accesslog(5)
+
+AUTHOR
+       Zeus Panchenko <zeus@gnu.org.ua>
+
+COPYRIGHT
+       Copyright 2020 Zeus Panchenko.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the terms of the GNU General Public License as published by the
+       Free Software Foundation; either version 3, or (at your option) any
+       later version.
+
+       This program is distributed in the hope that it will be useful, but
+       WITHOUT ANY WARRANTY; without even the implied warranty of
+       MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+       General Public License for more details.
+
+       You should have received a copy of the GNU General Public License along
+       with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+perl v5.40.2                      2021-04-26                       REGATHER(1)

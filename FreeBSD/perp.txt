@@ -1,0 +1,289 @@
+perpetrate(5)           persistent process supervision           perpetrate(5)
+
+NAME
+       perpetrate - conventions for runscripts
+
+DESCRIPTION
+       perpd(8) operates on a pair of ``runscripts'' that are executed to
+       start and reset a service and an optional logger.
+
+       The runscripts recognized by perpd(8) are:
+
+       rc.log
+              Optional.  Controls the logger for the main service.
+
+       rc.main
+              Required.  Controls the main service.
+
+       The arguments, structure, and conventions for rc.log and rc.main are
+       identical.  The illustrations below will usually be shown with rc.main,
+       but are equally applicable to rc.log unless noted otherwise.
+
+       perpd(8) will invoke service runscripts from within the service
+       definition directory.  For example, given some service definition
+       directory
+
+              /etc/perp/foo
+
+       perpd(8) will switch into foo before invoking a runscript.  This means
+       that foo will be the current working directory within the runscript
+       environment.
+
+       Runscripts are normally implemented as executable shell scripts,
+       prepared and installed by the system administrator.  A runscript will
+       be executed at least twice during the life cycle of a service:
+
+              •   to start the service
+
+              •   after the service exits
+
+       A runscript will accordingly be structured to handle either of these
+       events.
+
+       Runscripts are invoked in the general form:
+
+              ./rc.main target svname [ args...  ]
+
+       The argument target will be set to one of two literal strings, either
+       ``start'' or ``reset'', depending on whether perpd(8) is starting or
+       resetting the service.  The svname argument will be set to the basename
+       of the service definition directory, such as ``foo'' for the service
+       directory foo.  Any additional arguments depend on the target.
+
+       When using a ``start'' target, perpd(8) will invoke the runscript like
+       this:
+
+              ./rc.main start svname
+
+       This follows the general form with no additional arguments.  Given a
+       ``start'' target, a runscript process should perform any
+       initializations the service requires, and then proceed to replace
+       itself (its process ID) with the desired service running in the
+       foreground.  A Bourne-compatible script such as sh(1) will replace
+       itself by using the exec command to start the service.  This provides
+       perpd(8) with the process ID it needs for the actual running service,
+       so that the service may be properly monitored and controlled.
+
+       Normally the ``start'' target will result in a persistent process, a
+       long-running program that starts at system boot and continues until
+       system shutdown.  A runscript called with a ``start'' target should
+       generally not return or exit, unless some error is encountered in
+       initializing or starting the service.
+
+       As long-running as a service may be, whenever it does exit, for any
+       reason, perpd(8) will call the runscript again with a ``reset'' target.
+       A ``reset'' target will invoke the runscript with additional arguments
+       in either one of two forms, depending on whether the service exited
+       normally, or was terminated by a signal:
+
+              ./rc.main reset svname exit exitcode
+       or
+              ./rc.main reset svname signal signum signame
+
+       In the first case, where a service has terminated normally, the
+       additional arguments include the literal string ``exit'', followed by a
+       string representation of the numeric exit code returned by the process.
+
+       In the second case, where a service was terminated by a signal, the
+       additional arguments include the literal string ``signal'', followed by
+       a string representation of the signal number that killed the process,
+       followed by the symbolic name for the signal, such as SIGTERM, and as
+       may be found listed in signal(7).
+
+       When called with a ``reset'' target, a runscript may be used for any
+       number of purposes:
+
+              •   post-service logging and cleanup
+
+              •   sysadmin notification
+
+              •   shutdown of dependent services
+
+       On the other hand, a runscript doesn't have to do anything with a
+       ``reset'' target at all.  There are no particular conditions or
+       requirements for a resetting service, except that the runscript should
+       normally return/exit as promptly as possible.  A resetting runscript
+       will usually do its job quickly so that perpd(8) may start the service
+       again as soon as possible.
+
+EXAMPLES
+       Assume that perpd(8) is supervising some service defined in the
+       subdirectory foo.  The simplest barebones rc.main runscript will act
+       only on the ``start'' target to exec into the foo service:
+
+              #!/bin/sh
+              if test ${1} = 'start' ; then
+                exec /usr/bin/foo -f
+              fi
+
+              exit 0
+
+       This example performs no initializations, does not prepare for logging,
+       and responds only to a ``start'' target.  It simply execs into the
+       /usr/bin/foo program, here called with an -f argument, presumably
+       required to run foo in the foreground.  On any other target other than
+       ``start'', this runscript will exit 0.
+
+       Here is another example of a simple foo service, this time with a bit
+       of logging added:
+
+              #!/bin/sh
+              exec 2>&1
+
+              if test ${1} = 'start' ; then
+                echo "starting ${2}..."
+                exec /usr/bin/foo -f
+              fi
+
+              exit 0
+
+       This runscript starts by redirecting stderr to stdout, so that all
+       output will be captured by the associated logging service.  The
+       runscript also emits a startup message that will be picked up by the
+       logger, showing the use of the svname argument given as the second
+       parameter to the runscript.
+
+       A simple rc.log runscript for this service might look like this:
+
+              #!/bin/sh
+              if test ${1} = 'start' ; then
+                exec tinylog -k 5 -t /var/log/${2}
+              fi
+
+              exit 0
+
+       As with the rc.main runscript example, this runscript only responds to
+       a ``start'' target.  It execs tinylog(8) to maintain a set of up to 5
+       rotated and timestamped log files in the directory /var/log/foo,
+       supplying the final path element to the logging directory from the
+       svname given as the second parameter to the runscript.
+
+       With a logger setup for the foo service, some post-service logging may
+       now be added for a ``reset'' target in rc.main:
+
+              #!/bin/sh
+              exec 2>&1
+
+              if test ${1} = 'start' ; then
+                echo "starting ${2}..."
+                exec /usr/bin/foo -f
+              fi
+
+              if test ${1} = 'reset' ; then
+                case ${3} in
+                  'exit')   echo "service ${2} exited with exitcode ${4}" ;;
+                  'signal') echo "service ${2} terminated on signal ${5}" ;;
+                esac
+              fi
+
+              exit 0
+
+       Now whenever this service exits, and the runscript is run with a
+       ``reset'' target, the logger will pick up a timestamped record of the
+       event as well as the cause/type of termination.
+
+       Runscripts may use whatever branching idioms are provided by the script
+       interpreter.  A couple of obvious possibilities in sh(1) include the
+       case and eval statements.  Here is an example runscript using eval:
+
+              #!/bin/sh
+              exec 2>&1
+
+              TARGET=${1}
+              SVNAME=${2}
+
+              start() {
+                echo "starting ${SVNAME}..."
+                exec /usr/bin/foo -f
+              }
+
+              reset() {
+                echo "resetting ${SVNAME}..."
+                exit 0
+              }
+
+              eval ${TARGET} "$@"
+
+       The runscripts shown above are admittedly simplistic.  Runscripts may
+       be, and often are, embellished considerably beyond the simple examples
+       shown here.  In particular, runtools(8) are often used in the exec
+       command of a runscript ``start'' target to implement resource control,
+       privilege drops, and other manipulations of the service process
+       environment.
+
+       Nevertheless, it is generally preferable to keep runscripts as simple
+       as possible, while still starting the service safely and reliably.
+       Simpler runscripts run faster, are easier to maintain and diagnose,
+       have fewer unexpected side effects, and are generally more portable
+       among different host installations.
+
+ENVIRONMENT
+       In addition to the positional arguments supplied to the runscript,
+       certain other variables are also defined within the runscript
+       environment.
+
+       The PERP_BASE variable is defined for both ``start'' and ``reset''
+       targets.  This variable provides the base directory of the service
+       installation, normally /etc/perp, and as described in perpd(8).  The
+       definition of PERP_BASE permits the use of such perp utilities as
+       perpok(8) and perpctl(8) directly within runscripts, where they may
+       then easily reference any other service definitions as necessary.
+
+       The PERP_SVPID variable is defined for both ``start'' and ``reset''
+       targets.  For the ``start'' target, PERP_SVPID gives the process ID of
+       the service that will be started.  For the ``reset'' target, PERP_SVPID
+       gives the process ID of the service that has just terminated.
+       Runscripts may choose to use the PERP_SVPID variable to generate output
+       that cleanly brackets the complete life-cycle of a service within
+       service logs, or for any other purpose of reporting and notification.
+
+       The PERP_SVSECS variable is defined only for the ``reset'' target.  It
+       gives the total wallclock uptime, in seconds, of the service that has
+       just terminated.  Runscripts running ``reset'' may choose to use
+       PERP_SVSECS for logging the uptime of a service, or for any other
+       purpose of reporting and notification.
+
+COMPATIBILITY
+       For users familiar with the daemontools package, the runscript
+       conventions described here are not directly interchangeable with those
+       of supervise(8).  The main difference is that the run scripts of
+       daemontools are designed to perform only on startup of a service, and
+       will have no facility for properly handling a ``reset'' argument.
+
+       Nevertheless, it is trivial to provide compatibility to perpd(8) for
+       any pre-existing daemontools run scripts.  Just install copies of the
+       following rc.main into any daemontools service definition directory:
+
+              #!/bin/sh
+              if test ${1} = 'start' ; then
+                exec ./run
+              fi
+
+       Likewise, this rc.log:
+
+              #!/bin/sh
+              if test ${1} = 'start' ; then
+                cd ./log && exec ./run
+              fi
+
+HISTORY
+       The perpd(8) daemon formerly used multiple instances of a perpetrate(8)
+       executable, running one instance for each service under supervision.
+       Under that architecture, the perpetrate(8) executable performed all the
+       supervisory operations on the service definition as described in this
+       manual.
+
+       Beginning with version 2.0, the operations of the perpetrate(8)
+       executable were internally coalesced with perpd(8) itself, and the need
+       for perpetrate(8) was eliminated.  Meanwhile, all the runscript
+       conventions have otherwise remained the same, and the name of this
+       manual page has been retained to describe them.
+
+AUTHOR
+       Wayne Marshall, http://b0llix.net/perp/
+
+SEE ALSO
+       perp_intro(8), perpboot(8), perpctl(8), perpd(8), perphup(8),
+       perpls(8), perpok(8), perpstat(8), sissylog(8), tinylog(8)
+
+perp-2.07                        January 2013                    perpetrate(5)

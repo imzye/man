@@ -1,0 +1,189 @@
+custom::failures(3)   User Contributed Perl Documentation  custom::failures(3)
+
+
+NAME
+       custom::failures - Minimalist, customized exception hierarchy generator
+
+VERSION
+       version 0.004
+
+SYNOPSIS
+           package MyApp::failure;
+
+           use custom::failures qw/io::file io::network/;
+
+           # customize failure methods…
+
+DESCRIPTION
+       This module works like failures but lets you define a customized
+       exception hierarchy if you need a custom namespace, additional
+       attributes, or customized object behaviors.
+
+       Because failure classes have an @ISA chain and Perl by default uses
+       depth-first-search to resolve method calls, you can override behavior
+       anywhere in the custom hierarchy and it will take precedence over
+       default "failure" behaviors.
+
+       There are two methods that might be useful to override:
+
+       •   message
+
+       •   throw
+
+       Both are described further, below.
+
+USAGE
+   Defining a custom failure hierarchy
+           package MyApp::failure;
+
+           use custom::failures qw/foo::bar/;
+
+       This will define a failure class hierarchy under the calling package's
+       namespace.  The following diagram show the classes that will be created
+       (arrows denote 'is-a' relationships):
+
+           MyApp::failure::foo::bar --> failure::foo::bar
+                  |                        |
+                  V                        V
+           MyApp::failure::foo      --> failure::foo
+                  |                        |
+                  V                        V
+           MyApp::failure           --> failure
+
+       Alternatively, if you want a different namespace for the hierarchy, do
+       it this way:
+
+           use custom::failures 'MyApp::Error' => [ 'foo::bar' ];
+
+       That will create the following classes and relationships:
+
+           MyApp::Error::foo::bar --> failure::foo::bar
+                  |                        |
+                  V                        V
+           MyApp::Error::foo      --> failure::foo
+                  |                        |
+                  V                        V
+           MyApp::Error           --> failure
+
+       By having custom classes also inherit from a standard namespace, you
+       can throw a custom error class that will still be caught in the
+       standard namespace:
+
+           use Safe::Isa; # for $_isa
+           try {
+               MyApp::failure::foo::bar->throw;
+           }
+           catch {
+               if ( $_->$_isa( "failure::foo" ) ) {
+                   # handle it here
+               }
+           };
+
+   Adding custom attributes
+       Failure classes are implemented with Class::Tiny, so adding attributes
+       is trivially easy:
+
+           package MyApp::failure;
+
+           use custom::failures qw/foo::bar/;
+
+           use Class::Tiny qw/user/;
+
+       This adds a "user" attribute to "MyApp::failure" and all its subclasses
+       so it can be set in the argument to "throw":
+
+           MyApp::failure::foo->throw( { msg => "Ouch!", user => "me" } );
+
+       Be sure to load "Class::Tiny" after you load "custom::failures" so that
+       your @ISA is already set up.
+
+   Overriding the "message" method
+       Overriding "message" lets you modify how the error string is produced.
+       The "message" method takes a string (typically just the "msg" field)
+       and returns a string.  It should not produce or append stack trace
+       information.  That is done during object stringification.
+
+       Call "SUPER::message" if you want the standard error text prepended
+       ("Caught $class: ...").
+
+       For example, if you want to use String::Flogger to render messages:
+
+           package MyApp::failure;
+
+           use custom::failures qw/foo::bar/;
+           use String::Flogger qw/flog/;
+
+           sub message {
+               my ( $self, $msg ) = @_;
+               return $self->SUPER::message( flog($msg) );
+           }
+
+       Then you can pass strings or array references or code references as the
+       "msg" for "throw":
+
+           MyApp::failure->throw( "just a string"               );
+           MyApp::failure->throw( [ "show some data %s", $ref ] );
+           MyApp::failure->throw( sub { call_expensive_sub() }  );
+
+       Because the "message" method is only called during stringification
+       (unless you call it yourself), the failure class type can be checked
+       before any expensive rendering is done.
+
+   Overriding the "throw" method
+       Overriding "throw" lets you modify the arguments you can provide or
+       ensure that a trace is included.  It can take whatever arguments you
+       want and should call "SUPER::throw" with a hash reference to actually
+       throw the error.
+
+       For example, to capture the filename associated with file errors:
+
+           package MyApp::failure;
+
+           use custom::failures qw/file/;
+
+           use Class::Tiny qw/filename/;
+
+           sub throw {
+               my ( $class, $msg, $file ) = @_;
+               my $args = {
+                   msg => $msg,
+                   filename => $file,
+                   trace => failures->croak_trace,
+               };
+               $self->SUPER::throw( $args );
+           }
+
+           sub message {
+               # do something with 'msg' and 'filename'
+           }
+
+       Later you could use it like this:
+
+           MyApp::failure::file->throw( opening => $some_file );
+
+   Using BUILD
+       "Class::Tiny" supports "BUILD", so you can also use that to do things
+       with failure objects when thrown.  This example logs exceptions as they
+       are built:
+
+           use Log::Any qw/$log/;
+
+           sub BUILD {
+               my ($self) = @_;
+               $log->error( $self->message );
+           }
+
+       By using "message" instead of stringifying $self, we log the message
+       but not the trace (if any).
+
+AUTHOR
+       David Golden <dagolden@cpan.org>
+
+COPYRIGHT AND LICENSE
+       This software is Copyright (c) 2013 by David Golden.
+
+       This is free software, licensed under:
+
+         The Apache License, Version 2.0, January 2004
+
+perl v5.40.2                      2014-07-14               custom::failures(3)

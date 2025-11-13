@@ -1,0 +1,131 @@
+SMCROUTE.CONF(5)                                                                             File Formats Manual                                                                           SMCROUTE.CONF(5)
+
+NAME
+       smcroute.conf — smcrouted configuration file format
+
+DESCRIPTION
+       The  file smcroute.conf is, strictly speaking, not critical to the operation of smcrouted.  Some warnings may be logged, and provided the daemon is not started with -N, it enables VIFs for all in‐
+       terfaces it can find and then waits for commands from smcroutectl(8).  As you can tell from that caveat, any non-trivial setup requires an smcroute.conf.
+
+       On most systems the configuration file(s) are available in:
+
+             /etc/smcroute.conf
+                     The traditional location, with all routes, group joins, and interfaces.
+
+             /etc/smcroute.d/*.conf
+                     Recently an include directive was added to smcroute.conf, which allows for including other files.  By convention /etc/smcroute.d/ has been selected as the default in the bundled  ex‐
+                     ample smcroute.conf.  See more about the include directive below.
+
+       In debug mode, smcrouted logs the success of parsing each line and setting up a route.  There is also a basic syntax validator built-in, see smcrouted(8) for more information.
+
+SYNTAX
+       This section details the syntax of each of the available configuration file directives.
+
+       Comments start with “#” and run to the end of line.  See the “EXAMPLE” below.
+
+             phyint IFNAME [enable | disable] [mrdisc] [ttl-threshold TTL]
+                     By  default  all  interfaces on the system are enabled and possible to route between, provided they have the MULTICAST interface flag set.  The phyint directive can be used to selec‐
+                     tively enable, or disable, interfaces from being mapped to virtual interfaces (VIFs), which the multicast routing stack actually employs.  VIFs are limited,  most  operating  systems
+                     only have 32, it is recommended to disable all interfaces by default, with ‘smcrouted -N’, and enable them one by one using this directive.
+
+                     mrdisc  is  an  IPv4 specific feature flag to enable Multicast Router Discovery protocol, RFC4286, announcement.  This standard is supported by some switch (and router) manufacturers
+                     and may be used instead of having mgroup statements for all possible multicast groups you may want to forward.
+
+                     ttl-threshold is a very useful setting to help implement "TTL scoping".  I.e., the minimum TTL level a multicast stream must exceed for the kernel to consider it to be  routed.   The
+                     default value (1) means a TTL of 2 or higher is needed for a frame to be forwarded to the routing stack, otherwise it is considered link-local.  See smcrouted(8) for more information
+                     on multicast scoping.
+
+                     Note:  all  phyint  directives  must  be read by smcrouted before any mgroup or mroute that refer to them!  Hence, either place all phyint directives in the main smcroute.conf or, if
+                     /etc/smcroute.d/*.conf is used, first in a file named, 00-phyint.conf, or similar.
+
+             mgroup from IIF [source SOURCE[/LEN]] group GROUP[/LEN]
+                     Join a multicast group, with optional prefix length, on a given inbound interface (IIF).  The source address is optional, but if given a source  specific  (SSM)  join  is  performed.
+                     Every  /LEN  is  translated  to  as  many sources and groups as specified.  To attempt to overcome (configured) kernel limitations, smcrouted probes the amount of joins available per
+                     socket.  When the socket has been exhausted, another one is opened.  At most 2048 sockets are opened.
+
+                     The purpose of joining groups is to use layer-2 signaling to inform switches, and other routers, to open up multicast traffic to your interfaces.  Leaving a group  is  not  supported
+                     from the configuration file, instead remove the mgroup, or trim its arguments, SIGHUP or smcroutectl reload your daemon.
+
+                     Note:  use  of the mgroup command should be avoided if possible.  Instead configure "router ports" or similar on the switches (bridges) on your LAN.  This to have them direct all the
+                     multicast to your router, or direct select groups if they have such capabilities.  Usually MAC multicast filters exist.
+
+             mroute from IIF [source SOURCE[/LEN]] group GROUP[/LEN] to OIF [OIF ...]
+                     Add a multicast route for packets received on network interface IIF, originating from IP address SOURCE, and sent to the multicast group address GROUP, to the outbound network inter‐
+                     face(s) OIF [OIF ...].
+
+                     The interfaces provided as IIF and OIF can be any network interface name available in the system, as long as it has the MULTICAST flag set.  Furthermore, the kernel usually only for‐
+                     wards traffic if the interface(s) have an IP address.  These are limitations posed by the kernel, not smcrouted.
+
+                     To add a (*,G) route, either leave SOURCE out completely or set it to 0.0.0.0, and if you want to specify a range, set GROUP/LEN, e.g.  225.0.0.0/24.
+
+             include PATH
+                     Include another smcroute.conf file, or set of files.  Matching is performed using glob(3), and matches are sorted alphabetically.  By convention, the  example  smcroute.conf  bundled
+                     with smcrouted includes /etc/smcroute.d/*.conf.
+
+EXAMPLE
+       smcrouted supports reading and setting up multicast routes from a config file.  The default location is /etc/smcroute.conf, but this can be overridden using the -f FILE command line option.
+
+       The IIF and OIF arguments below are interface names, or interface wildcards of the form eth+, which matches eth0, eth10, etc.  Wildcards are available for inbound interfaces.
+
+             #
+             # smcroute.conf example
+             #
+             # Syntax:
+             #   phyint IFNAME <enable|disable> [mrdisc] [ttl-threshold <1-255>]
+             #   mgroup from IIF [source ADDR[/LEN]] group GROUP[/LEN]
+             #   mroute from IIF [source ADDR[/LEN]] group GROUP[/LEN] to OIF [OIF ...]
+             #   include /path/to/*.conf
+
+             # Assuming smcrouted was started with the `-N` flag.  Enable interfaces
+             # required for inbound and outbound traffic.  TTL scoping is enabled on
+             # all interfaces, e.g., to use eth0 as n outbound interface (OIF), all
+             # multicast frames must have a TTL of 12 or greater when ingressing.
+             phyint eth0 enable ttl-threshold 11
+             phyint eth1 enable ttl-threshold 3
+             phyint eth2 enable ttl-threshold 5
+             phyint virbr0 enable ttl-threshold 5
+
+             # Instruct the kernel to join the multicast group 225.1.2.3 on interface
+             # eth0.  Then add an mroute of the same multicast stream, from the host
+             # 192.168.1.42 on interface eth0 and forward to eth1 and eth2.
+             mgroup from eth0                     group 225.1.2.3
+             mroute from eth0 source 192.168.1.42 group 225.1.2.3 to eth1 eth2
+
+             # Similarly, but using source-specific group join
+             mgroup from virbr0 source 192.168.123.110 group 225.1.2.4
+             mroute from virbr0 source 192.168.123.110 group 225.1.2.4 to eth0
+
+             # Allow multicast for group 225.3.2.1, from ANY source, ingressing on
+             # interface eth0 to be forwarded to eth1 and eth2.  When the kernel
+             # receives a frame from unknown multicast sender, it asks smcrouted who
+             # use this "template" to match against, if the ingressing interface and
+             # group matches, smcrouted installs an (S,G) route in the kernel MFC.
+             mgroup from eth0 group 225.3.2.1
+             mroute from eth0 group 225.3.2.1 to eth1 eth2
+
+             # The previous is an example of the (*,G) support.  It is also possible
+             # to specify a range of such rules.
+             mgroup from eth0 group 225.0.0.0/24
+             mroute from eth0 group 225.0.0.0/24 to eth1 eth2
+
+             # Include any snippet in /etc/smcroute.d/, but please remember that
+             # all phyint statements must be read first.
+             include /etc/smcroute.d/*.conf
+
+CAVEATS
+       The source address is optional for both IPv4 and IPv6 multicast routes, this is called (*,G) routing.  When omitted, smcrouted dynamically installs (S,G) routes, matching the group and inbound in‐
+       terface, to the kernel when it learns of new inbound multicast.  This feature was inherited from mrouted(8), and may not work as intended in all use-cases.  Also, depending on kernel and CPU load,
+       account for the setup time to detect and install the route, expect at least one initial frame to be lost when using (*,G) rules.
+
+FILES
+       /etc/smcroute.conf, /etc/smcroute.d/*.conf
+
+SEE ALSO
+       smcrouted(8), smcroute.conf(5)
+
+AUTHORS
+       SMCRoute was originally created by Carsten Schill <carsten@cschill.de>.  Initial IPv6 support by Todd Hayton <todd.hayton@gmail.com>.  Initial FreeBSD support by Micha Lenk <micha@debian.org>.
+
+       SMCRoute is currently maintained by Joachim Wiberg <troglobit@gmail.com>, and Micha Lenk <micha@debian.org> at GitHub: https://github.com/troglobit/smcroute.
+
+Debian                                                                                        August 15, 2021                                                                              SMCROUTE.CONF(5)

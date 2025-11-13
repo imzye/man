@@ -1,0 +1,226 @@
+IPA_CONV(8)             FreeBSD System Manager's Manual            IPA_CONV(8)
+
+NAME
+       ipa_conv -- IPA accounting/database module for converting statistics
+
+DESCRIPTION
+       ipa_conv is an IPA accounting/database module with the following
+       features:
+
+       -      The module is designed for converting statistics;
+
+       -      Statistics is converted according to custom plans, several plans
+              can be used at the same time;
+
+       -      Each plan can have converting rules for months, days, week days
+              and time ranges;
+
+       -      Statistics of one static rule can be converted and sent to
+              another static rule.
+
+       The name of the accounting system and the name of the database is conv.
+
+DESIGN OVERVIEW
+       ipa_conv consists of one accounting module and one database module, but
+       these two modules are implemented in one object file.  This file must
+       be loaded two times in the ipa.conf(5) configuration file, one time
+       using the ac_mod parameter and second time using the db_mod parameter.
+       Actually only a single copy of an object file is brought into the
+       address space of ipa(8) and the module checks this at the time of
+       initialization.
+
+       An arbitrary static rule can use this module as a database (in this
+       case this rule is called ``source rule'') and/or as an accounting
+       system (in this case this rule is called ``destination rule'').  Each
+       source rule is the source of statistics for some one destination rule.
+       Each source rule has a converting plan for converting statistics for
+       corresponding destination rule.  One destination rule can receive
+       converted statistics from several source rules.
+
+       When the database part of the module gets statistics for the source
+       rule it converts this statistics according to the converting plan and
+       sends converted statistics to the destination rule.  The destination
+       rule receives converted statistics from the accounting part of the
+       module.  In other words, the module works like a pipe between two
+       rules, it converts statistics from one rule and sends converted
+       statistics to another rule.
+
+       A converting plan consists of time intervals with information how to
+       convert original statistics.  This information contains two numbers,
+       the first number X is the amount of original statistics and the second
+       number Y is the amount of corresponding converted statistics: full X
+       units of the original statistics are converted to Y units (X > 0 and
+       Y >= 0).  By default the module scales X and Y values to the minimum
+       possible values, but this feature can be disabled.
+
+       There are several formats of time intervals (given below).  The
+       database part of the module always chooses the most specific time
+       interval.  The most specific time interval is chosen when the database
+       part of the module gets updated statistics for some source rule.  If
+       the value of statistics was s1 at t1 time and the value of statistics
+       is s2 at t2 time for some source rule and there were not database
+       updates between t1 and t2 of this rule, then the time interval is
+       chosen for t2 time and the difference (s2 - s1) is converted and sent
+       to the destination rule (this difference can be negative).  Too long
+       time intervals between database updates can cause inaccurate converting
+       of statistics.
+
+       Usually a source rule should be written above the corresponding
+       destination rule in the configuration file and it is better to tell
+       ipa(8) to not change internally their order (use the keep_rules_order
+       parameter).  If a source rule is processed first and the corresponding
+       destination rule is processed second at the same time, then the
+       destination rule will receive converted statistics from a source rule
+       immediately.  Otherwise it will receive converted statistics during
+       next database update time.
+
+       This module works with increasing statistics and decreasing statistics.
+       But since a database module receives only non-negative statistics, then
+       this module cannot handle correctly situation when statistics of some
+       rule became negative (in this case the module's database part receives
+       zero statistics from ipa(8)).  If this statistics becomes positive
+       again, then the module will work as expected.
+
+CONFIGURATION FILE FORMAT
+       One part of the configuration for the module is integrated into
+       ipa.conf(5), other parts of the configuration are kept in files with
+       converting plans.  The configuration prefix of this module is ``conv''.
+
+       The conv:scale parameter specifies whether the module should scale
+       values in all loaded converting plans:
+
+           conv:scale = <boolean>;
+
+       This parameter should not be placed in any section and should be used
+       before conv:load parameters.  The default value of this parameter is
+       ``yes'' and the module scales values in all plans.
+
+       The conv:load parameter loads a file with converting plan and gives a
+       local name to loaded plan:
+
+           conv:load = <plan-name> "/path/file";
+
+       This parameter should not be placed in any section and it should be
+       used before conv:plan parameters.  The given file is loaded and parsed
+       when the module parses this parameter.
+
+       The conv:dest parameter specifies the destination rule name, the
+       conv:plan parameter specifies the converting plan for this rule:
+
+           conv:dest = <rule-name>;
+           conv:plan = <plan-name>;
+
+       These two parameters can be placed in the rule section.  The module
+       checks whether the given destination rule exists at the end of
+       configuration file parsing.  If a destination rule is inactive, then it
+       does not received converted statistics.
+
+       The conv:quiet parameter allows to make the module less or more
+       verbose:
+
+           conv:quiet = <value>;
+
+       This parameter should not be placed in any section.  The default value
+       of this parameter is 3.  If its value has 0x1 bit off, then the module
+       sends a warning message when ipa(8) deinitializes some destination rule
+       and this rule still have some converted statistics.  If its value has
+       0x2 bit off, then the module sends a warning message when ipa(8)
+       deinitializes some source rule and this rule still have some not
+       converted original statistics.
+
+       The conv:debug parameter helps to debug the module:
+
+           conv:debug = <level>;
+
+       This parameter should not be placed in any section.  Only two values
+       are allowed for the debug level: 0 and 1.  The default value of this
+       parameter is 0 and debugging is disabled.
+
+CONVERTING PLAN FORMAT
+       A file with converting plan consists of lines.  Each line should have
+       not more than 255 characters.  Each line can have a shell-like comment
+       that starts with the '#' character.  Empty lines or lines with only
+       comments are ignored.
+
+       A converting plan for one time interval should be written in one line
+       containing three fields.  The first field is a time interval, the
+       second field is the amount of original statistics and the third field
+       is the amount of corresponding converted statistics.  These fields are
+       separated by space or tab characters.
+
+       A time interval can be given in different formats, but time intervals
+       of one format should not overlap.  Here is the list of time interval
+       formats (time intervals types are checked exactly in the same order
+       when the most specific time interval is being searched):
+
+       o      year.mon.day/h1:m1-h2:m2 specifies time interval for year, month
+              and day.
+
+       o      year.mon.day specifies year, month and day.
+
+       o      mon.day/h1:m1-h2:m2 specifies time interval for month and day.
+
+       o      mon.day specifies month and day.
+
+       o      mon specifies a month.
+
+       o      X/h1:m1-h2:m2 specifies time interval for a week day.  Valid
+              values for X are: `S' Sunday, `M' Monday, `T' Tuesday, `W'
+              Wednesday, `H' Thursday, `F' Friday, `A' Saturday.
+
+       o      X specifies a week day
+
+       o      h1:m1-h2:m2 specifies time interval.
+
+       o      `*' specifies the default settings and must exist in any plan.
+
+       A month can be given as the first three characters of English language
+       month name.
+
+       A day starts at 00:00 and ends at 24:00.
+
+       Example:
+
+       There is one rule r1 that gets statistics from some accounting system.
+       It is necessary to get only 50% of that statistics at night from 00:00
+       till 07:00 and statistics should not be changed at other time.
+
+       Let's create a file with converting plan /etc/ipa/plan/night:
+
+           # Interval      Original        Converted
+           *               1               1               # 100%
+           00:00-07:00     2               1               #  50% (night)
+
+       Let's create ipa.conf, rule r2 will get converted statistics from rule
+       r1:
+
+           /* ... */
+
+           ac_mod "ipa_conv.so";
+           db_mod "ipa_conv.so";
+
+           conv:load = night "/etc/ipa/plan/night";
+
+           rule r1 {
+               /* ... */
+               db_list = conv;
+               conv:dest = r2;
+               conv:plan = night;
+           }
+
+           rule r2 {
+               /* ... */
+               ac_list = conv;
+           }
+
+       Rule r1 can use several databases, rule r2 can use databases and
+       another accounting systems.  The accounting system used by rule r1 is
+       not shown in this example.
+
+AUTHOR
+       Andrey Simonenko <simon@comsys.ntu-kpi.kiev.ua>
+
+BUGS
+       If you find any, please send email me.
+
+                                 July 22, 2009                     IPA_CONV(8)

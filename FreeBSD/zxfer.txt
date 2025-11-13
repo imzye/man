@@ -1,0 +1,802 @@
+ZXFER(8)                FreeBSD System Manager's Manual               ZXFER(8)
+
+NAME
+     zxfer – transfer ZFS filesystems, snapshots, properties, files and
+     directories
+
+SYNOPSIS
+     zxfer [-dFnPsUv] [-k | -e] [-b | -B] {-N path/to/src | -R path/to/src}
+           [-m [c FMRI|pattern[ FMRI|pattern]...]]]
+           [-D 'progress dialog options'] [-I properties,to,ignore]
+           [-O user@host] [-T user@host] [-o option1=value1,option2=value2...]
+           [-g days] destination
+     zxfer {-S} [-dilpPnv] [-k | -e] [-b | -B] [-f /path/to/rsfile]
+           {-R
+           /path/to/src1,path/to/src2... | -N /path/to/src1,path/to/src2...}
+           [-o option1=value1,option2=value2...] [-E pattern] [-L value]
+           [-u snapshot] destination
+     zxfer [-h]
+
+           Where destination is a ZFS filesystem e.g.  poolname/fsname
+
+DESCRIPTION
+     The zxfer utility performs two main functions. It can replicate ZFS
+     filesystems (including snapshots and properties) using zfs(8) send to do
+     the heavy lifting.
+
+     It can also transfer files and directories and the filesystems underlying
+     them using rsync(1).  It will first recursively snapshot those
+     filesystems so that an atomic snapshot of all files and directories
+     exists as a base. It then creates a replica of the source filesystem
+     hierarchy down to the pool level at the destination. It then transfers
+     the files and directories. This is desirable when we have different
+     snapshotting regimes on source and destination, and want to copy across
+     the latest contents of the filesystem(s).
+
+     Both zfs(8) send and rsync(1) use checksums/hashes to verify that the
+     data copied to the destination is the same data that was sent from the
+     source, so we have a similar degree of surety of end-to-end data
+     integrity as the ZFS filesystem itself.
+
+     Either method allows for the properties of each filesystem to be
+     transferred and specific properties overridden as necessary. For example,
+     compression, readonly, and copies are properties that are likely to be
+     useful to override if we are using this utility to make backups. If the
+     destination filesystems do not exist, zxfer will automatically create
+     them.
+
+     Both methods also allow the backup and restore of the original filesystem
+     properties so that if it is desirable to backup the filesystem(s) for
+     archival purposes using compression etc. as overrides, the original
+     properties may be restored without the user having to make a note of what
+     those original properties were.
+
+     IMPORTANT: Note that switching between these two modes is done with -S.
+     Depending on the mode, the workings of an option may be nonexistent,
+     subtly or grossly different. Don't assume an option works the exact same
+     way that it did with the other mode.
+
+     Note also that zxfer should be run from root, as to do anything useful
+     zfs(8) must also be run from root.
+
+     Note that at present, the usage of spaces in zfs(8) filesystem names is
+     NOT supported. There is no plan to support it without someone else doing
+     the coding or a good funding proposal coming my way.
+
+DISCLAIMER/WARNING
+     You MUST read, understand and agree to the disclaimer in the BSD license
+     before applying any of these examples or using zxfer.  (See the file
+     "COPYING" that should have been included with this utility.)  I eat my
+     own cooking - I use zxfer as per the examples given and as my primary
+     form of backup. That being said, you are strongly urged to have a look at
+     the script and try it out on some non-risky pools and filesystems before
+     using it in production. At this stage, straying too far from the given
+     examples will probably furnish you with the material to submit some bug
+     reports.  Run a backup before using it and don't shoot me if something
+     goes wrong. This software is about beta level, which means that if you
+     are going to use it for backups you should treat it more like alpha level
+     software - i.e. trust it at your own risk.
+
+     Modifying an example first is a good way to start using the script, as
+     there are some options (e.g. -d and -F in normal mode) that are in
+     practice always used.
+
+SNAPSHOTS
+     zxfer in Normal mode as a backup/restore solution is designed to be used
+     hand-in-hand with a regular snapshotting regime. If there is no regular
+     snapshotting regime in place then the results won't be nearly as good.
+     zxfer would still be useful to reliably and easily copy a pool for
+     example, but you would be missing the main point of the program.
+
+OPTIONS
+     Common options are listed, followed by options as they function
+     specifically with zfs(8) send mode, followed by options as they work
+     specifically to rsync(1) aka -S mode.
+
+     Please note that options with arguments (e.g. -R, -N and the like) can
+     not be concatenated after other options.  (e.g. -vFdR source destination
+     will fail. You should use instead: -vFd -R source destination ) Otherwise
+     this will confuse getopts and zfs(8) will complain that "dataset already
+     exists".
+
+     The options are as follows:
+
+     -b      Small (b)eep mode. Play a failure tune before exit with failure
+             so that you don't have to monitor the terminal to know when a
+             lengthy backup or restore finishes.  (This is not as yet
+             supported in (Open) Solaris.)  To save insult being added to
+             injury, the failure beep will not play during errors that zxfer
+             discovers in the initialization phase, beeps will only occur if
+             an error has the possibility of occurring after significant time
+             has elapsed.
+
+     -B      Large (B)eep mode. Similar to (b) but suitable for use at the end
+             of a script.  It plays a success or failure tune before exit. If
+             you are executing zxfer multiple times, use -b for everything but
+             the last execution, for which you should use -B.
+
+     -e      R(e)store property mode. This restores all filesystem properties
+             from the backup file mentioned in the previous option.
+
+             A word of warning: In order to allow the restoration of
+             filesystems within the hierarchy, zxfer will begin at the level
+             you specify, and traverse the filesystem hierarchy back to the
+             pool level until it finds an appropriate .zxfer_backup_info file
+             or fails. It will use the first such file it comes across, so be
+             careful about backing up from multiple individual levels of the
+             same filesystem hierarchy.
+
+     -h      Prints (h)elp.
+
+     -k      Bac(k)up property mode. This backs up the original filesystem
+             property settings to a file .zxfer_backup_info.<pool_name>. This
+             file is located in the directory that is the mountpoint of the
+             parent filesystem that will contain the root filesystem you are
+             sending.  e.g. if you are backing up zroot to be located as per
+             storage/backups/zroot/... the file
+             /storage/backups/.zxfer_backup_info.zroot would hold all the
+             information about the original values of the filesystem
+             properties, and some other useful info.
+
+             This allows us to use the [-o] option freely, e.g. specifying
+             copies, compression etc. without having to remember what the
+             original options were.
+
+             A word of warning: if you intend to backup to one location and
+             further backup that backup to another location - sourcing the
+             properties to use in the final backup property file from the
+             property backup file in the intermediate backup is not yet
+             supported. A workaround is to refrain from using property
+             overrides in the intermediate backup; this will mean that the
+             ultimate backup will be able to store the correct properties of
+             the original.
+
+     -n      Dry ru(n) mode. Prints out the commands that would otherwise
+             execute but does not execute them. This may not work in all
+             circumstances as it may expect the existence of filesystems etc.
+             that won't be created.
+
+     -o      (o)verride property mode. Property overrides are specified with
+             commas to separate.
+
+             e.g.  -o property1=value1,property2=value2... For example, -o
+             compression=lzjb will cause all destination filesystems to be set
+             to lzjb compression. If using recursive mode, only the root
+             filesystem will be set, and all other filesystems will inherit
+             from this. Note that this option will also override any values
+             that would otherwise be set by "-P". Invoking this option will
+             also create the destination filesystem(s) if they do not already
+             exist.
+
+     -P      Transfer (P)roperty mode. This causes the destination to have
+             properties explicitly set (i.e. with property sources as local)
+             to exactly the same properties as the source. If the destination
+             filesystems do not exist, they will be created with the correct
+             properties.
+
+             If using recursive modes, child filesystems have property sources
+             (as in, the fourth column of # zfs get all pool/filesystem ) that
+             are made either local, (if the source is local) or inherited (if
+             the source is default or inherited) as per the source filesystem.
+             Note that inherited behaves in a similar manner to default.  If
+             you were to set a given property of the parent of a child
+             filesystem, the child would have that same property's source
+             listed as "inherited from..."  whether that child property source
+             had been default or inherited.
+
+             There are several properties that must be set (using zfs create)
+             at filesystem creation time. These are: casesensitivity,
+             normalization, jailed, utf8only.  If you are trying to replicate
+             such a filesystem where one of these properties is different from
+             source to destination, destroy the destination filesystems before
+             you begin otherwise the utility will fail with an error.
+
+             There are several other properties that may not be technically
+             readonly but it was judged that it would not make sense to try
+             and transfer them. They are: type, creation, used, available,
+             referenced, compressratio, mounted, version, primarycache,
+             secondarycache, usedbysnapshots, usedbydataset, usedbychildren,
+             usedbyrefreservation, version, volsize, mountpoint.  There are
+             several properties in FreeBSD 8.2 that are not supported and
+             hence will not be transferred via zxfer, they are: idevices,
+             aclmode, aclinherit, nbmand, shareiscsi, vscan, xattr.  If using
+             -S, all filesystems in the pools containing the source
+             directories/files will be created on the destination if they
+             aren't in existence already, whether they are to hold
+             files/directories or not.
+
+     -S      rsync(1) mode.  If -S is specified, rsync(1) mode is triggered.
+             If -S is absent, zfs(8) send mode is in effect. Several options
+             have different effects depending on whether -S is present or not.
+             Consult the relevant option section before using.
+
+             It is also possible to transfer to readonly destination
+             filesystems, but this is only supported if either [-o] or [-P] is
+             enabled.
+
+     -v      (v)erbose mode.
+
+   Normal | zfs send/receive mode
+     (i.e. -S is absent)
+
+     -c      A space delimited list of SMF services in quotes to be
+             temporarily disabled before unmounting the source, then re-enable
+             after changing the mountpoint of the destination. Requires -m.
+
+     -d      (d)elete snapshots on the destination that are absent on the
+             source. This may be necessary to function properly anyway, in a
+             similar fashion to
+
+     -D      zxfer will pipe zfs(8) send through the indicated command and
+             parameters, to create a progress bar.  A number of macros will be
+             replaced with values before the command is executed:
+
+             %%size%%
+                Will be replaced with the estimated size of the snapshot.
+
+             %%title%%
+                Will be replaced with the name of the source dataset@snapshot.
+
+             Example:
+
+             zxfer -O user@host -D 'bar -s %%size%%' -R source destination
+             [-F].  This will occur if you are using zxfer for routine backups
+             and in the interim, culling snapshots on the source.  The
+             snapshot corresponding to the most recent snapshot on the
+             destination often gets deleted on the source. Any snapshots on
+             the destination more recent than the most recent common snapshot
+             must be deleted for zfs send to work.
+
+     -g      (g)randfather protection. Specify a number of days old (relative
+             to the system date) at and above which snapshots on the
+             destination won't be deleted. For use with [-d].  This allows a
+             safeguard to protect the "grandfathers" in a Grandfather-Father-
+             Son (GFS) snapshot collection on a destination. Grandfathers (as
+             defined by zxfer) are the snapshots that never get deleted (often
+             yearly, half yearly or quarterly snapshots).
+
+             Note that for this to work properly, you must set [-g] so that it
+             does not inadvertently protect the "fathers" which will be
+             deleted on the source by your snapshot management tool, and hence
+             will need to be deleted on the destination. If you go a long time
+             between backups with an otherwise well set [-g], you may have
+             fathers on the destination that are the age of grandfathers and
+             so you will need to either relax the number of days provided for,
+             or manually delete those fathers.
+
+             For example, specifying -g 375 should protect snapshots as old or
+             older than 375 days, which could be useful where grandfathers are
+             yearly and monthly fathers are kept for a period of a year or
+             less. This gives us 9 days of grace period to make a backup
+             without throwing an error, but do note that during this grace
+             period grandfathers less than 375 days old are not protected.
+
+     -I properties,to,ignore
+             Do not copy this comma separated list of properties when
+             performing replication.  Useful for skipping properties like
+             quotas that can interfere with replication, or properties that
+             are not supported on the destination.
+
+     -m      After sending all snapshots, (m)igrate the source to the
+             destination filesystem by unmounting the source filesystem and
+             changing the new filesystem's mountpoint to that of the source.
+             This option includes -s. It also includes -P. Note that zxfer
+             does not prevent you from migrating a default mountpoint (e.g.
+             pool/filesystem) to something that will be potentially confusing,
+             so be sure that this is what you want before executing.
+
+             Note also that [-O] and [-T] (i.e. remote transfers) are not
+             supported with this option enabled.
+
+     -N      Replicate the listed filesystem. Note the provisos listed above
+             in [-R].  It works similarly but is (N)ot recursive.  e.g.
+             specifying -N tank/tmp will transfer only tank/tmp.
+
+     -O      Specify an (O)rigin user@host. This allows transfers FROM a
+             remote host via ssh.  e.g. Whatever filesystems you specify as
+             the source are taken to exist on that remote host.
+
+             For this to work, you must have a working ssh connection from
+             your local machine to the remote host, using public key based
+             authentication (so that you won't have to keep entering a
+             password every time a command is sent over ssh). You must have
+             zxfer on your local machine. The remote host must support zfs(1),
+             and so does your local machine if [-T] is not also used.
+
+             This option has been somewhat tested in FreeBSD 8.2 and Solaris
+             11 Express and appears to be working. (Consider it alpha level.)
+             These are the only operating systems that it has been tested on,
+             and possibly/probably won't work on others.
+
+             Note also that transferring between different operating systems
+             and even different versions of the same operating system (e.g.
+             FreeBSD 8.1 and 8.2) has not been tested and will probably fail
+             or give unexpected results. As zfs(1), has been developed, new
+             properties have come into being, and those properties have either
+             been supported in FreeBSD or they haven't. So it is difficult to
+             know what a user would like to have such properties be when they
+             are copied from one OS (or version) to another. At least between
+             OS versions, you are advised to use the same OS and zpool and zfs
+             version from source to destination.  It's not likely I will test
+             this thoroughly in the near future, as it requires an estimated
+             n^2 number of tested transfers, where n is the number of
+             operating system variations to support.  You are welcome to try
+             it though, and report bugs back to me.
+
+             Note that if at all possible, do not try and be clever and run
+             zxfer with both an origin and a target host. While this may work,
+             the transfer will be piped from the remote origin to the local
+             machine and from there to the remote target machine, which will
+             be slow as it is not a direct path.
+
+             The syntax for this command is -O user@remote_host.
+
+             e.g. -O root@192.168.0.1
+
+             Please note that if you are using Solaris, you will most likely
+             need to use "pfexec" (similar to sudo) and have a suitably
+             privileged user. Copy the quotes and spacing exactly:
+
+             e.g. -O "user1@192.168.0.1 pfexec"
+
+             The reason this works is because the commands that are related to
+             reading/writing/modifying data will be prefaced with in normal
+             circumstances:
+
+             ssh root@192.168.0.1 command ...
+
+             So with Solaris, specifying the pfexec at the end results in:
+
+             ssh user1@192.168.0.1 pfexec command ...
+
+     -R      (R)ecursively replicate all filesystems under the specified
+             source. If not specifying [-S], you must invoke one and only one
+             of either [-R] or [-N].  Note that if you enable this option, you
+             must specify only one filesystem, and that it starts without a
+             "/". e.g.  specifying -R tank/tmp will transfer tank/tmp,
+             tank/tmp/foo, tank/tmp/foo/bar etc.
+
+             Also note that a trailing slash on the source filesystem has a
+             similar effect as it has in cp(1).  This would primarily be used
+             in restoring filesystems, especially pools.  See Ex3.
+
+     -s      Make a (s)napshot of the source before replication. Note that you
+             might want to transfer a current snapshot at the end of a
+             transfer, as the initial transfer might take a long time. This
+             would leave you with an old snapshot on the destination. To do
+             this you will need to execute your command again at the end, and
+             ensure that a current snapshot is taken before or during the
+             second execution. e.g. use this option to ensure that a
+             relatively current snapshot exists, create it manually, or wait
+             until your own snapshotting regime does the job for you (if you
+             have one).
+
+     -T      Specify a (T)arget user@host. This allows transfers TO a remote
+             host via ssh.  e.g. Whatever filesystem you specify as the
+             destination will be where the source filesystems will be sent.
+
+             See the section on [-O] for notes, usage advice and warnings, as
+             this option is very similar in operation.
+
+             The syntax for this command is -T user@remote_host. e.g. -T
+             root@192.168.1.2
+
+             Again, please note that if you are using Solaris, you will most
+             likely need to use "pfexec" (similar to sudo) and have a suitably
+             privileged user. Copy the quotes and spacing exactly:
+
+             e.g. -T "user1@192.168.0.1 pfexec"
+
+     -U      Skip replicating any properties that are not supported by the
+             destination.  Before replication begins, a list of supported
+             properties is fetched from the destination and any properties not
+             on that list are removed from the list of properties to be
+             replicated.  This allows replicating from newer versions of
+             OpenZFS to older versions.
+
+   Rsync mode
+     (i.e. -S is specified)
+
+     -d      (d)elete files on the destination that do not exist on the
+             source. This is equivalent to rsync --del.
+
+     -E      Pass (E)xclude patterns to rsync(1).  e.g. If you want to specify
+             "--exclude=/boot/zfs/zpool.cache" when rsync(1) is called, then
+             use "-E /boot/zfs/zpool.cache". You can specify this option as
+             many times as you like, and it will pass each exclude pattern to
+             rsync(1).  My understanding of how to get this to work is to
+             specify the exclude as a continuation of the filesystem
+             mountpoint on which the file/directory is stored. e.g. with
+             "/boot/zfs/zpool.cache" it works because the mountpoint of zroot
+             is effectively "/".
+
+     -f      Specify a (f)ile that contains a list of options to feed to
+             rsync.  In this event, no other options will be given to rsync.
+             (If this option is not enabled, the default options given to
+             rsync are -clptgoD --inplace --relative -H --numeric-ids.  )
+
+             It has been suggested that it might be more convenient to be able
+             to specify custom options to rsync by means of a switch and the
+             options in quotes or some other delimiting character. If there is
+             enough feedback I will consider implementing this option.
+
+     -i      (i)nclude directories corresponding to ZFS filesystem mountpoints
+             on the destination when transferring. The default is to exclude
+             them, since the destination may correspond to a filesystem from
+             another pool mounted there, which has its own data and would be
+             restored independently.
+
+     -l      Treat (l)egacy mountpoints as being equal to "/". If this is not
+             enabled, zxfer will fail with an error when it encounters a
+             legacy mountpoint.
+
+     -L      Specify how many (L)evels deep in the source filesystem tree the
+             filesystem that was originally a backed up pool now lies. Most
+             likely, this will only need to be used in the event of a restore,
+             as the default level (zero) will create filesystems from the pool
+             level on down at the target. e.g.  if we are trying to restore
+             /storage/backups/zroot/tmp/stuff.txt which was originally in a
+             pool named zroot, and wished it to end up where it originally
+             came from (e.g. at zroot/tmp/stuff.txt ) we would indicate with
+             -L 2 that the original pool is located 2 levels deep on the
+             source. If we did not specify that option, we would end up with
+             the file transferred to /zroot/backups/zroot/tmp/stuff.txt, which
+             is not what is wanted.
+
+     -N      Replicate the listed director(y | ies) or file(s). Note the
+             provisos listed above in [-R].  It works similarly but is not
+             recursive. e.g.  specifying -N /tmp will transfer only /tmp.
+
+     -p      (p)ersist through rsync(1) errors. This saves having to feed
+             directories individually to zxfer, if we expect rsync to return
+             an error at some point (e.g. when it tries to overwrite itself).
+
+     -R      (R)ecursively replicate all directories and files under the
+             specified source(s).  If specifying [-S], you must invoke at
+             least one or both of either [-R] or [-N].  The idea is that this
+             utility makes an atomic clone of the filesystems you will need to
+             get your files/directories from, and you can use rsync to decide
+             what to transfer within a given pool.
+
+             Note that if you enable this option, you can specify as many
+             directories as you like, separated by commas (with no spaces).
+             Directories must start with a / and may or may not end with a /.
+             Read the rsync(1) man page to get the gist of how that works.
+             e.g.  specifying -R /tmp will transfer /tmp, /tmp/foo,
+             /tmp/foo/bar etc.
+
+             Note also that zxfer will only transfer the contents of the
+             directory "/" if [-l] is invoked, "/" is mounted as legacy, and
+             it will only transfer across those files and directories
+             belonging to the same ZFS filesystem as / belongs to.
+
+             Another action not supported is recursively transferring a
+             directory that contains directories that are in fact filesystems
+             from other pools, or in fact any included directories where the
+             filesystem mountpoints diverge from what ZFS would assign by
+             default.
+
+     -u      (u)se an already existing snapshot as the source to transfer
+             from. You should first check that this snapshot exists on all the
+             filesystems that house the files and directories to be used in
+             the transfer. This gives us the option of restoring
+             files/directories without having to roll back.
+
+EXAMPLES
+     Note that some of these example commands are lengthy, so be sure to fix
+     the line wrapping appropriately. Also if you wonder why zxfer isn't
+     transferring anything, please read the section titled SNAPSHOTS.
+
+   Ex1 - Backup a pool (including snapshots and properties)
+     We have a pool called storage and we want to back it up to
+     backup01/pools, along with all its snapshots. Grandfather snapshots are
+     yearly, fathers are monthly and are deleted after 365 days.  The
+     resultant filesystem hierarchy should look like so:
+           •   backup01/pools/storage
+           •   backup01/pools/storage/home
+           •   backup01/pools/storage/back
+           •   etc.
+     To back this up while:
+           •   [-g] protecting (grandfather) snapshots older than 375 days
+           •   [-P] copying across the properties of each filesystem
+           •   [-k] storing the original filesystem properties in the file
+               backup01/pools/.zxfer_backup_info.storage
+           •   [-F] forcing a rollback of destination to the most recent
+               snapshot. Given even mounting the filesystem will cause a
+               change and hence cause zfs receive to fail with an error,
+               enabling this is the way to go. Otherwise you would be
+               modifying(!) a backup, wanting to keep the changes you are
+               making(!?) and also wanting to copy more stuff to the backup
+               (hence it's still being used as a backup)... well if that's
+               what you want then don't use this option.
+           •   [-d] deleting stale snapshots that don't exist on the source
+               (e.g. if using a snapshot management script such as
+               zfs-snapshot-mgmt(8), snapshots are regularly taken and
+               regularly deleted to leave a range of frequencies of snapshots
+               at different vintages. If you are regularly backing up to
+               another pool which is stored off-site as is highly recommended,
+               you may want to delete the stale snapshots on the backup pool
+               without having to manage the snapshots there too. This is
+               especially true for those pools that are usually not connected
+               to a machine, e.g. if you are using HDD as backup media. Note
+               that zfs send will also refuse to work if you have newer
+               snapshots on destination than the most recent common snapshot
+               on both, so it's easier to just enable it.)
+           •   [-v] seeing lots of output (verbose)
+           •   [-R] copying the source filesystem recursively
+     use the following command:
+
+     zxfer -dFkPv -g 375 -R storage backup01/pools
+
+     Note that this same command will work for both the initial replication
+     and subsequent replications (which are potentially much faster due to
+     incremental transfers being used). Also note that if you don't have any
+     snapshots on the source, nothing will be transferred. You can create a
+     snapshot for this very occasion by adding the -s option.
+
+   Ex2 - Backup pool to HDD
+     Using HDDs as backup media was in large part a motivation for writing
+     this utility. (Using an e-SATA dock is particularly convenient). The
+     source and destination are the same as Ex1.
+
+     We will want to increase the number of copies to at least 2 or more so
+     that we have some protection against bad sectors. We won't have
+     protection against a HDD crash so use more than one HDD if you are doing
+     this (mirrored or otherwise). We may also want to override the
+     compression to make up for the multiplication in disk usage by the number
+     of copies. Here is the command:
+
+     zxfer -dFkPv -o copies=2,compression=lzjb -R storage backup01/pools
+
+   Ex3 - Restore a pool
+     To restore the pools we have backed up in Examples 1 and 2, we would
+     first make sure that there is a new pool named storage to copy the backup
+     to. Then we would issue the following command:
+
+     zxfer -deFPv -R backup01/pools/storage/ storage
+
+     Note that the trailing slash enables us to copy the zroot filesystem
+     directly to the pool level, and then the child filesystems below that,
+     which is where we want them. If the pool name is to be changed, the
+     command becomes:
+
+     zxfer -deFPv -R backup01/pools/storage/ newpoolname
+
+   Ex4 - Backup a filesystem
+     We might want to just backup a filesystem within a pool. That is easily
+     done:
+
+     zxfer -dFkPv -N storage/home backup01/filesystems
+
+     The resulting filesystem will be backup01/filesystems/home.  This example
+     will only replicate that exact filesystem (i.e. it is non-recursive). If
+     we wanted to recursively transfer all filesystems under storage/home at
+     the same time we could do so by changing the [-N] to an [-R].
+
+   Ex5 - Restore a filesystem
+     To restore the filesystem backed up in Ex4, we would do so using the
+     following command:
+
+     zxfer -deFPv -N backup01/filesystem/home storage
+
+   Ex6 - Recursive directory backup
+     We might want to backup a directory within a pool, using rsync to do the
+     heavy lifting, while also making a backup of the properties of the
+     filesystems transferred. Transferring via [-S] will allow us to have
+     different snapshotting regimes on source and destination coexisting
+     happily.
+
+     zxfer -SkPv -R /storage/home backup01/rsbacks
+
+     The resulting filesystem structure will look like:
+     backup01/rsbacks/storage/home.
+
+     If we wanted to non-recursively transfer that directory we would just
+     change the [-R] to an [-N].
+
+   Ex7 - Recursive directory restore
+     To restore the directory backed up in Ex6, we would do so using the
+     following command:
+
+     zxfer -SePv -L 2 -N /backup01/rsbacks/storage/home storage
+
+     Note that we had to specify a drop back of 2 levels of filesystems, so
+     that zxfer would know that the pool level is not backup01 but storage.
+     Specifying -L of 1 would indicate that the pool level was rsbacks, which
+     it was not. Leaving out [-L] would be equivalent to L=0, or specifying
+     that the pool level was backup01.
+
+     Note also that this will re-create all the original filesystems that
+     existed on the pool "storage" with their original properties, if they
+     have since been deleted. If those filesystems still exist, zxfer will
+     ensure that each such filesystem have the properties they originally had.
+     Note that if those filesystems still exist, no data will be changed other
+     than what you have specified to be rsynced across.
+
+     If you wish to not have filesystems created or properties set (just the
+     files/directories you want rsynced), just forego [-P] and [-o].  Note
+     that this will only work on filesystems that are writable.
+
+   Ex8 - Backup FreeBSD 8.2 root mirror
+     This will make a recursive snapshot of the root mirror, create similar
+     filesystems on the pool storage, transfer the properties over, rsync(1)
+     across the directories and files needed to restore the system, and
+     destroy the snapshots when done. To see how to do this in more detail,
+     check out the zxfer wiki.
+
+     zxfer -SPkld -R
+     /bin,/boot,/compat,/etc,/lib,/libexec,/rescue,/root,/sbin,/tmp,/usr,/var,/vshare
+     -N /.cshrc,/.profile storage/zr_backup
+
+     The resulting filesystem structure will look something like:
+     storage/zr_backup/zroot storage/zr_backup/zroot/usr
+     storage/zr_backup/zroot/var etc.
+
+   Ex9 - Restore FreeBSD 8.2 root mirror
+     To restore the config files backed up in Ex8, we would do so using the
+     following command after installing the system, installing zxfer and
+     booting up in the system.  This uses the snapshot auto-2010-11-14_14.00.
+     Note that for this to work properly /var/empty must be set to mutable.
+     Also, the flag "schg" must be turned off to transfer properly. For the
+     full sequence of commands, see the zxfer wiki. Here is the command for
+     the zxfer part of the procedure (note you will need to add any
+     directories of your creation kept on your zroot e.g. "vshare"):
+
+     zxfer -SpldBv -E /boot/zfs/zpool.cache -u auto-2010-11-14_14.00 -L 2 -N
+     $zrootdir/.cshrc,$zrootdir/.profile -R
+     $zrootdir/bin,$zrootdir/boot,$zrootdir/compat,$zrootdir/etc,$zrootdir/lib,$zrootdir/libexec,$zrootdir/rescue,$zrootdir/root,$zrootdir/sbin,$zrootdir/tmp,$zrootdir/usr,$zrootdir/var,$zrootdir/vshare
+     zroot
+
+   Ex10 - Migrate a filesystem
+     We might want to migrate a filesystem (including properties).  Note that
+     this is only allowable when the original mountpoint is not the default
+     (i.e. pool/filesystem). In the following example, the new filesystem will
+     be located in new_pool/location/fs.  If the old mountpoint was
+     /path/to/old_fs then that will be the mountpoint of the new filesystem.
+
+     zxfer -PmFdv -N original_pool/fs new_pool/location
+
+   Ex11 - Compress a filesystem
+     If we want to compress a filesystem, it is not enough to simply set a
+     compression setting of some sort on that filesystem. This will only cause
+     new files to be compressed. If we want to compress a filesystem, what we
+     would want to do is to transfer it to another location (where compression
+     is enabled).
+
+     zxfer -PmFdv -o compression=gzip -N original_pool/fs new_pool/location
+
+   Ex12 - Compress a filesystem...
+     - and store it in the original location.  This is probably what you want
+     to do instead of example 11. Usually what we want to do when we want to
+     compress a filesystem - it is already in the location we want it to be,
+     just we haven't realized we wanted it compressed at the time. Or maybe we
+     want to do something similar to compression, like dedup, and it was not
+     supported at the time we created the filesystem. So it is not enough to
+     have the filesystem compressed in a new location, we want it in the
+     original location.
+
+     If so, we will need to migrate the filesystem. Then, if necessary, we
+     would need to upgrade the original pool to ensure that the new filesystem
+     can do what it is we want it to do (e.g. dedup perhaps), and then
+     transfer it back. Here are the steps.
+
+     1. Ensure you have set aside a time where nothing will be reading or
+     writing to the filesystem(s) in question. If you are performing this
+     operation on a system filesystem (e.g. something like zroot/usr) then
+     ensure that you are performing these operations from a recovery disk
+     (e.g. Fixit # in FreeBSD). Also it is a very good idea to ensure that you
+     have made backups of the filesystems you are going to perform this
+     operation on.
+
+     2. Migrate the filesystems to a new location. e.g.
+
+     zxfer -PmFdv -N original_pool/fs new_pool/location
+
+     3. Triple check that the new filesystems are as they should be. Be very,
+     very, very careful here. It is a good idea to have made a backup before
+     doing this next step. In fact, it's probably worth practicing on a system
+     you don't care about first. And do not, repeat do not, blame me if
+     something goes wrong.
+
+     4. Destroy the original filesystem. e.g.
+
+     zfs destroy original_pool/fs
+
+     5. Ensure that the original pool is upgraded to do what you want it to do
+     (e.g. dedup perhaps, though you will need to change the option setting
+     appropriately).
+
+     6. Migrate the filesystem back, but with the overrides you want. e.g.
+
+     zxfer -PmFdv -o compression=gzip -N new_pool/location/fs original_pool
+
+   Ex13 - Backup a pool to a remote host
+     Notice this is the same as in Ex2 with the exception of option [-T], and
+     uses the same options which have been explained in that example. Note
+     that if you use Solaris you will most likely need to specify pfexec
+     (refer to the [-O] section).  Here is the command:
+
+     zxfer -dFkPv -o copies=2,compression=lzjb -T root@192.168.123.1 -R
+     storage backup01/pools
+
+   Ex14 - Restore a pool from a remote host
+     Use the following command, assuming that you are restoring from a
+     situation as in Ex13. Again, if using Solaris refer to [-O].
+
+     zxfer -deFPv -O root@192.168.123.1 -R backup01/pools/storage/ storage
+
+EXIT VALUES
+     zxfer exits 0 on success, 1 on an error and 2 if a command line option is
+     incorrect.
+
+SEE ALSO
+     rsync(1), zfs(1), zpool(1)
+
+COMPATIBILITY
+     zxfer is tested (somewhat) before release on FreeBSD 8.2-RELEASE and
+     Solaris Express 11. It was tested on the last version of OpenSolaris and
+     FreeBSD 8.1 as of 0.9.0 and may continue to function correctly, but in
+     order to ease my workload I am only going to test zxfer against Solaris
+     Express 11 and whatever version I run of FreeBSD, in my case 8.2.
+
+THANKS
+     Thanks to Constantin Gonzalez for his constant collaboration, guidance,
+     and his providing of a sounding board for ideas and decisions as I
+     developed this script. It is no understatement to say that this script
+     would not have been developed to the extent it has and in its present
+     form if not for his encouragement, input on design decisions, and often
+     just simply agreeing that some features would be really cool, which
+     spurred me on.
+
+     Constantin's zfs-replicate script formed the original basis for this one,
+     and was very useful as a template for me to follow. Thanks to Constantin
+     also for generously allowing his code to be licensed under the BSD
+     license, and also encouraging the existence of this project under its own
+     banner.
+
+     You can read Constantin's blog "Constant Thinking" at constantin.glez.de
+     - if you are at all interested in the world of ZFS it is worth reading
+     regularly (his non-ZFS stuff is good too).
+
+     Thanks also to the creators of rsync for their excellent tool.
+
+AUTHORS
+     The basis for zxfer, zfs-replicate, was written by Constantin Gonzalez.
+     Ivan Nash Dreckman built upon that work to create the additional code and
+     documentation required for zxfer.  Constantin was invaluable throughout
+     with providing feedback on design decisions, suggestions and
+     encouragement, not to mention initial testing on Solaris.
+
+BUGS
+     (This is a bug of ZFS on FreeBSD and not this script.)  There are several
+     properties in FreeBSD that when set via "zfs create" or "zfs set" will
+     have the source stay as default while others are set to local. This does
+     not have any real impacts because these properties are not inheritable.
+     The properties are: quota, reservation, canmount, refquota,
+     refreservation.
+
+     Note that FreeBSD does not support the transfer of several properties.
+     See [-P] section for details on this.
+
+     There are several properties that are skipped over when transferring or
+     setting properties - search the script for "readonly_properties" to see
+     what they are. If you find that certain newer ZFS properties are not
+     being transferred, there is a good chance that those properties they have
+     been added to this list. That is because testing has indicated that
+     attempting to create with or set those properties would cause the script
+     to fail. If you can make a good case that the script should heed those
+     property values, feel free to email me.
+
+     Send bug reports to ivannashdreckman at fastmailgolf dot fm, but not
+     before removing the sport originating in Scotland from the email address.
+     If you like zxfer and find it useful, send some feedback saying how you
+     use it, and consider donating at some stage in the future.
+
+CREDITS
+     zxfer is distributed under the BSD license. See the file COPYING for
+     details.
+
+     The website for zxfer is http://www.zxfer.org. For additional help,
+     consult the wiki on that site.
+
+FreeBSD 14.1-RELEASE           February 14, 2016          FreeBSD 14.1-RELEASE

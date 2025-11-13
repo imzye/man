@@ -1,0 +1,286 @@
+SKEM(8)                 FreeBSD System Manager's Manual                SKEM(8)
+
+NAME
+     skem – State KEeping Milter
+
+SYNOPSIS
+     skem -h
+     skem -v
+     skem [-d] [-C directory] [-u uid | user]
+          -b | -w ip.add.res.s1 [ip.add.res.s2 ... ip.add.res.sN]
+     skem [-d] [-C directory] [-u uid | user] [-g seconds] [-B seconds]
+          [-l seconds] [-p pid-filename] [-L]
+     skem [-d] [-C directory] [-u uid | user] [-g seconds] [-B seconds]
+          [-l seconds] [-p pid-filename] [-2] [-4] [-S spamword] [-s pattern]
+          [-r reject-string] socket
+
+DESCRIPTION
+     The skem utility is a sendmail milter, that checks and maintains a list
+     of whitelisted, temporary banned, and permanently blacklisted IP-
+     addresses.  How you obtain the entries is up to you, but the included
+     logwatcher module provides one possibility.
+
+     The list is stored in a directory (see the -C option), each entry being a
+     file (usually -- zero sized) or a symlink (usually -- a "broken" one).
+     Such entries are stored efficiently (within the directory itself) and the
+     directories are searched using the hash tables on modern file systems. At
+     the same time, they can be listed, added, and removed with the simple
+     ls(1), touch(1) and rm(1).
+
+     The current release considers the following attributes of each entry:
+
+     mtime   The time of creation
+
+     mode    Setuid means the entry is "white-" and setgid -- "blacklisted".
+
+     ctime   The time, this blacklisted entry last tried to contact us.
+             Keeping this record allows for periodic purging of blacklist of
+             the IPs not seen in a while, to keep the list from growing
+             indefinitely.
+
+     This milter does not itself filter spam, instead it memorizes the
+     verdicts issued by your other anti-spam defenses to reduce the system
+     load and resource consumption by temporarily rejecting the relays
+     suspected of spamming (banned) and, optionally, by permanently rejecting
+     the relays "convicted" of spamming (blacklisted).
+
+     The idea is to stem the spam from real spam sources, while reducing the
+     ill effects of false-positives to merely delaying, rather than rejecting
+     future messages.
+
+     The following options are available:
+
+     -2      Do the check twice -- at the beginning (connection) and at the
+             end of headers. This is to allow a ban, issued by other milters
+             (and/or our own logwatcher, if enabled) based on the headers
+             arriving from a previously not banned source, to have effect.
+
+             For example, if you have spamtrap-addresses, which trigger
+             blacklisting, an e-mail coming from a previously unseen IP may
+             contain them mixed with regular addresses. Without this option,
+             skem will let the message through, even if subsequent
+             transmissions from this address will be banned. With this option,
+             even the first e-mail will be rejected. Only use if you employ
+             such detectors and if they don't have the capability to reject
+             the whole message themselves, otherwise it is just a waste.
+
+     -4      Use only if sendmail supports closing connection at the conn-
+             time. At the time of this writing (8.12.x being the latest
+             version), sendmail must be rebuilt with the -D_FFR_MILTER_421
+             flag (a C define). This lets us issue temporary rejections right
+             at the connection time and make sendmail close the connection on
+             the spot, saving resources. If the sendmail does not support
+             this, however (and by default it does not), any attempts by skem
+             to do this will be interpreted as its own temporary failures by
+             sendmail.
+
+             Without this option, skem will work with any sendmail issuing the
+             temporary bans at the helo-time.  The permanent bans are always
+             acted upon at the conn-time.
+
+     -B seconds
+             This specifies the amount of time a blacklist entry is allowed to
+             exist in the list since it was last triggered. This is to avoid
+             wasting storage on IPs, that have once offended us, but are not
+             doing this any more. The default value is 3 weeks (1814400
+             seconds).
+
+     -C directory
+             This is the database directory. If not specified, "." is assumed.
+             skem will chdir(3) into this directory, and -- if started by root
+             -- will also chroot(3) there.
+
+     -L      This option will cause skem to run in the cleanup mode only. If
+             the -l options was not specified prior, skem will make one
+             cleanup run and exit. Otherwise, it will be doing the cleanups
+             periodically, but without becoming a milter.
+
+     -S spamword
+             Tells the logwatcher to treat the occurrence of this spamword in
+             addition to the reject (see -r below) and pattern (see -s below)
+             as a sign of definite spam. This will cause the logwatcher to
+             issue a permanent (setgid), rather than a normal temporary ban.
+             Use carefully. Without it logwatcher will only create temporary
+             bans.
+
+     -b ip1 [ip2 ... ipN]
+             Blacklist the specified IPs and exit. If an entry already exists,
+             it is skipped without change of status.
+
+     -d      Allow logging at the LOG_DEBUG level. Without this, skem only
+             logs messages up to the LOG_INFO level.
+
+     -g seconds
+             Expire the temporary bans after this many seconds.  The default
+             is an hour and a half (1800 seconds). Keep it below 4 hours, or
+             some legitimate mail, that might be delayed on the temporarily
+             banned server may generate a warning to the sender. Such warnings
+             are remarkably confusing to the laymen and women, who can't, for
+             some reason, distinguish them from real bounces -- even though
+             they begin with: "THIS IS A WARNING MESSAGE ONLY. YOU DO NOT NEED
+             TO RESEND..."
+
+     -h      Print out an the help screen and exit with code 0.
+
+     -l seconds
+             Perform the cleanup this often. If not specified, no cleanup will
+             be performed at all (in which case, you may wish to rebuild skem
+             with the -DSKEM_NO_CLEANUP define). During cleanups, the expired
+             temporary bans are removed, as well as the permanent bans, which
+             were not triggered for the last 3 weeks (but see the -B option
+             above).
+
+     -p filename
+             Write our process ID into the file specified.
+
+     -r reject-string
+             Tells logwatcher what to look for in the log messages. The
+             default is "reject=5".
+
+     -s pattern
+             This turns on the logwatcher thread, which reads log entries from
+             stdin and applies the pattern to those of them, that contain the
+             reject-string.  The pattern is expected to be either a "-" (dash)
+             to use the default pattern, or an extended regular expression
+             with exactly one parenthesized expression -- the IP address of
+             the relay.
+
+     -u username | uid
+             Switch identity to the specified username or (numeric) uid.  skem
+             will refuse to become a milter as root, so this argument is
+             mandatory, unless we are starting as a non-root already.
+
+     -v      Print the version string(s) and exit.
+
+     -w ip1 [ip2 ... ipN]
+             Whitelist the specified IPs and exit. If an entry already exists,
+             it is skipped without change of status. Whitelists are never
+             removed by the cleanup. If you have lower priority Mail
+             eXchangers for your domain, or other legitimate machines, which
+             frequently forward mail (ham and spam) to you, you should
+             whitelist them.
+
+CLEANUP
+     The cleanup thread cleans up the directory off the expired temporary bans
+     and the long-unseen permanent bans. See the description of -l -L -B
+     options above for details. You can have the skem-milter do that, or, if
+     that's how you like it, use the -L option launching skem from cron(8).
+     (Not that I can see a single reason to do it that way in normal
+     operation.)
+
+     Note, that the expired entries are always removed by the milter thread
+     itself, when triggered -- whether or not the cleanup thread is activated.
+
+     To avoid building the cleanup functionality, be sure to NOT use the
+     -DSKEM_CLEANUP define.
+
+LOGWATCHER
+     The current milter architecture does not provide a way for milters to
+     learn the fate of each message. They can not request to be notified, when
+     a message is rejected by one of the many different mechanisms (such as
+     another milter, non-existent domain, spamtrap, etc.). The only way to get
+     this information is by watching the log files. You can cook something up
+     with awk(1) / perl(1) / python(1) / Tcl(n) / whatever your poison -- all,
+     your logwatcher needs to do, is place entries in the directory, where
+     skem is looking for them -- with correct mode.
+
+     skem by default includes its own logwatcher thread, which is reasonably
+     useful (but see the Security Considerations section below). If used, it
+     expects stdin to contain the arriving log messages. Those of the lines,
+     that contain the reject string (see the -r options above), are examined
+     closer with IP-address pattern as provided by the -s option. If the
+     string yielded by the pattern's parenthesized expression looks like an IP
+     address, the address is banned. If the spamword is specified (by -S
+     option) and the string contains it as well, the ban is permanent.
+     Otherwise, it is temporary. No ban is created if the IP is already listed
+     as anything.
+
+     To avoid building the logwatcher functionality, be sure to NOT use the
+     -DSKEM_LOGWATCHER define.
+
+Security Considerations
+     Although believed to be secure anyway, skem will refuse to become a
+     milter as root insisting on the alternative username to be passed with
+     the -u switch. If started as root, it will also chroot(3) itself into the
+     database directory prior to dropping root privileges.
+
+     However, using the logwatcher may expose you to denial of service attacks
+     if your installation logs network-obtained data. For example, MIMEDefang
+     milter logs the subjects of the messages it analyzes. If a subject
+     contains the reject string and matches the IP pattern, the IP may be
+     banned -- any IP, that an attacker puts into subject.
+
+     The FreeBSD example below does not have this problem, but the
+     syslog.conf(5) syntax on other systems may not be as powerful.
+
+     Even on FreeBSD, a local user can use logger(1) to pretend to be
+     sendmail.  This is, however, intentional. It gives the users the power to
+     request bans through logwatcher directly by something like
+
+     logger -t sendmail -p mail.notice "Please, reject=55x relay=[ip.ad.res.s]"
+
+     But if you can not trust local users, you, probably, can not rely on log-
+     watching anyway.
+
+EXAMPLES
+     Here is the "live" syslog.conf(5) entry on my server
+
+     !sendmail
+     mail.notice,mail.info   |exec /home/mi/skem/skem -C /var/db/skem -S spammer -2 -s - -g 12000 -u mi -l 6000 -4 -B 604800 -d /var/db/skem/skem.sock
+
+     This has a disadvantage of being shut down every time the syslogd(8) is
+     HUP-ed, and not restarted until sendmail(8) has something to say (like
+     complain about a missing skem-milter).
+
+     A different way would be to log into a named pipe (see mkfifo(1)) with
+     skem reading from the pipe. However, this is likely to hang the syslogd
+     should skem ever go down (which is very unlikely, but still).
+
+FILES
+     No configuration files are considered by skem -- all settings are given
+     on command line.
+
+     When started as root, skem will chroot to the directory specified with
+     the -C option (or to "."), so be sure the socket and the optional
+     pid-filename specify paths underneath it. For convenience, skem will try
+     to automatically adjust the paths specified so that they are correct
+     after the chroot-ing.
+
+INSTALL
+     The skem executable and the manual page should be installed according to
+     your OS standards and customs (probably, under /usr/local/sbin and
+     /usr/local/man/man8). To tell sendmail about the milter, please, refer to
+     the sendmail's libmilter documentation (in libmilter/README).
+
+Future enhancements being considered
+     Depending on user interest (if any), the following features might be
+     implemented:
+
+     grey list
+             delay IPs, not yet listed, or listed less than a given number of
+             seconds ago
+
+     accept syslog messages
+             enhance the logwatcher module to accept the syslog messages
+             directly through an inet or a domain socket
+
+     interpret the values of the links
+             Although reading a file is unpleasant, the readlink(2) is a fast
+             way to obtain information.  skem can use the targets of the
+             symlink-entries for various "interesting" purposes. For example,
+             logwatcher can record the perceived reasons for adding an entry,
+             like:
+
+             ln -s "caught in spam-trap nospam@example.com" ip.ad.dre.ss
+
+             This is fun, but wasteful, because all the information is in the
+             maillogs too, one just needs to fgrep(1) for a particular IP-
+             address to find out the reasons, it was added to the list.
+
+SEE ALSO
+     logger(1), rm(1), touch(1), sendmail(8), syslogd(8), umask(1)
+
+AUTHORS
+     Mikhail Teterin ⟨mi+skem@aldan.algebra.com⟩
+
+FreeBSD 14.1-RELEASE              June, 2004              FreeBSD 14.1-RELEASE

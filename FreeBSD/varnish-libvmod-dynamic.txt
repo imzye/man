@@ -1,0 +1,654 @@
+VMOD_DYNAMIC(3)        FreeBSD Library Functions Manual        VMOD_DYNAMIC(3)
+
+NAME
+       vmod_dynamic - Varnish dynamic backends module
+
+SYNOPSIS
+
+          import dynamic [as name] [from "path"]
+
+          new xdirector = dynamic.director(STRING port, STRING host_header, ENUM share, PROBE probe, ACL whitelist, DURATION ttl, DURATION connect_timeout, DURATION first_byte_timeout, DURATION between_bytes_timeout, DURATION domain_usage_timeout, DURATION first_lookup_timeout, INT max_connections, INT proxy_header, BLOB resolver, ENUM ttl_from, DURATION retry_after, BACKEND via)
+
+              BACKEND xdirector.backend(STRING host, STRING port)
+
+              BACKEND xdirector.service(STRING service)
+
+              VOID xdirector.debug(BOOL)
+
+          new xresolver = dynamic.resolver(BOOL set_from_os, INT parallel)
+
+              BLOB xresolver.use()
+
+              BOOL xresolver.set_resolution_type(ENUM)
+
+              BOOL xresolver.clear_namespaces()
+
+              BOOL xresolver.add_namespace(ENUM)
+
+              BOOL xresolver.set_namespaces()
+
+              BOOL xresolver.clear_transports()
+
+              BOOL xresolver.add_transport(ENUM)
+
+              BOOL xresolver.set_transports()
+
+              BOOL xresolver.set_idle_timeout(DURATION)
+
+              BOOL xresolver.set_limit_outstanding_queries(INT)
+
+              BOOL xresolver.set_timeout(DURATION)
+
+              BOOL xresolver.set_follow_redirects(ENUM)
+
+DESCRIPTION
+       This module provides a varnish director for dynamic creation of
+       backends based on calls to
+
+       • the system's network address resolution service which, in turn,
+         typically use information from the /etc/hosts file and the Domain
+         Name Service (DNS), but can be configured to use other sources like
+         LDAP (see nsswitch.conf(5)).
+
+       • or more advanced DNS resolution where getdns <https://getdnsapi.net/>
+          is available.
+
+       While standard varnish backends defined in VCL may also be defined in
+       terms of host names, changes of the name service information will only
+       be picked up with a VCL reload.
+
+       In contrast, for dynamic backends provided by this module,
+
+       • name resolution information will be refreshed by background threads
+         after a configurable time to live (ttl) or after the ttl from DNS
+         with a getdns <https://getdnsapi.net/>
+          dynamic.resolver().
+
+       • resolution to multiple network addresses is supported
+
+       In addition, with a getdns <https://getdnsapi.net/>
+        dynamic.resolver(), service discovery by DNS SRV records is possible,
+       in which case this module also allows to configure host names
+       (targets), their ports, priority and weight though DNS. See
+       <https://en.wikipedia.org/wiki/SRV_record> for a good basic explanation
+       and xdirector.service() for details.
+
+BACKEND SHARING
+       The share parameter specifies if backends are shared per director or
+       per hostname.
+
+       • share = "DIRECTOR"
+
+         Default if via is not specified.
+
+         Backends are shared per director: Only one backend per director
+         instance and ip address (and optionally port) is created.
+
+       • share = "HOST"
+
+         Default if via is specified.
+
+         Sharing of backends is limited to the same hostname (host argument to
+         the .backend() method).
+
+         This is the default for via for the common use case of TLS: For TLS
+         connections, the TLS onloader usually should verify the server's
+         certificate based on a hostname. For this purpose, the dynamic
+         backend's name is put into the authority TLV, so, consequently, the
+         backend needs to be defined per hostname.
+
+PROBING
+       A probe to be used with dynamically created backends can be specified.
+
+       With share = HOST, the Host: header for probes defaults to the
+       backend's hostname (host argument to the .backend() method).
+
+       With share = DIRECTOR, the probe is not specific to any particular
+       host. If the probe has the .request attribute set, it will be used as
+       the probe request. Otherwise, if a host_header argument was given to
+       dynamic.director(), it will be used for the probe's Host header,
+       otherwise Varnish-Cache core code will send the backend's IP Address as
+       the Host header.
+
+       Consider setting the initial attribute of probes at least as high as
+       the threshold attribute. Otherwise transactions that trigger the first
+       lookup of a domain will see a sick backend and fail.
+
+       Irrespective of the initial attribute, transactions may still fail for
+       backends which are actually sick. This can be mitigated using the retry
+       transition in VCL.
+
+TTLS FROM DNS
+       With the default system resolver, TTLs from DNS are not supported
+       optimally. While a good combination of a ttl parameter in combination
+       with a system name service caching service like nscd(8) can achieve
+       good results, to use TTLs from DNS, we recommend to compile this module
+       with getdns <https://getdnsapi.net/>
+        support, configure a dynamic.resolver() object and set the ttl_from
+       parameter to either dns, min or max as in this example:
+
+          sub vcl_init {
+                  new r = dynamic.resolver();
+                  new d = dynamic.director(
+                          resolver = r.use(),
+                          ttl_from = dns
+                          );
+          }
+
+       See ref_ttl_from for details.
+
+NAMES
+       Directors and backends created by this vmod follow this naming scheme,
+       which will be referred to as <name> in the following documentation
+
+       • <directorname>
+
+         The name of the VCL object created by dynamic.director()
+
+       • <directorname>(<hostname>:<port>)
+
+         A director (internally called domain), created as a result of a
+         xdirector.backend() or, indirectly, for targets resulting from a
+         xdirector.service() call.
+
+       • <directorname>(service)
+
+         A director created as a result of a xdirector.backend() or
+         xdirector.service() call.
+
+       • <directorname>(address:port)
+
+         A dynamic backend for a <hostname>:<port> with DIRECTOR scope sharing
+
+       • <directorname>(hostname.address:port)
+
+         A dynamic backend for a <hostname>:<port> with HOST scope sharing
+
+       port may be represented symbolically (http by default)
+
+STATISTICS
+       Dynamic backends are created and deleted on demand and can be monitored
+       just like VCL-defined backends. Their statistics will appear in
+       VSM-tools like varnishstat as:
+
+          VBE.<configname>.<name>.*
+
+LOGGING
+       This module may log VCL_Log, Error, and Debug  records following a
+       common pattern:
+
+          vmod-dynamic: %s %s %s %s [ %s ]
+                        |  |  |  |    |
+                        |  |  |  |    +- Additional information
+                        |  |  |  +------ Event
+                        |  |  +--------- <name> without the <director> part
+                        |  +------------ Director name
+                        +--------------- VCL name
+
+       Lookup timestamps are also logged to help troubleshooting, using
+       regular Timestamp records with the following pattern for event labels:
+
+          vmod-dynamic <vcl>.<name> <Lookup|Results|Update>
+
+       When a lookup thread is terminated, either because the VCL is cooling
+       down or the domain_usage_timeout triggered, Timestamp records are
+       logged with the event:
+
+          vmod-dynamic <vcl>.<name> Done
+
+       Not all logs belong to HTTP transactions, especially since DNS lookups
+       happen in the background. In order to capture all logs from this module
+       the simplest way with varnishlog is the following:
+
+          varnishlog -g raw -q '* ~ vmod-dynamic'
+
+       It displays any individual record that contains the string vmod-dynamic
+       whether it belongs to a transaction or not.
+
+       When a lookup fails, the backends are left untouched and the error will
+       be logged with the following event:
+
+          getaddrinfo <errno> (<reason>)
+
+   new xdirector = dynamic.director(STRING port, STRING host_header, ENUM
+       share, PROBE probe, ACL whitelist, DURATION ttl, DURATION
+       connect_timeout, DURATION first_byte_timeout, DURATION
+       between_bytes_timeout, DURATION domain_usage_timeout, DURATION
+       first_lookup_timeout, INT max_connections, INT proxy_header, BLOB
+       resolver, ENUM ttl_from, DURATION retry_after, BACKEND via)
+
+          new xdirector = dynamic.director(
+             STRING port="http",
+             STRING host_header=0,
+             ENUM {DEFAULT, DIRECTOR, HOST} share=DEFAULT,
+             PROBE probe=0,
+             ACL whitelist=0,
+             DURATION ttl=3600,
+             DURATION connect_timeout=0,
+             DURATION first_byte_timeout=0,
+             DURATION between_bytes_timeout=0,
+             DURATION domain_usage_timeout=7200,
+             DURATION first_lookup_timeout=10,
+             INT max_connections=0,
+             INT proxy_header=0,
+             BLOB resolver=NULL,
+             ENUM {cfg, dns, min, max} ttl_from=cfg,
+             DURATION retry_after=30,
+             BACKEND via=NULL
+          )
+
+       Description
+              Create a DNS director.
+
+              The director creates backends with DNS lookups and chooses them
+              in a round robin fashion. It accepts the following
+
+       Parameters:
+
+              • port (defaults to "http")
+
+                The port to conncet to
+
+              • share (defaults to "DIRECTOR")
+
+                Backend sharing scope, see ref_vmod_dynamic_share
+
+              • host_header (defaults to none)
+
+                host_header attribute for dynamically created backends.  See
+                also ref_vmod_dynamic_probe
+
+              • probe (defaults to none)
+
+                Probe to use. See also ref_vmod_dynamic_probe
+
+              • whitelist - an acl (defaults to none)
+
+                Only name resolution results matching the acl will be used.
+
+              • ttl - delay between lookups (defaults to one hour)
+
+                Minimum configured backend lifetime before address resultion
+                is re-checked, see also ttl_from
+
+              • domain_usage_timeout
+
+                Delay until an unused domain and its backends are removed
+                (defaults to two hours)
+
+              • first_lookup_timeout
+
+                Delay until the director fails lookup when a domain is
+                requested for the first time and there is no response from the
+                name service (defaults to ten seconds)
+
+              • resolver
+
+                Use a particular resolver instance created with the
+                dynamic.resolver() constructor, if available.
+
+                The argument to the resolver parameter must be the return
+                value of the xresolver.use() method.
+
+          • ttl_from
+
+            How to determine the minimum backend lifetime before address
+            resultion is re-checked when a resolver is also used:
+
+            • cfg: Always use the ttl argument value (default)
+
+            • dns: Always use the ttl from the DNS response(s), falling back
+              to the ttl argument value
+
+            • min: Use the minimum of the DNS response and the ttl argument
+              value
+
+            • max: Use the maximum of the DNS response and the ttl argument
+              value
+
+            If there is more than one DNS response, the minimum if taken as
+            the DNS ttl.
+
+            For no resolver, only "cfg" is valid.
+
+          • retry_after
+
+            Delay to retry lookups after DNS failures (defaults to 30
+            seconds).
+
+            Notice that, for all practical purposes, this only concerns lookup
+            errors (NXDOMAIN). After successful resolution, dynamic directors
+            preserve existing address information if DNS resources are
+            temporarily unavailable.
+
+       Parameters to set attributes of backends
+          See varnish documentation for details
+
+          • connect_timeout (defaults to global connect_timeout)
+
+          • first_byte_timeout (defaults to global first_byte_timeout)
+
+          • between_bytes_timeout (defaults to global between_bytes_timeout)
+
+          • max_connections (defaults to zero, unlimited)
+
+          • proxy_header - version of the PROXY protocol to use, or zero to
+            disable it (defaults to zero, valid versions are one or two)
+
+          • via backend to make the connection through with an additional
+            PROXY protocol header containing the actual address to connect to.
+            Primary use case is SSL/TLS onloading via haproxy.
+
+       Example
+
+                 probe www_probe {
+                      .window = 8;
+                      .initial = 7;
+                      .threshold = 6;
+                      .interval = 5s;
+                 }
+
+                 acl www_acl {
+                      "192.168"/24;
+                 }
+
+                 sub vcl_init {
+                      new www_dir = dynamic.director(
+                              port = "80",
+                              probe = www_probe,
+                              whitelist = www_acl,
+                              ttl = 5m);
+                 }
+
+                 sub vcl_recv {
+                      set req.backend_hint = www_dir.backend("production.acme.com");
+                 }
+
+   BACKEND xdirector.backend(STRING host="", STRING port="")
+
+       Description
+              Return a backend from the director for a given host name and
+              port.
+
+              If the host is not specified, it is picked from either bereq or
+              req.
+
+              If the port is not speficied, it is taken from the director.
+
+   BACKEND xdirector.service(STRING service)
+
+       Description
+              Return a backend from the director for a service name (DNS SRV
+              record).
+
+              This Method is only supported when a dynamic.resolver() object
+              has been passed to the dynamic.director() constructor.
+
+              SRV records contain host (called target) and port information.
+              Dynamic backends are automatically added and maintained based on
+              this information as if xdirector.backend() had been called.
+
+              SRV records also contain priority and weight information. The
+              xdirector.service() method returns a target (backend) from the
+              lowest priority found healthy. If there are multiple healthy
+              targets for the lowest priority, one is chosen randomly based on
+              the probabilities defined by the weight attributes.
+
+              Note that it highly recommended to use a probe argument to the
+              dynamic.director() to avoid returning unresponsive backends.
+
+   VOID xdirector.debug(BOOL)
+
+       Description
+              Enable or disable debugging for a dynamic director, logging
+              background operations related to backends management.
+
+   new xresolver = dynamic.resolver(BOOL set_from_os, INT parallel)
+
+          new xresolver = dynamic.resolver(
+             BOOL set_from_os=1,
+             INT parallel=16
+          )
+
+       Create parallel getdns <https://getdnsapi.net/>
+        contexts to be used with the dynamic.director() constructor - see
+       xresolver.use()
+
+       Parameters:
+
+       •
+
+         set_from_os: whether defaults are taken from the operating system,
+                see
+                <https://getdnsapi.net/documentation/spec/#8-dns-contexts>
+                for details
+
+       •
+
+         parallel: the number of contexts allocated. Each name resolution
+                in progress requires one context.
+
+       Additional configuration of the resolver contexts is possible through
+       the methods documented below. Attempts to call these methods from
+       outside vcl_init{} will trigger a VCL failure.
+
+   BLOB xresolver.use()
+       return a reference to the dynamic.resolver() object for use as a
+       parameter to the dynamic.director() constructor.
+
+   BOOL xresolver.set_resolution_type(ENUM {RECURSING, STUB})
+       Specifies whether DNS queries are performed with nonrecurive lookups or
+       as a stub resolver.
+
+       May only be called from vcl_init{}
+
+       See
+       <https://getdnsapi.net/documentation/spec/#83-contexts-for-basic-resolution>
+
+   BOOL xresolver.clear_namespaces()
+       Clear the list of namespaces to be configured, see below.
+
+       May only be called from vcl_init{}
+
+   BOOL xresolver.add_namespace(ENUM)
+
+          BOOL xresolver.add_namespace(
+                ENUM {DNS, LOCALNAMES, NETBIOS, MDNS, NIS}
+          )
+
+       Add a namespace to the list of namespaces to be queried.
+
+       This method only adds the namespace to an internal list, The actual
+       configuration is only done once xresolver.set_namespaces() is called.
+
+       May only be called from vcl_init{}
+
+       See
+       <https://getdnsapi.net/documentation/spec/#83-contexts-for-basic-resolution>
+
+       Notice that not all namespaces are available on all platforms. VCL load
+       will fail with error 312 (The library did not have the requested API
+       feature implemented.) in this case when xresolver.set_namespaces() is
+       called.
+
+   BOOL xresolver.set_namespaces()
+       Apply namespace configuration, see above.
+
+       May only be called from vcl_init{}
+
+   BOOL xresolver.clear_transports()
+       Clear the list of transports to be configured, see below.
+
+       May only be called from vcl_init{}
+
+   BOOL xresolver.add_transport(ENUM {UDP, TCP, TLS})
+       Add a transport to the list of transports to be tried.
+
+       This method only adds the transport to an internal list, The actual
+       configuration is only done once xresolver.set_transports() is called.
+
+       May only be called from vcl_init{}
+
+       See
+       <https://getdnsapi.net/documentation/spec/#83-contexts-for-basic-resolution>
+
+   BOOL xresolver.set_transports()
+       Apply transport configuration, see above.
+
+       May only be called from vcl_init{}
+
+   BOOL xresolver.set_idle_timeout(DURATION)
+       Specifies the duration the API will leave an idle TCP or TLS connection
+       open for (idle means no outstanding responses and no pending queries).
+
+       May only be called from vcl_init{}
+
+   BOOL xresolver.set_limit_outstanding_queries(INT)
+       May only be called from vcl_init{}
+
+   BOOL xresolver.set_timeout(DURATION)
+       May only be called from vcl_init{}
+
+   BOOL xresolver.set_follow_redirects(ENUM)
+
+          BOOL xresolver.set_follow_redirects(
+                ENUM {REDIRECTS_FOLLOW, REDIRECTS_DO_NOT_FOLLOW}
+          )
+
+       May only be called from vcl_init{}
+
+FULL EXAMPLE: BEHAVE LIKE SQUID
+       For illustrative purposes, here is an example to turn Varnish into a
+       caching forward proxy for any host. This example is for http only, for
+       https support, via support from the proxy_via_6 branch is required.
+
+       While the same functionality could be achieved without it, this example
+       uses vmod_re <https://code.uplex.de/uplex-varnish/libvmod-re>
+        for clarity:
+
+          vcl 4.1;
+
+          import dynamic;
+          import re;
+
+          backend proforma None;
+
+          acl ipv4_only { "0.0.0.0"/0; }
+
+          sub vcl_init {
+                  new http = dynamic.director(
+                      whitelist = ipv4_only     # remove if IPv6 is ok
+                      );
+                  new proxyurl = re.regex("^http://([^:/]+(?::(\d+))?)(/.*)");
+                  new hostport = re.regex("^(?:[^:]+)(?::(\d+))?");
+          }
+
+          sub vcl_recv {
+                  if (req.method == "CONNECT") {
+                          return (synth(400, "CONNECT is not supported"));
+                  }
+                  if (proxyurl.match(req.url)) {
+                          set req.url = proxyurl.backref(3, "");
+                          set req.http.Host = proxyurl.backref(1, "");
+                          set req.backend_hint =
+                              http.backend(port=proxyurl.backref(2, "80"));
+                  } else if (hostport.match(req.http.Host)) {
+                          set req.backend_hint =
+                              http.backend(port=hostport.backref(1, "80"));
+                  } else {
+                          return (synth(400, "URL/Host format unknown"));
+                  }
+          }
+
+PITFALLS
+       There is no support for lookups limited to IPv4 or IPv6 only. However
+       it can be achieved by the means of a white list:
+
+          acl ipv4_only { "0.0.0.0"/0; }
+          acl ipv6_only { "::0"/0; }
+
+       With that you can restrict backends to the desired IP network, and
+       monitor error logs with the whitelist mismatch event. Knowing which
+       addresses were rejected, you can fix your domains registration (DNS
+       records, hosts file etc).
+
+SEE ALSO
+
+       • vcl(7)
+
+       • vsl(7)
+
+       • vsl-query(7)
+
+       • varnish-cli(7)
+
+       • varnish-counters(7)
+
+       • varnishstat(1)
+
+       • getaddrinfo(3)
+
+       • nscd(8)
+
+       • nsswitch.conf(5)
+
+BREAKING CHANGES
+   2.0 (2019-07-13)
+
+       • Error logging with acl-mismatch has been renamed to whitelist
+         mismatch and port information has been added.
+
+       • Port information has been added to director/backend names and the
+         documentation section ref_vmod_dynamic_names has been added.
+
+ACKNOWLEDGEMENTS
+       We thank the various people and companies having made vmod_dynamic a
+       reality:
+
+       vmod_dynamic is based upon vmod_named developed and maintained from
+       2015 to 2017 by Dridi Boukelmoune (github @dridi) and supported by
+       Varnish Software.
+
+       Maintenance and improvements 2017 - 2019:
+
+       Generally sponsored by Spring Media and various unnamed UPLEX clients.
+
+       SRV record support and getdns integration in 2019 was supported by
+       GOG.com
+
+       Code was written mostly by Geoffrey Simmons and Nils Goroll from UPLEX
+       with additional contributions by: Ricardo Nabinger Sanchez and Ryan
+       Steinmetz.
+
+       Thank you to all!
+
+COPYRIGHT
+
+          Copyright (c) 2015-2016 Dridi Boukelmoune
+          Copyright 2017-2019 UPLEX - Nils Goroll Systemoptimierung
+
+          Authors: Dridi Boukelmoune <dridi.boukelmoune@gmail.com>
+                   Nils Goroll <nils.goroll@uplex.de>
+
+          Redistribution and use in source and binary forms, with or without
+          modification, are permitted provided that the following conditions
+          are met:
+          1. Redistributions of source code must retain the above copyright
+             notice, this list of conditions and the following disclaimer.
+          2. Redistributions in binary form must reproduce the above copyright
+             notice, this list of conditions and the following disclaimer in the
+             documentation and/or other materials provided with the distribution.
+
+          THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+          IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+          ARE DISCLAIMED.  IN NO EVENT SHALL AUTHOR OR CONTRIBUTORS BE LIABLE
+          FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+          DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+          OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+          HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+          LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+          OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+          SUCH DAMAGE.
+
+                                                               VMOD_DYNAMIC(3)

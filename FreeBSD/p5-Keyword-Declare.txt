@@ -1,0 +1,1372 @@
+Keyword::Declare(3)   User Contributed Perl Documentation  Keyword::Declare(3)
+
+
+NAME
+       Keyword::Declare - Declare new Perl keywords...via a keyword...named
+       "keyword"
+
+VERSION
+       This document describes Keyword::Declare version 0.001018
+
+STATUS
+       This module is an alpha release.  Aspects of its behaviour may still
+       change in future releases.  They have already done so in past releases.
+
+SYNOPSIS
+           use Keyword::Declare;
+
+           # Declare something matchable within a keyword's syntax...
+           keytype UntilOrWhile is /until|while/;
+
+           # Declare a keyword and its syntax...
+           keyword repeat (UntilOrWhile $type, List $condition, Block $code) {
+               # Return new source code as a string (which replaces any parsed syntax)
+               return qq{
+                   while (1) {
+                       $code;
+                       redo $type $condition;
+                       last;
+                   }
+               };
+           }
+
+           # Implement method declarator...
+           keyword method (Ident $name, List $params?, /:\w+/ @attrs?, Block $body) {
+               return build_method_source_code($name, $params//'()', \@attrs, $body);
+           }
+
+           # Keywords can have two or more definitions (distinguished by syntax)...
+           keyword test (String $desc, Comma, Expr $test) {
+               return "use Test::More; ok $test => $desc"
+           }
+
+           keyword test (Expr $test) {
+               my $desc = "q{$test at line }.__LINE__";
+               return "use Test::More; ok $test => $desc"
+           }
+
+           keyword test (String $desc, Block $subtests) {
+               return "use Test::More; subtest $desc => sub $subtests;"
+           }
+
+           # Keywords can be removed from the remainder of the lexical scope...
+           unkeyword test;
+
+           # Keywords declared in an import() or unimport() are automatically exported...
+           sub import {
+
+               keyword debug (Expr $expr) {
+                   return "" if !$ENV{DEBUG};
+                   return "use Data::Dump 'ddx'; ddx $expr";
+               }
+
+           }
+
+           # Keywords removals in an unimport() or import() are also automatically exported...
+           sub unimport {
+
+               unkeyword debug;
+
+           }
+
+DESCRIPTION
+       This module implements a new Perl keyword: "keyword", which you can use
+       to specify other new keywords.
+
+       Normally, to define new keywords in Perl, you either have to write them
+       in XS (shiver!) or use a module like Keyword::Simple or Keyword::API.
+       Using any of these approaches requires you to grab all the source code
+       after the keyword, manually parse out the components of the keyword's
+       syntax, construct the replacement source code, and then substitute it
+       for the original source code you just parsed.
+
+       Using Keyword::Declare, you define a new keyword by specifying its name
+       and a parameter list corresponding to the syntactic components that
+       must follow the keyword. You then use those parameters to construct and
+       return the replacement source code. The module takes care of setting up
+       the keyword, and of the associated syntax parsing, and of inserting the
+       replacement source code in the correct place.
+
+       For example, to create a new keyword (say: "loop") that takes an
+       optional count and a block, you could write:
+
+           use Keyword::Declare;
+
+           keyword loop (Int $count?, Block $block) {
+               if (length $count) {
+                   return "for (1..$count) $block";
+               }
+               else {
+                   return "while (1) $block";
+               }
+           }
+
+       At compile time, when the parser subsequently encounters source code
+       such as:
+
+           loop 10 {
+               $cmd = readline;
+               last if valid_cmd($cmd);
+           }
+
+       then the keyword's $count parameter would be assigned the value "10"
+       and its $code parameter would be assigned the value
+       "{\n$cmd = readline;\nlast if valid_cmd($cmd);\n}". Then the "body" of
+       the keyword definition would be executed and its return value would be
+       used as the replacement source code:
+
+           for (1..10) {
+               $cmd = readline;
+               last if valid_cmd($cmd);
+           }
+
+INTERFACE
+   Declaring a new lexical keyword
+       The general syntax for declaring new keywords is:
+
+           keyword NAME (PARAM, PARAM, PARAM...) ATTRS { REPLACEMENT }
+
+       The name of the new keyword can be any identifier, including the name
+       of an existing Perl keyword. However, using the name of an existing
+       keyword usually creates an infinite loop of keyword expansion, so it
+       rarely does what you actually wanted. In particular, the module will
+       not allow you to declare a new keyword named "keyword", as that way
+       lies madness.
+
+   Specifying keyword parameters
+       The parameters of the keyword tell it how to parse the source code that
+       follows it. The general syntax for each parameter is:
+
+                                TYPE  [?*+][?+]  [$@]NAME  :sep(TYPE)  = 'DEFAULT'
+
+                                \__/  \_______/  \______/  \________/  \_________/
+           Parameter type.........:       :          :          :           :
+           Repetition specifier...........:          :          :           :
+           Parameter variable........................:          :           :
+           Separator specifier..................................:           :
+           Default source code (if argument is missing).....................:
+
+       The type specifier is required, but the other four components are
+       optional. Each component is described in the following sections.
+
+       Keyword parameter types
+
+       The type of each keyword parameter specifies how to parse the
+       corresponding item in the source code after the keyword.
+
+       The type of each keyword parameter may be specified as either a type
+       name, a regex, or a literal string...
+
+       Named types
+
+       A named type is simply a convenient label for some standard or user-
+       defined regex or string. Most of the available named types are drawn
+       from the PPR module, and are named with just the post-"Perl..."
+       component of the PPR name.
+
+       For example, the "Expression" type is the same as the PPR named
+       subpattern "(?&PerlExpression") and the "Variable" type is identical to
+       the PPR named subpattern "(?&PerlVariable)".
+
+       The standard named types that are available are:
+
+           ArrayIndexer .................................. An expression or list in square brackets
+           AssignmentOperator ............................ A '=' or any operator assignment: '+=', '*=', etc.
+           Attributes .................................... Subroutine or variable :attr(ributes) :with : colons
+           Comma ......................................... A ',' or '=>'
+           Document ...................................... Perl code and optional __END__ block
+           HashIndexer ................................... An expression or list in curly brackets
+           InfixBinaryOperator ........................... An infix operator of precedence from '**' down to '..'
+           LowPrecedenceInfixOperator .................... An 'and', 'or', or 'xor
+           OWS ........................................... Optional whitespace (including comments or POD)
+           PostfixUnaryOperator .......................... A high-precedence postfix operator like '++' or '--'
+           PrefixUnaryOperator ........................... A high-precedence prefix operator like '+' or '--'
+           StatementModifier ............................. A postfix 'if', 'while', 'for', etc.
+           NWS or Whitespace ............................. Non-optional whitespace (including comments or POD)
+           Statement ..................................... Any single valid Perl statement
+           Block ......................................... A curly bracket delimited block of statements
+           Comment ....................................... A #-to-newline comment
+           ControlBlock .................................. An if, while, for, unless, or until and its block
+           Expression or Expr ............................ An expression involving operators of any precedence
+           Format ........................................ A format declaration
+           Keyword ....................................... Any user-defined keyword and its arguments
+           Label ......................................... A statement label
+           PackageDeclaration ............................ A package declaration or definition
+           Pod ........................................... Documentation terminated by a =cut
+           SubroutineDeclaration ......................... A named subroutine declaration or definition
+           UseStatement .................................. A use <module> or use <version> statement
+           LowPrecedenceNotExpression .................... An expression at the precedence of not
+           List .......................................... An list of comma-separated expressions
+           CommaList ..................................... An unparenthesized list of comma-separated expressions
+           Assignment .................................... One or more chained assignments
+           ConditionalExpression or Ternary or ListElem... An expression involving the ?: operator;
+                                                           also matches a single element of a comma-separated list
+           BinaryExpression .............................. An expression involving infix operators
+           PrefixPostfixTerm ............................. A term with optional unary operator(s)
+           Term .......................................... An expression not involving operators
+           AnonymousArray or AnonArray ................... An anonymous array constructor
+           AnonymousHash or AnonHash ..................... An anonymous hash constructor
+           AnonymousSubroutine ........................... An unnamed subroutine definition
+           Call .......................................... A call to a built-in function or user-defined subroutine
+           DiamondOperator ............................... A <readline> or <shell glob>
+           DoBlock ....................................... A do block
+           EvalBlock ..................................... An eval block
+           Literal ....................................... Any literal compile-time value
+           Lvalue ........................................ Anything that can be assigned to
+           ParenthesesList or ParensList ................. A parenthesized list of zero-or-more elements
+           Quotelike ..................................... Any quotelike term
+           ReturnStatement ............................... A return statement in a subroutine
+           Typeglob ...................................... A typeglob lookup
+           VariableDeclaration or VarDecl ................ A my, our, or state declaration
+           Variable or Var ............................... A variable of any species
+           ArrayAccess ................................... An array lookup or a slice
+           Bareword ...................................... A bareword
+           BuiltinFunction ............................... A call to a builtin-in function
+           HashAccess .................................... A hash lookup or key/value slice
+           Number or Num ................................. Any number
+           QuotelikeQW ................................... A qw/.../
+           QuotelikeQX ................................... A `...` or qx/.../
+           Regex or Regexp ............................... A /.../, m/.../, or qr/.../
+           ScalarAccess .................................. A scalar variable or lookup
+           String or Str ................................. Any single- or double-quoted string
+           Substitution or QuotelikeS .................... An s/.../.../
+           Transliteration or QuotelikeTR ................ A tr/.../.../
+           ContextualRegex ............................... A /.../, m/.../, or qr/.../ where it's valid in Perl
+           Heredoc ....................................... A heredoc marker (but not the contents)
+           Integer or Int ................................ An integer
+           Match or QuotelikeM ........................... A /.../ or m/.../
+           NullaryBuiltinFunction ........................ A call to a built-in function that takes no arguments
+           OldQualifiedIdentifier ........................ An identifier optionally qualified with :: or '
+           QuotelikeQ .................................... A single-quoted string
+           QuotelikeQQ ................................... A double-quoted string
+           QuotelikeQR ................................... A qr/.../
+           VString ....................................... A v-string
+           VariableArray or VarArray or ArrayVar ......... An array variable
+           VariableHash or VarHash or HashVar ............ A hash variable
+           VariableScalar or VarScalar or ScalarVar ...... A scalar variable
+           VersionNumber ................................. A version number allowed after use
+           ContextualMatch or ContextualQuotelikeM ....... A /.../ or m/.../ where it's valid in Perl
+           PositiveInteger or PosInt ..................... A non-negative integer
+           QualifiedIdentifier or QualIdent .............. An identifier optionally qualified with ::
+           QuotelikeQR ................................... A qr/.../
+           VString ....................................... A v-string
+           Identifier or Ident ........................... An unqualified identifier
+
+       Which Perl construct each of these will match after a keyword is
+       intended to be self-evident; see the documentation of the PPR module
+       for more detail on any of them that aren't.
+
+       Regex and literal parameter types
+
+       In addition to the standard named types listed in the previous section,
+       a keyword parameter can have its type specified as either a regex or a
+       string, in which case the corresponding component in the trailing
+       source code is expected to match that pattern or literal.
+
+       For example:
+
+           keyword fail ('all'? $all, /hard|soft/ $fail_mode, Block $code) {...}
+
+       would accept:
+
+           fail hard {...}
+           fail all soft {...}
+           # etc.
+
+       If a literal or pattern is only parsing a static part of the syntax,
+       there may not be a need to give it an actual parameter variable. For
+       example:
+
+           keyword list (/keys|values|pairs/ $what, 'in', HashVar $hash) {
+
+               my $EXTRACTOR = $what eq 'values' ? 'values' : 'keys';
+               my $REPORTER  = $what eq 'pairs' ? $hash.'{$data}' : '$data';
+
+               return qq{for my \$data ($EXTRACTOR $hash) { say join ': ',$REPORTER }
+           }
+
+       Here the 'in' parameter type just parses a fixed syntactic component of
+       the keyword, so there's no need to capture it into a parameter
+       variable.
+
+       Note that types specified as regexes can be given any of the following
+       trailing modifiers: "/imnsxadlup". For example:
+
+           keyword list (/ keys | values | pairs /xiaa $what, 'in', HashVar $hash) {...}
+                                                  ^^^^
+
+       Naming literal and regex types via "keytype"
+
+       Literal and regex parameter types are useful for matching non-standard
+       syntax that PPR cannot recognize. However, using a regex or a literal
+       as a type specifier does tend to muddy a keyword definition with large
+       amounts of line noise (especially the regexes).
+
+       So the module allows you to declare a named type that matches whatever
+       a given literal or regex would have matched in the same place...via the
+       "keytype" keyword.
+
+       For example, instead of explicit regexes and string literals:
+
+           keyword fail ('all'? $all, /hard|soft/ $fail_mode, Block $code) {...}
+
+           keyword list (/keys|values|pairs/ $what, 'in', HashVar $hash) {
+
+       ...you could predeclare named types that work the same:
+
+           keytype All       is  'all'       ;
+           keytype FailMode  is  /hard|soft/ ;
+
+           keytype ListMode  is  /keys|values|pairs/ ;
+           keytype In        is  'In'                ;
+
+       and then declare the keywords like so:
+
+           keyword fail (All? $all, FailMode $fail_mode, Block $code) {...}
+
+           keyword list (ListMode $what, In, HashVar $hash) {
+
+       A "keytype" can also be used to rename an existing named type
+       (including other "keytype"'d names) more meaningfully.  For example:
+
+           keytype Name      is  Ident  ;
+           keytype ParamList is  List   ;
+           keytype Attr      is  /:\w+/ ;
+           keytype Body      is  Block  ;
+
+           keyword method (Name $name, ParamList? $params, Attr? @attrs, Body $body)
+           {...}
+
+       When you define a new compile-time keytype from a string or regex, you
+       can also request the module to create a variable of the same name with
+       the same content, by prefixing the keytype name with a "$" sigil. For
+       example:
+
+           keytype $ListMode  is  /keys|values|pairs/ ;
+           keytype $In        is  'In'                ;
+
+       would create two new keytypes ("ListMode" and "In") and also two new
+       variables ($ListMode and $In) that contain the regex adnd string
+       respectively. Note that you would still use the sigilless forms in the
+       parameter list of a keyword:
+
+           keyword list (ListMode $what, In, HashVar $hash) {
+               ...
+           }
+
+       but could then use the sigilled forms in the body of the keyword:
+
+           keyword list (ListMode $what, In, HashVar $hash) {
+               if ($hash =~ $Listmode || $hash eq $In) {
+                   warn 'Bad name for hash';
+               }
+               ...
+           }
+
+       or anywhere else in the same lexical scope as the "keytype"
+       declaration.
+
+       Junctive named types
+
+       Sometimes a keyword may need to take two or more different types of
+       arguments in the same syntactic slot. For example, you might wish to
+       create a keyword that accepts either a block or an expression as its
+       argument:
+
+           try { for (1..10) { say foo() } }
+
+           try say foo();
+
+       ...or a block or regex:
+
+           filter { $_ < 10 } @list;
+           filter /important/ @list;
+
+       When specifying the a keyword parameter, you can specify two or more
+       named types for it, by conjoining them with a vertical bar ("|") like
+       so:
+
+           keyword try (Block|Expression $trial) {{{
+               eval «$trial =~ /^\{/ ? $trial : "{$trial}"»
+           }}}
+
+           keyword filter (Regex|Block $selector, ArrayVar $var) {{{
+               «$var» = grep «$selector» «$var»;
+           }}}
+
+       This is known as a disjunctive type.
+
+       Disjunctive types can only be constructed from named types (either
+       built-in or defined by a "keytype"); they cannot include regex or
+       literal types.  However, this is not an onerous restriction, as it is
+       always possible to convert a non-named type to a named type using
+       "keytype":
+
+           keytype In   is /(?:with)?in/;
+           keytype From is 'from';
+
+           keyword list (Regex $rx, From|In, Expression $list) {{{
+               say for grep «$rx» «$list»;
+           }}}
+
+           list /fluffy/ within cats();
+           list /rex/ from dogs();
+
+   Capturing parameter components
+       Normally, when a keyword parameter matches part of the source code, the
+       text of that source code fragment becomes the string value of the
+       corresponding parameter variable. For example:
+
+           keytype Mode     is / first | last | any | all /x;
+           keytype NumBlock is / \d+ (?&PerlOWS) (?&PerlBlock) /;
+
+           keyword choose (Mode $choosemode, NumBlock @numblocks) {...}
+
+           # And later...
+
+           choose any
+               1 {x==1}
+               2 {sqrt 4}
+               3 {"Many"}
+
+           # Parameter $choosemode gets: 'any'
+           # Parameter @numblocks  gets: ( '1 {x==1}', '2 {sqrt 4}', '3 {"Many"}' )
+
+       However, if a parameter's type regex includes one or more named
+       captures (i.e. via the "(?<name> ... )" syntax), then the corresponding
+       parameter variable is no longer bound to a simple string.
+
+       Instead, it is bound to a hash-based object of the class
+       "Keyword::Declare::Arg".
+
+       This object still stringifies to the original source code fragment, so
+       the parameter can still be interpolated into a replacement source code
+       string.
+
+       However, the object can also be treated as a hash...whose keys are the
+       names of the named captures in the type regex, and whose values are the
+       substrings those named captures matched.
+
+       In addition, the "Keyword::Declare::Arg" object always has an extra key
+       (namely: the empty string), whose value stores the entire original
+       source code fragment.
+
+       So, for example, if the two parameter types from the previous example,
+       had included named captures:
+
+           keytype Mode     is / (?<one> first | last | any ) | (?<many> all ) /x;
+
+           keytype NumBlock is / (?<num> \d+ ) (?&PerlOWS) (?<block> (?&PerlBlock) ) /;
+
+           keyword choose (Mode $choosemode, NumBlock @numblocks) {...}
+
+           # And later...
+
+           choose any
+               1 {x==1}
+               2 {sqrt 4}
+               3 {"Many"}
+
+           # $choosemode stringifies to:     'any'
+           # $choosemode->{''}     returns:  'any'
+           # $choosemode->{'one'}  returns:  'any'
+           # $choosemode->{'many'} returns:  undef
+
+           # $numblocks[0] stringifies to:    '1 {x==1}'
+           # $numblocks[0]{''}      returns:  '1 {x==1}'
+           # $numblocks[0]{'num'}   returns:  '1'
+           # $numblocks[0]{'block'} returns:  '{x==1}'
+
+           # et cetera...
+
+       This feature is most often used to define keywords whose arguments
+       consist of a repeated sequence of components, especially when those
+       components are either inherently complex (as in the previous example)
+       or they are unavoidably heterogeneous in nature (as below).
+
+       For example, to declare an "assert" keyword that can take and test a
+       series of blocks and/or expressions:
+
+           keytype BlockOrExpr is / (?<block> (?&PerlBlock) )
+                                  | (?<expr>  (?&PerlExpression)  )
+                                  /x;
+
+           keyword assert (BlockOrExpr @test_sequence) {
+
+               # Accumulate transformed tests in this variable
+               my @assertions;
+
+               # Build assertion code from sequence of test components
+               for my $test (@test_sequence) {
+
+                   # Is the next component a block?
+                   push @assertions, "do $test" if $test->{block};
+
+                   # Is the next component a raw expression?
+                   push @assertions, "($test)"  if $test->{expr};
+               }
+
+               # Generate replacement code...
+               return "die 'Assertion failed' unless "
+                    . join ' && ', @assertions;
+           }
+
+   Scalar vs array keyword parameters
+       Declaring a keyword's parameter as a scalar (the usual approach) causes
+       the source code parser to match the corresponding type of component
+       exactly once in the trailing source. For example:
+
+           # try takes exactly one trailing block
+           keyword try (Block $block) {...}
+
+       Declaring a keyword's parameter as an array causes the source code
+       parser to match the corresponding type of component as many times as it
+       appears (but at least once) in the trailing source, with each matching
+       occurrence becoming one element of the array.
+
+           # tryall takes one or more trailing blocks
+           keyword tryall (Block @blocks) {...}
+
+       Changing the number of expected parameter matches
+
+       An explicit quantifier can be appended to any parameter type to change
+       the number of repetitions that parameter type will match.  For example:
+
+           # The forpair keyword takes an optional iterator variable
+           keyword forpair ( Var? $itervar, '(', HashVar $hash, ')', Block $block) {...}
+
+           # The checkpoint keyword can be followed by zero or more trailing strings
+           keyword checkpoint (Str* @identifier) {...}
+
+       The available quantifiers are:
+
+       "?" to indicate zero-or-one times, as many times as possible, with
+           backtracking
+
+       "*" to indicate zero-or-more times, as many times as possible, with
+           backtracking
+
+       "+" to explicitly indicate one-or-more times, as many times as
+           possible, with backtracking (This is also the default quantifier if
+           the parameter variable is declared as an array.)
+
+       "??"
+           to indicate zero-or-one times, as few times as possible, with
+           backtracking
+
+       "*?"
+           to indicate zero-or-more times, as few times as possible, with
+           backtracking
+
+       "+?"
+           to indicate one-or-more times, as few times as possible, with
+           backtracking
+
+       "?+"
+           to indicate zero-or-one times, as many times as possible, without
+           backtracking
+
+       "*+"
+           to indicate zero-or-more times, as many times as possible, without
+           backtracking
+
+       "++"
+           to indicate one-or-more times, as many times as possible, without
+           backtracking
+
+       For example:
+
+           # The watch keyword takes as many statements as possible, and at least one...
+           keyword watch ( Statement++ @statements) {
+               return join "\n", map { "say q{$_}; $_;" } @statements;
+           }
+
+           # The begin...end keyword takes as few statements as possible, including none...
+           keyword begin ( Statement*? $statements, 'end') {
+               return "{ $statements }";
+           }
+
+       Note that any repetition quantifier is appended to the parameter's
+       type, not after its variable. As the previous example indicates, any
+       quantifier may be applied to either a scalar or an array parameter: the
+       quantifier tells the type how often to match; the kind of parameter
+       determines how that match is made available inside the keyword body: as
+       a single string or object for scalar parameters, or as a list of
+       individual strings or objects for array parameters.
+
+       Checking whether optional parameters are present
+
+       If an array parameter has a quantifier that makes it optional (e.g.
+       "?", "*", "?+", "*?", etc.), then the parameter array will be empty
+       (and hence false) whenever the corresponding syntactic component is
+       missing.
+
+       In the same situation, an optional scalar parameter will contain an
+       empty string (which is also false, of course).
+
+       However, it is recommended that the presence or absence of optional
+       scalar parameters should be tested using the built-in length()
+       function, not just via a boolean test, because in some cases the
+       parameter could also have an explicit value of "0", which is false, but
+       not "missing".
+
+       For example:
+
+           keyword save (Int? $count, List $data) {
+
+               # If optional count omitted, then $count will contain an empty string
+               if ( !length($count) ) {
+                   return "save_all($data);";
+               }
+               else {
+                   return "save_first($count, $data);";
+               }
+           }
+
+       If the test had been:
+
+               if (!$count) {
+                   return "save_all($data);";
+               }
+
+       then a keyword invocation such as:
+
+           save 0 ($foo, $bar, $baz);
+
+       would be translated to a call to save_all(...), instead of a call to
+       "save_multiple(0,...)".
+
+       Separated repetitions
+
+       Parameters can be marked as repeating either by being declared as
+       arrays or by being declared with a type quantifier such as "*", "+",
+       etc.)  Any repeating parameter may match multiple repetitions of the
+       same component. For example:
+
+           # tryall takes zero or more trailing blocks
+           keyword tryall (Block* @blocks) {...}
+
+       ...will match zero-or-more code blocks after the keyword.
+
+       You can also specify that such parameters should match repeated
+       components that are explicitly separated by some other interstitial
+       syntactic element: such as a comma or a colon or a newline or a special
+       string like '+' or '&&' or 'then'.
+
+       Such separators are specified by adding a :sep(...) attribute after the
+       variable name (but before any default value).
+
+       For example, if the "tryall" blocks should be separated by commas, you
+       could specify that like so:
+
+           # tryall takes zero or more trailing comma-separated blocks
+           keyword tryall (Block* @blocks :sep(',')) {...}
+                                        # ^^^^^^^^^
+
+       Separators can be specified using any valid parameter type: string,
+       regex, named type, or junctive. For example:
+
+           # tryall takes zero or more trailing (fat-)comma-separated blocks
+           keyword tryall (Block* @blocks :sep( /,|=>/ )) {...}
+                                        #       ^^^^^^
+
+           # tryall takes zero or more trailing Comma-separated blocks
+           keyword tryall (Block* @blocks :sep( Comma )) {...}
+                                        #       ^^^^^
+
+           # tryall takes zero or more trailing Comma-or-colon-separated blocks
+           keytype Colon is ':';
+           keyword tryall (Block* @blocks :sep( Comma|Colon )) {...}
+                                        #       ^^^^^^^^^^^
+
+       Accessing separators
+
+       Whenever an array parameter is specified with a ":sep" attribute, the
+       actual separators found between instances of a repeated component can
+       be retrieved via the Keyword::Declare::Arg objects that are returned in
+       the array.
+
+       Each such object stores the separator that occurred immediately after
+       the corresponding component, and each such trailing separator can be
+       accessed via the object's special ':sep' key. For example:
+
+           # tryall takes zero or more trailing Comma-separated blocks
+           keyword tryall (Block* @blocks :sep(Comma)) {
+               warn "Separators are: ",
+                    map { $_->{':sep'} } @blocks;
+               ...
+           }
+
+           # and later...
+
+           tryall {say 1} , {say 2} => {say 3} , {say 4};
+           # Warns: Separators are: ,=>,
+
+       Providing a default for optional parameters
+
+       If a parameter is optional (i.e. it has a <?>, "??", "?+", <*>, <*?>,
+       or "*+" quantifier), you can specify a string to be placed in the
+       parameter variable in cases where the parameter matches zero times.
+
+       For example to use $_ as the iterator variable, if no explicit variable
+       is supplied:
+
+           # The forpair keyword takes an optional iterator variable (or defaults to $_)
+           keyword forpair ( Var? $itervar = '$_', '(', HashVar $hash, ')', Block $block) {...}
+
+       Another common use for defaults is to force optional arguments to
+       default to an empty string, rather than to "undef", so it's easier to
+       interpolate:
+
+           keyword display ( Str? $label = '', ScalarVar $var) {{{
+               say '«$label»«$var»=', «$var»
+           }}}
+
+       Note that the default value represents an alternative piece of source
+       code to be generated at compile-time, so it must be specified as an
+       uninterpolated single-quoted string (either '...' or "q{...}").
+
+       Array parameters can also have a default value specified. However, as
+       for scalar parameters, the default must still be a single single-quoted
+       string (not a list or array). For example:
+
+           # The checkpoint keyword defaults to check-pointing CHECKPOINT...
+           keyword checkpoint (Str* @identifier = 'CHECKPOINT') {...}
+
+       If you provide a default for an unquantified parameter, the module will
+       infer that you intended the parameter to be optional and will quietly
+       provide a suitable implicit quantifier ("?" for scalars, "*" for
+       arrays). So the previous examples could also have been written:
+
+           # The forpair keyword takes an optional iterator variable (or defaults to $_)
+           keyword forpair ( Var $itervar = '$_', '(', HashVar $hash, ')', Block $block) {...}
+
+           # The checkpoint keyword defaults to check-pointing CHECKPOINT...
+           keyword checkpoint (Str @identifier = 'CHECKPOINT') {...}
+
+   Handling whitespace between arguments
+       Normally, a keyword parses and discards any Perl whitespaces (spaces,
+       tabs, newlines, comments, POD, etc.) between its arguments. Each
+       parameter receives the appropriate matching code component with its
+       leading whitespace removed (unless, of course, that component itself
+       explicitly matches whitespace, in which case it's preserved).
+
+       Occasionally, however, leading whitespace may be significant.  For
+       example, you may wish to implement a "note" keyword that differentiates
+       between:
+
+           note (1..3)  --> $filename;
+
+       and:
+
+           note( 1..3 ) --> $filename;
+
+       You could achieve that by explicitly matching the optional whitespace
+       before the opening paranthesis:
+
+           keyword note (OWS $ws, ParenList $list, /-->[^;]*/ $comment) {
+               return 'say '
+                    . (length($ws) ? "'(', $list, ')'" : $list);
+           }
+
+       However, this approach can quickly get tedious and unwieldy when
+       multiple parameters all need to preserve leading whitespace:
+
+           keyword note (OWS $ws1, ParenList $list, OWS $ws2, /-->[^;]*/ $comment)
+           {
+               return 'say '
+                    . (length($ws1) ? "'(', $list, ')'" : $list)
+                    . ("'$ws2$comment'");
+           }
+
+       So the module provides an attribute, ":keepspace", that causes a
+       keyword to simply keep any leading whitespace at the start of each
+       parameter:
+
+           keyword note (ParenList $list, /-->[^;]*/ $comment) :keepspace {...}
+           {
+               return 'say '
+                    . ($list !~ /^\(/  ? "'(', $list, ')'" : $list)
+                    . $comment;
+           }
+
+       When using the :keepspace attribute, be aware that the leading
+       whitespace preserved at the start of each attribute is Perl's concept
+       of whitespace (which includes comments, POD, and possibly even heredoc
+       contents), so if your keyword later needs to strip it out, then:
+
+           $list =~ s{ ^ \s* }{}x;
+
+       will not suffice. At a minimum, you'll need to cater for comments as
+       well:
+
+           $list =~ s{ ^ \s*+ (?: [#].*+\n \s*+)*+ }{}x
+
+       and, to be really safe, you need to handle every other Perlish
+       "whitespace" as well:
+
+           $list =~ s{ ^ (?PerlOWS) $PPR::GRAMMAR }{}x;
+
+   Keywords with trailing context
+       Sometimes a keyword implementation needs to modify more of the source
+       code than just its own arguments. For example, a "let" keyword might
+       need to install some code after the end of the surrounding block:
+
+           keyword let (Var $var, '=', Expr $value, Statement* $trailing_code, '}')
+           {{{
+                   «trailing_code»
+               }
+               «$var» = «$value»;
+           }}}
+
+       But you can't create a keyword like that, because it can't be
+       successfully parsed as part of a larger Perl code block...because it
+       "eats" the right-curly that surrounding block needs to close itself.
+
+       What's needed here is a way to have a keyword operate on trailing code,
+       but then not consider that trailing code to be part of its "official"
+       argument list, so that subsequent parsing doesn't prematurely consume
+       it.
+
+       The module supports this via the ":then" attribute. You could, for
+       example, successfully implement the "let" keyword like so:
+
+           keyword let (Var $var, '=', Expr $value) :then(Statement* $trailing_code, '}')
+           {{{
+                   «trailing_code»
+               }
+               «$var» = «$value»;
+           }}}
+
+       The parentheses of the ":then" act like a second parameter list, which
+       must match when the keyword is encountered and expanded within the
+       source, but which is treated like mere "lookahead" when the keyword is
+       parsed as part of the processing of other keywords.
+
+       The ":then" attribute must come immediately after the keyword's normal
+       parameter list (i.e. before any other attribute the keyword might
+       have), and uses exactly the name parameter specification syntax as the
+       normal parameter list.
+
+       Moreover, any arguments the ":then" parameters match are removed from
+       the source, and must be replaced or amended as part of the new source
+       code returned by the keyword body. For example: the new source returned
+       by the body of "let" starts with reinstating both the trailing code and
+       the closing curly:
+
+           keyword let (Var $var, '=', Expr $value) :then(Statement* $trailing_code, '}')
+           {{{
+                   «trailing_code»
+               }
+               «$var» = «$value»;
+           }}}
+
+   Specifying a keyword description
+       Normally the error messages the module generates refer to the keyword
+       by name. For example, an error detected in parsing a "repeat" keyword
+       with:
+
+           keyword repeat ('while', List $condition, Block $code)
+           {...}
+
+       might produce the error message:
+
+           Invalid repeat at demo.pl line 28.
+
+       which is a reasonable message, but would be slightly better if it was:
+
+           Invalid repeat-while loop at demo.pl line 28.
+
+       You can request that a particular keyword be referred to in error
+       messages using a specific description, by adding the ":desc" modifier
+       to the keyword definition. For example:
+
+           keyword repeat ('while', List $condition, Block $code)
+           :desc(repeat-while loop)
+           {...}
+
+   Simplifying keyword generation with an interpolator
+       Frequently, the code block that generates the replacement syntax for a
+       keyword will consist of something like:
+
+           {
+               my $code_interpolation = some_expr_involving_a($param);
+               return qq{ REPLACEMENT $code_interpolation HERE };
+           }
+
+       in which the block does some manipulation of one or more of its
+       parameters, then interpolates the results into a single string, which
+       it returns as the replacement source code.
+
+       So the module provides a shortcut for that structure: the "triple
+       curly" block. If a keyword's block is delimited by three contiguous
+       curly brackets, then the entire block is taken to be a single
+       uninterpolated string that specifies the replacement source code.
+       Within that single string anything in "«...»" is treated as a piece of
+       code to be executed and its result interpolated at that point in the
+       replacement code.
+
+       In other words, a triple-curly block is a literal code template, with
+       special "«...»" interpolators.
+
+       For example, instead of writing:
+
+           keyword forall (List $list, '->', Params @params, Block $code_block)
+           {
+               $list =~ s{\)\Z}{,\\\$__acc__)};
+               substr $code_block, 1, -1, q{};
+               return qq[
+                   {
+                       state \$__acc__ = [];
+                       foreach my \$__nary__ $list {
+                           if (!ref(\$__nary__) || \$__nary__ != \\\$__acc__) {
+                               push \@{\$__acc__}, \$__nary__;
+                               next if \@{\$__acc__} <= $#parameters;
+                           }
+                           next if !\@{\$__acc__};
+                           my ( @parameters ) = \@{\$__acc__};
+                           \@{\$__acc__} = ();
+
+                           $code_block
+                       }
+                   }
+               ]
+           }
+
+       ...you could write:
+
+           keyword forall (List $list, '->', Params @params, Block $code_block)
+           {{{
+               {
+                   state $__acc__ = [];
+                   foreach my $__nary__  « $list =~ s{\)\Z}{,\\\$__acc__)}r »
+                   {
+                       if (!ref($__nary__) || $__nary__ != \$__acc__) {
+                           push @{$__acc__}, $__nary__;
+                           next if @{$__acc__} <= «$#params»;
+                       }
+                       next if !@{$__acc__};
+                       my ( «"@params"» ) = @{$__acc__};
+                       @{$__acc__} = ();
+
+                       « substr $code_block, 1, -1 »
+                   }
+               }
+           }}}
+
+       ...with a significant reduction in the number of sigils that have to be
+       escaped (and hence a significant decrease in the likelihood of bugs
+       creeping in).
+
+       Note: for those living without the blessings of Unicode, you can also
+             use the pure ASCII "<{...}>" to delimit interpolations,
+             instead of "«...»".
+
+   Declaring multiple variants of a single keyword
+       You can declare two (or more) keywords with the same name, provided
+       they all have distinct parameter lists. In other words, keyword
+       definitions are treated as multimethods, with each variant parsing the
+       following source code and then the variant which matches best being
+       selected to provide the replacement code.
+
+       For example, you might specify three syntaxes for a "repeat" loop:
+
+           keyword repeat ('while', List $condition, Block $block) {{{
+               while (1) { do «$block»; last if !(«$condition»); }
+           }}}
+
+           keyword repeat ('until', List $condition, Block $block) {{{
+               while (1) { do «$block»; last if «$condition»; }
+           }}}
+
+           keyword repeat (Num $count, Block $block) {{{
+               for (1..«$count») «$block»
+           }}}
+
+       When it encounters a keyword, the module now attempts to (re)parse the
+       trailing code with each of the definitions of that keyword in the
+       current lexical scope, collecting every definition that successfuly
+       parses the source at that point.
+
+       If more than one definition was successful, the module first selects
+       the definition(s) with the most parameters. If more than one definition
+       had the maximal number of parameters, the module then selects the one
+       whose parameters matched most specifically. For example, if you had two
+       keywords:
+
+           keyword wait (Int $how_long, Str $msg) {{{
+               { sleep «$how_long»; warn «$msg»; }
+           }}}
+
+           keyword wait (Num $how_long, Str $msg) {{{
+               { use Time::HiRes 'sleep'; sleep «$how_long»; warn «$msg»; }
+           }}}
+
+       ...and wrote:
+
+           wait 1, 'Done';
+
+       ...then the first keyword would be selected over the second, because
+       "Int" is more specific than "Num" and "Str" is just as specific as
+       "Str".
+
+       If two or more definitions matched equally specifically, the module
+       looks for one that is marked with a ":prefer" attribute. If there is no
+       ":prefer" indicated (or more than one), the module gives up and reports
+       a syntax ambiguity.
+
+       The order of specificity for a parameter match is determined by the
+       relationships between the various components of a Perl program, as
+       illustrated in the following tree (where a child type is more specific
+       that its parent or higher ancestors, and less specific than its
+       children or deeper descendants):
+
+           ArrayIndexer
+
+           InfixBinaryOperator
+
+           StatementModifier
+
+           HashIndexer
+
+           OWS
+            \..NWS or Whitespace
+              |...Pod
+               \..Comment
+
+           PostfixUnaryOperator
+
+           Attributes
+
+           LowPrecedenceInfixOperator
+
+           PrefixUnaryOperator
+
+           Document
+            \..Statement
+              |...Block
+              |...PackageDeclaration
+              |...Label
+              |...UseStatement
+              |...Format
+              |...Expression or Expr
+              |    \..LowPrecedenceNotExpression
+              |       \..List
+              |          \..CommaList
+              |             \..Assignment
+              |                \..ConditionalExpression or Ternary or ListElem
+              |                   \..BinaryExpression
+              |                      \..PrefixPostfixTerm
+              |                         \..Term
+              |                           |...AnonymousHash or AnonHash
+              |                           |...VariableDeclaration or VarDecl
+              |                           |...Literal
+              |                           |   |...Number or Num
+              |                           |   |   |...Integer or Int
+              |                           |   |   |    \..PositiveInteger or PosInt
+              |                           |   |    \..VersionNumber
+              |                           |   |       \..VString
+              |                           |   |...Bareword
+              |                           |   |    \..OldQualifiedIdentifier
+              |                           |   |       \..QualifiedIdentifier or QualIdent
+              |                           |   |          \..Identifier or Ident
+              |                           |    \..String or Str
+              |                           |      |...VString
+              |                           |      |...QuotelikeQ
+              |                           |      |...QuotelikeQQ
+              |                           |       \..Heredoc
+              |                           |...Lvalue
+              |                           |...AnonymousSubroutine
+              |                           |...AnonymousArray or AnonArray
+              |                           |...DoBlock
+              |                           |...DiamondOperator
+              |                           |...Variable or Var
+              |                           |   |...ScalarAccess
+              |                           |   |    \..VariableScalar or VarScalar or ScalarVar
+              |                           |   |...ArrayAccess
+              |                           |   |    \..VariableArray or VarArray or ArrayVar
+              |                           |    \..HashAccess
+              |                           |       \..VariableHash or VarHash or HashVar
+              |                           |...Typeglob
+              |                           |...Call
+              |                           |    \..BuiltinFunction
+              |                           |       \..NullaryBuiltinFunction
+              |                           |...ParenthesesList or ParensList
+              |                           |...ReturnStatement
+              |                           |...EvalBlock
+              |                            \..Quotelike
+              |                              |...Regex or Regexp
+              |                              |   |...QuotelikeQR
+              |                              |   |...ContextualRegex
+              |                              |   |   |...ContextualMatch or ContextualQuotelikeM
+              |                              |   |    \..QuotelikeQR
+              |                              |    \..Match or QuotelikeM
+              |                              |       \..ContextualMatch or ContextualQuotelikeM
+              |                              |...QuotelikeQW
+              |                              |...QuotelikeQX
+              |                              |...Substitution or QuotelikeS
+              |                              |...Transliteration or QuotelikeTR
+              |                               \..String or Str
+              |                                 |...QuotelikeQQ
+              |                                  \..QuotelikeQ
+              |...SubroutineDeclaration
+              |...Keyword
+               \..ControlBlock
+
+           Comma
+
+           AssignmentOperator
+
+       User-defined named types (declared via the "keytype" mechanism) are
+       treated as being more specific than the type they rename.
+
+       Junctive types are treated as being less specific than any one of their
+       components, and exactly as specific as any other junctive type.
+
+       Regex and string types are treated as being more specific than any
+       named or junctive type.
+
+       Generally speaking, the mechanism should just do the right thing,
+       without your having to think about it too much...and will warn you at
+       compile-time when it can't work out the right thing to do, in which
+       case you'll need to think about it some more.
+
+   Removing a lexical keyword
+       The syntax for removing an existing keyword from the remaining lines in
+       the current scope is:
+
+           unkeyword NAME;
+
+       Any attempts to remove non-existent keywords are silently ignored (in
+       the same way that removing a non-existing hash key doesn't trigger a
+       warning).
+
+   Exporting keywords
+       Normally a keyword definition takes effect from the statement after the
+       "keyword" declaration, to the end of the enclosing lexical block.
+
+       However, if you declare a keyword inside a subroutine named "import"
+       (i.e. inside the import method of a class or module), then the keyword
+       is also exported to the caller of that import method.
+
+       In other words, simply placing a keyword definition in a module's
+       "import" exports that keyword to the lexical scope in which the module
+       is used.
+
+       You can also define new keywords in a module's "unimport" method, and
+       they are exported in exactly the same way.
+
+       Likewise, if you place an "unkeyword" declaration in an "import" or
+       "unimport" subroutine, then the specified keyword is removed from the
+       lexical scope in which the module is "use"'d or "no"'d.
+
+   Debugging keywords
+       If you load the module with the 'debug' option:
+
+           use Keyword::Declare {debug=>1};
+
+       then keywords and keytypes and unkeywords declared in that lexical
+       scope will report their own declarations, and will subsequently report
+       how they transform the source following them. For example:
+
+           use Keyword::Declare {debug=>1};
+
+           keyword list (/keys|values|pairs/ $what, 'in', HashVar $hash) {
+               my $EXTRACTOR = $what eq 'values' ? 'values' : 'keys';
+               my $REPORTER  = $what eq 'pairs' ? $hash.'{$data}' : '$data';
+
+               return qq{for my \$data ($EXTRACTOR $hash) { say join "\\n", ${REPORTER}_from($hash) }};
+           }
+
+           # And later...
+
+           list pairs in %foo;
+
+       ...would print to STDERR:
+
+           #####################################################
+           ### Installed keyword macro at demo.pl line 10:
+           ###
+           ###list  <what>  in  <hash>
+           ###
+           #####################################################
+           #####################################################
+           ### Keyword macro defined at demo.pl line 10:
+           ###
+           ###    list  <what>  in  <hash>
+           ###
+           ### Converted code at demo.pl line 19:
+           ###
+           ###    list  pairs in %foo
+           ###
+           ### Into:
+           ###
+           ###    for my $data (keys %foo) { say join "\n", keys_from(\%foo) }
+           ###
+           #####################################################
+
+DIAGNOSTICS
+       "Invalid option for: use Keyword::Declare"
+           Currently the module takes only a simple argument when loaded: a
+           hash of configuration options. You passed something else to "use
+           Keyword::Declare;"
+
+           A common mistake is to load the module with:
+
+               use Keyword::Declare  debug=>1;
+
+           instead of:
+
+               use Keyword::Declare {debug=>1};
+
+       "Can't redefine/undefine 'keyword' keyword"
+           You attempted to use the "keyword" keyword to define a new keyword
+           named "keyword". Or you attempted to use the "unkeyword" keyword to
+           remove "keyword".
+
+           Isn't your life hard enough without attempting to inject that
+           amount of meta into it???
+
+           Future versions of this module may well allow you to overload the
+           "keyword" keyword, but this version doesn't. You could always use
+           "Keyword" (with a capital 'K') instead.
+
+       "Can't redefine/undefine 'keytype' keyword"
+           No, you can't mess with the "keytype" keyword either.
+
+       "Unknown type (%s) for keyword parameter. Did you mean: %s","
+           You used a type for a keyword parameter that the module did not
+           recognize. See earlier in this document for a list of the types
+           that the module knows. You may also have misspelled a type.
+           Alternatively, did you declare a "keytype" but then use it in the
+           wrong lexical scope?
+
+       ":then attribute specified too late"
+           A ":then" attribute must be specified immediately after the closing
+           parenthesis of the keyword's main parameter list, without any other
+           attributes between the two. You placed the ":then" attribute after
+           some other attribute. Move it so that it follows the parameter list
+           directly.
+
+       "Invalid attribute: %s"
+           Keywords may only be specified with four attributes: ":then",
+           ":desc", ":prefer", and ":keepspace".
+
+           You specified some other attribute that the module doesn't know how
+           to handle (or possibly misspelled one of the valid attribute
+           names).
+
+       "Missing » on interpolation «%s..."
+       "Missing }> on interpolation <{%s..."
+           You created a "keyword" definition with a "{{{...}}}" interpolator,
+           within which there was an interpolation that extended to the end of
+           the interpolator without supplying a closing "»" or "}>". Did you
+           accidentally use just a ">" or a "}" instead?
+
+       "Invalid %s at %s. Expected: %s but found: %s"
+           You used a defined keyword, but with the wrong syntax after it.
+           The error message lists what the valid possibilities were.
+
+       "Ambiguous %s at %s. Could be: %s"
+           You used a keyword, but the syntax after it was ambiguous (i.e. it
+           matched two or more variants of the keyword equally well).
+
+           You either need to change the syntax you used (so that it matches
+           only one variant of the keyword syntax) or else change the
+           definition of one or more of the keywords (to ensure their syntaxes
+           are no longer ambiguous).
+
+       "Invalid keyword definition. Expected %s but found: %s"
+           You attempted to define a keyword, but used the wrong syntax.  The
+           parameter specification is the usual suspect, or else a syntax
+           error in the block.
+
+       "Likely keyword substitution cycle: %s"
+           The module replaced a keyword with some code that contained another
+           keyword, which the module replaced with some code that contained
+           another keyword, which the module replaced with...et cetera, et
+           cetera.
+
+           If the module detects itself rewriting the same section of code
+           many times, and with the same keyword being recursively expanded
+           more than once, then it infers that the expansion process is never
+           going to end...and simply gives up.
+
+           To avoid this problem, don't create a keyword A that generates code
+           that includes keyword B, where keyword B generates code that
+           includes keyword C, where keyword C generates code that includes
+           keyword A.
+
+CONFIGURATION AND ENVIRONMENT
+       Keyword::Declare requires no configuration files or environment
+       variables.
+
+DEPENDENCIES
+       The module is an interface to Perl's pluggable keyword mechanism, which
+       was introduced in Perl 5.12. Hence it will never work under earlier
+       versions of Perl.
+
+       Currently requires both the Keyword::Simple module and the PPR module.
+
+INCOMPATIBILITIES
+       None reported.
+
+       But Keyword::Declare probably won't get along well with source filters
+       or Devel::Declare.
+
+BUGS AND LIMITATIONS
+       The module currently relies on Keyword::Simple, so it is subject to all
+       the limitations of that module. Most significantly, it can only create
+       keywords that appear at the beginning of a statement (though you can
+       almost always code around that limitation by wrapping the keyword in a
+       "do{...}" block.
+
+       Moreover, there is a issue with Keyword::Simple v0.04 which sometimes
+       causes that module to fail when used by Keyword::Declare under Perl
+       5.14 and 5.16. Consequently, Keyword::Declare may be unreliable under
+       Perls before 5.18 if Keyword::Simple v0.04 or later is installed. The
+       current workaround is to downgrade to Keyword::Simple v0.03 under those
+       early Perl versions.
+
+       Even with the PPR module, parsing Perl code is tricky, and parsing Perl
+       code to build Perl code that parses other Perl code is even more so.
+       Hence, there are likely to be cases where this module gets it
+       spectacularly wrong.
+
+       Please report any bugs or feature requests to
+       "bug-keyword-declare.cpan.org", or through the web interface at
+       <http://rt.cpan.org>.
+
+AUTHOR
+       Damian Conway  "<DCONWAY@CPAN.org>"
+
+LICENCE AND COPYRIGHT
+       Copyright (c) 2015-2017, Damian Conway "<DCONWAY@CPAN.org>". All rights
+       reserved.
+
+       This module is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself. See perlartistic.
+
+DISCLAIMER OF WARRANTY
+       BECAUSE THIS SOFTWARE IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY
+       FOR THE SOFTWARE, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT
+       WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER
+       PARTIES PROVIDE THE SOFTWARE "AS IS" WITHOUT WARRANTY OF ANY KIND,
+       EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+       WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE
+       ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH
+       YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL
+       NECESSARY SERVICING, REPAIR, OR CORRECTION.
+
+       IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING
+       WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR
+       REDISTRIBUTE THE SOFTWARE AS PERMITTED BY THE ABOVE LICENCE, BE LIABLE
+       TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL, OR
+       CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE
+       SOFTWARE (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING
+       RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A
+       FAILURE OF THE SOFTWARE TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF
+       SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+       DAMAGES.
+
+perl v5.40.2                      2021-08-19               Keyword::Declare(3)

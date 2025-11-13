@@ -1,0 +1,333 @@
+Class::StateMachine(3)                     User Contributed Perl Documentation
+
+
+NAME
+       Class::StateMachine - define classes for state machines
+
+SYNOPSIS
+         package MySM;
+         no warnings 'redefine';
+
+         use parent 'Class::StateMachine';
+
+         sub foo : OnState(one) { print "on state one\n" }
+         sub foo : OnState(two) { print "on state two\n" }
+
+         sub bar : OnState(__any__) { print "default action\n" }
+         sub bar : OnState(three, five, seven) { print "on several states\n" }
+         sub bar : OnState(one) { print "on state one\n" }
+
+         sub new {
+             my $class = shift;
+             my $self = {};
+             Class::StateMachine::bless $self, $class, 'one';
+             $self;
+         }
+
+         sub leave_state : OnState(one) { print "leaving state $_[1] from $_[2]" }
+         sub enter_state : OnState(two) { print "entering state $_[1] from $_[2]" }
+
+         package main;
+
+         my $sm = MySM->new;
+
+         $sm->state('one');
+         $sm->foo; # prints "on state one"
+
+         $sm->state('two');
+         $sm->foo; # prints "on state two"
+
+DESCRIPTION
+       This module allows to build classes whose instance behavior (methods)
+       depends not only on inheritance but also on some internal state.
+
+       For example, suppose we want to develop a Dog class implementing the
+       following behavior:
+
+         my $dog = Dog->new;
+         $dog->state("happy");
+         $dog->on_touched_head; # the dog moves his tail
+         $dog->state("angry");
+         $dog->on_touched_head; # the dog bites you
+
+       With the help of Class::StateMachine, that state dependant behaviour
+       can be easily programmed using the "OnState" subroutine attribute as
+       follows:
+
+         package Dog;
+
+         use parent 'Class::StateMachine';
+
+         sub on_touched_head : OnState(happy) { shift->move_tail }
+         sub on_touched_head : OnState(angry) { shift->bite }
+
+   Object construction
+       Class::StateMachine does not impose any particular type of data
+       structure for the instance objects. Any Perl reference type (HASH,
+       ARRAY, SCALAR, GLOB, etc.) can be used.
+
+       The unique condition that must be fulfilled is to use the "bless"
+       subroutine provided by Class::StateMachine to create the object instead
+       of the Perl builtin of the same name.
+
+       For instance:
+
+         package Dog;
+
+         sub new {
+           my $class = shift;
+           my $dog = { name => 'Oscar' };
+           Class::StateMachine::bless($dog, $class, 'happy');
+         }
+
+       A default state "new" gets assigned to the object when the third
+       parameter to "Class::StateMachine::bless" is omitted.
+
+   Instance state
+       The instance state is maintained internally by Class::StateMachine and
+       can be accessed though the "state" method:
+
+         my $state = $dog->state;
+
+       State changes must be performed explicitly calling the "state" method
+       with the new state as an argument:
+
+         $dog->state('tired');
+
+       Class::StateMachine will not change the state of your objects in any
+       other way.
+
+       If you want to limit the possible set of states that the objects of
+       some class can take, define a "state_check" method for that class:
+
+         package Dog;
+         ...
+         sub state_check {
+           my ($self, $state) = @_;
+           $state =~ /^(?:happy|angry|tired)$/
+         }
+
+       That will cause to die any call to "state" requesting a change to an
+       invalid state.
+
+       New objects get assigned the state 'new' when they are created.
+
+   Method definition
+       Inside a class derived from Class::StateMachine, methods (submethods)
+       can be assigned to some particular states using the "OnState" attribute
+       with a list of the states where it applies.
+
+         sub bark :OnState(happy, tired) { play "happy_bark.wav" }
+         sub bark :OnState(injured) { play "pitiful_bark.wav" }
+
+       The text inside the "OnState" parents is evaluated in list context on
+       the current package and with strictures turned off in order to allow
+       usage of barewords.
+
+       For instance:
+
+         sub foo : OnState(map "foo$_", a..z) { ... }
+
+       Though note that lexicals variables will not be reachable from the text
+       inside the parents. Note also that Perl does not allow attribute
+       declarations to spawn over several lines.
+
+       A special state "__any__" can be used to indicate a default submethod
+       that is called in case a specific submethod has not been declared for
+       the current object state.
+
+       For instance:
+
+         sub happy :OnState(happy  ) { say "I am happy" }
+         sub happy :OnState(__any__) { say "I am not happy" }
+
+   Method resolution order
+       What happens when you declare submethods spread among a class
+       inheritance hierarchy?
+
+       Class::StateMachine will search for the method as follows:
+
+       1.  Search in the inheritance tree for a specific submethod declared
+           for the current object state.
+
+       2.  Search in the inheritance tree for a submethod declared for the
+           pseudo state "__any__".
+
+       3.  Search for a regular method defined without the "OnState"
+           attribute.
+
+       4.  Use the AUTOLOAD mechanism.
+
+       mro can be used to set the search order inside the inheritance trees
+       (for instance, the default deep-first or C3).
+
+   State transitions
+       When an object changes between two different states, the methods
+       "leave_state" and "enter_state" are called if they are defined.
+
+       Note that they can be defined using the "OnState" attribute:
+
+         package Dog;
+         ...
+         sub enter_state :OnState(angry) { shift->bark }
+         sub enter_state :OnState(tired) { shift->lie_down }
+
+       The method "on_leave_state" can also be used to register per-object
+       callbacks that are run just before changing the object state.
+
+   API
+       These are the methods available from Class::StateMachine:
+
+       Class::StateMachine::bless($obj, $class, $state)
+       $obj->bless($class)
+           Sets or changes the object class in a manner compatible with
+           Class::StateMachine.
+
+           This function must be used as the way to create new objects of
+           classes derived from Class::StateMachine.
+
+           If the third argument $state is not given, "new" is used as the
+           default.
+
+       $obj->state
+           Gets the object state.
+
+       $obj->state($new_state)
+           Changes the object state.
+
+           This method calls back the methods "check_state", "leave_state" and
+           "enter_state" if they are defined in the class or any of its
+           subclasses for the corresponding state and any callback registered
+           using the "on_leave_state" method.
+
+           Until version 0.21, when $new_state was equal to the current object
+           state, this method would not invoke callback methods
+           ("enter_state", "leave_state", etc.). On version 0.22 this special
+           casing was removed.
+
+           Setting the variable
+           $Class::StateMachine::ignore_same_state_changes to a true value
+           restores the old behavior.
+
+           $self->check_state($new_state)
+               This callback can be used to limit the set of states acceptable
+               for the object. If the method returns a false value the "state"
+               call will die.
+
+               If this method is not defined any state will be valid.
+
+           $self->leave_state($old_state, $new_state)
+               This method is called just before changing the state.
+
+               It the state is changed from its inside to something different
+               than $old_state, the requested state change is canceled.
+
+           $self->enter_state($new_state, $old_state)
+               This method is called just after changing the state to the new
+               value.
+
+           $self->on_leave_state($callback, @args)
+               The given callback is called when the state changes.
+
+               $callback may be a reference to a subroutine or a method name.
+               It is called respectively as follows:
+
+                 $callback->(@args);      # $callback is a CODE reference
+                 $self->$callback(@args); # $callback is a method name
+
+               If the calling the "leave_state" method is also defined, it is
+               called first.
+
+               The method may be called repeatedly from the same state and the
+               callbacks will be executed in FIFO order.
+
+           $self->delay_until_next_state
+           $self->delay_until_next_state($method_name)
+           $self->delay_until_next_state($code_ref)
+               This function allows to save a code reference or a method name
+               that will be called after the next state transition from the
+               "state" method just after "enter_state".
+
+               It is useful when your object receives some message that does
+               not known how to handle in its current state. For instance:
+
+                 sub on_foo :OnState('bar') { shift->delay_until_next_state }
+
+           $self->delay_once_until_next_state
+           $self->delay_once_until_next_state($method_name)
+               This method is similar to "delay_until_next_state" but further
+               requests to delay the same method will be discarded until the
+               object state changes. For instance:
+
+                 sub foo OnState(one) { shift->delay_once_until_next_state }
+                 sub foo OnState(two) { print "hello world\n" }
+
+                 my $obj = $class->new();
+                 $obj->state('one');
+                 $obj->foo; # recorded
+                 $obj->foo; # ignored!
+
+                 $obj->state('two'); # foo is called once here.
+
+               Note that this method does not accept a code reference as
+               argument.
+
+       Class::StateMachine::ref($obj)
+       $obj->ref
+           Returns the class of the object without the parts related to
+           Class::StateMachine magic.
+
+       Class::StateMachine::install_method($class, $method_name, $sub,
+       @states)
+           Sets a submethod for a given class/state combination.
+
+       Class::StateMachine::set_state_isa($class, $state, @isa)
+           Allows to set one state as derived from others.
+
+           Note that support for state derivation is completely experimental
+           and may change at any time!
+
+       Class::StateMachine::state_isa($class, $state)
+           Returns the list of states from which the given $state derives
+           including itself and "__any__".
+
+   Debugging
+       Class::StateMachine supports a debugging mode that prints traces of
+       state changes and callback invocation. It can be enabled as follows:
+
+         $Class::StateMachine::debug = 1;
+
+   Internals
+       This module internally plays with the inheritance chain creating new
+       classes and reblessing objects on the fly and (ab)using the mro
+       mechanism in funny ways.
+
+       The objects state is maintained using Hash::Util::FieldHash objects.
+
+BUGS
+       Backward compatibility has been broken in version 0.13 in order to
+       actualize the class to use modern Perl features as MRO and provide
+       saner semantics.
+
+       Passing several states in the same submethod definition can break the
+       "next::method" machinery from the "mro" package.
+
+       For instance:
+
+         sub foo :OnState(one, two, three) { shift->next::method(@_) }
+
+       may not work as expected.
+
+SEE ALSO
+       attributes, perlsub, perlmod, Attribute::Handlers, mro, MRO::Define.
+
+       The "dog.pl" example included within the package.
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2003-2006, 2011-2014 by Salvador Fandiño
+       (sfandino@yahoo.com).
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2014-05-06            Class::StateMachine(3)

@@ -1,0 +1,296 @@
+Parse::CSV(3)         User Contributed Perl Documentation        Parse::CSV(3)
+
+
+NAME
+       Parse::CSV - Highly flexible CSV parser for large files
+
+VERSION
+       version 2.07
+
+SYNOPSIS
+         # Simple headerless comma-separated column parser
+         my $simple = Parse::CSV->new(
+             file => 'file.csv',
+         );
+
+         while ( my $array_ref = $simple->fetch ) {
+            # Do something...
+         }
+
+       ... or a more complex example...
+
+         # Parse a colon-separated variables file  from a handle as a hash
+         # based on headers from the first line.
+         # Then filter, so we emit objects rather than the plain hash.
+         my $objects = Parse::CSV->new(
+             handle => $io_handle,
+             sep_char   => ';',
+             names      => 1,
+             filter     => sub { My::Object->new( $_ ) },
+         );
+
+         while ( my $object = $objects->fetch ) {
+             $object->do_something;
+         }
+
+DESCRIPTION
+       Surely the CPAN doesn't need yet another CSV parsing module.
+
+       Text::CSV_XS is the standard parser for CSV files. It is fast as hell,
+       but unfortunately it can be a bit verbose to use.
+
+       A number of other modules have attempted to put usability wrappers
+       around this venerable module, but they have all focused on parsing the
+       entire file into memory at once.
+
+       This method is fine unless your CSV files start to get large. Once that
+       happens, the only existing option is to fall back on the relatively
+       slow and heavyweight XML::SAXDriver::CSV module.
+
+       Parse::CSV fills this functionality gap. It provides a flexible and
+       light-weight streaming parser for large, extremely large, or
+       arbitrarily large CSV files.
+
+   Main Features
+       Stream-Based Parser - All parsing a line at a time.
+
+       Array Mode - Parsing can be done in simple array mode, returning a
+       reference to an array if the columns are not named.
+
+       Hash Mode - Parsing can be done in hash mode, putting the data into a
+       hash and returning a reference to it.
+
+       Filter Capability - All items returned can be passed through a custom
+       filter. This filter can either modify the data on the fly, or drop
+       records you don't need.
+
+   Writing Filters
+       A Parse::CSV filter is a subroutine reference that is passed the
+       original record as $_ (not as a function argument), and should "return"
+       the alternative or modified record.
+
+       A no-op filter (does not modify or drop any records) would look like
+       the following.
+
+         sub { $_ }
+
+       A filter that reversed the order of the columns (assuming the parser is
+       in array mode) might look like the following.
+
+         sub { [ reverse @$_ ] }
+
+       To drop the record, return "undef" from the filter. The parser will
+       then keep pulling and parsing new records until one passes the filter.
+
+         # Only keep records where the 'foo' field is true
+         sub { $_->{foo} ? $_ : undef }
+
+       To signal an error, throw an exception
+
+         sub {
+             $_->{foo} =~ /bar/ or die "Assumption failed";
+             return $_;
+         }
+
+       Feel free to modify $_ as a side-effect of your filter routine - this
+       will have no effect on anything.
+
+METHODS
+   new
+       The "new" constructor creates and initialises a new CSV parser.  It
+       returns a new Parse::CSV object, or throws an exception (dies) on
+       error.  It accepts a number of params:
+
+       "file"
+       "handle"
+           To specify the CSV data source, provide either the "file" param,
+           which should be the name of the file to read, or the "handle"
+           param, which should be a file handle to read instead.
+
+       "csv_attr"
+           Any parameter for Text::CSV_XS's constructor can also be provided
+           to this "new" method, and they will be passed on to it.
+           Alternatively, they can be passed as a single "HASH" reference as
+           the "csv_attr" param. For example:
+
+             $parser = Parse::CSV->new(
+                 file     => 'file.csv',
+                 csv_attr => {
+                     sep_char   => ';',
+                     quote_char => "'",
+                 },
+             );
+
+       "names"
+           An optional "names" param can be provided, which should either be
+           an array reference containing the names of the columns:
+
+             $parser = Parse::CSV->new(
+                 file  => 'file.csv',
+                 names => [ 'col1', 'col2', 'col3' ],
+             );
+
+           or a true value that's not a reference, indicating that the column
+           names will be read from the first line of the input:
+
+             $parser = Parse::CSV->new(
+                 file  => 'file.csv',
+                 names => 1,
+             );
+
+           If the "names" param is provided, the parser will map each line to
+           a hash where the keys are the field names provided, and the values
+           are the values found in the CSV file.
+
+           If the "names" param is not provided, the parser will return simple
+           array references of the columns, treating them just like all the
+           other rows in the file.
+
+           If your CSV file has (or might have) a <Byte-Order
+           Mark|https://en.wikipedia.org/wiki/Byte_order_mark>, you must use
+           the "names" functionality, because this lets us call the "header"
+           method of "Text::CSV_XS", which is the only place the BOM is
+           handled in that module.
+
+       "filter"
+           The optional "filter" param will be used to filter the records if
+           provided. It should be a "CODE" reference or any otherwise callable
+           scalar, and each value parsed (either array reference or hash
+           reference) will be available to the filter as $_ to be changed or
+           converted into an object, or whatever you wish.  See the "Writing
+           Filters" section for more details.
+
+   fetch
+       Once a Parse::CSV object has been created, the "fetch" method is used
+       to parse and return the next value from the CSV file.
+
+       Returns an "ARRAY", "HASH" or the output of the filter, based on the
+       configuration of the object, or "undef" in a variety of situations.
+
+       Returning "undef" means either some part of the parsing and filtering
+       process has resulted in an error, or that the end of file has been
+       reached.
+
+       On receiving "undef", you should check the "errstr" method. If it is an
+       empty string you have reached the end of file. Otherwise the error
+       message will be returned. Thus, the basic usage of Parse::CSV will look
+       like the following.
+
+         my $parser = Parse::CSV->new(
+             file => 'file.csv',
+             );
+         while ( my $value = $parser->fetch ) {
+             # Do something...
+         }
+         if ( $parser->errstr ) {
+             # Handle errors...
+         }
+
+       NOTE: currently the "fields" and "string" methods can be used to access
+       the most recently-read row (as an array ref or a formatted string)
+       after using "/fetch".  However, this contradicts the documentation for
+       Text::CSV_XS, which says those methods should be "meaningless" after
+       calling "getline" (which fetch() internally uses to read the input).
+       Keeping the current behavior also incurs a speed & memory penalty.
+       Therefore, relying on "fields" and "string" to return the current data
+       after fetch() is deprecated and will (probably) be removed in a future
+       release.
+
+   getline
+       Returns the next line of the input as an array reference, without
+       performing possible conversion to a hash, and without running any
+       filters.  This is the routine that fetch() uses internally to read its
+       input.  It may be useful if you sometimes want to do filtering and
+       sometimes don't, or sometimes want to do hash conversion and sometimes
+       don't, or maybe you don't need either of those things and you just want
+       to shave all the milliseconds off that you can (but then you might be
+       better off just using "Text::CSV" directly).
+
+   row
+       The "row" method returns the line number of the most-recently-read row
+       of the CSV file.
+
+       This is a one-based count, so when you first create the parser, the
+       value of "row" will be zero (unless you are using "names" on automatic
+       in which case it will be 1).
+
+   combine
+         $status = $csv->combine(@columns);
+
+       The "combine" method is provided as a convenience, and is passed
+       through to the underlying Text::CSV_XS object.
+
+   string
+         $line = $csv->string;
+
+       The "string" method is provided as a convenience, and is passed through
+       to the underlying Text::CSV_XS object.
+
+       NOTE: relying on "string" to return the current data after fetch() is
+       deprecated and will (probably) be removed in a future release.  Only
+       rely on its value after combine().  See similar warnings in "fetch" and
+       "fields".
+
+   print
+         $status = $csv->print($io, $columns);
+
+       The "print" method is provided as a convenience, and is passed through
+       to the underlying Text::CSV_XS object.
+
+   fields
+         @fields = $csv->fields;
+
+       The "fields" method is provided as a convenience, and is passed through
+       to the underlying Text::CSV_XS object. It shows the actual row as an
+       array.
+
+       NOTE: relying on fields to return the current data after fetch() is
+       deprecated and will (probably) be removed in a future release.  Only
+       rely on its value after combine().  See similar warnings in "fetch" and
+       "string".
+
+   names
+         # Get the current column names in use
+         my @names = $csv->names;
+
+         # Change the column names on the fly mid stream
+         $csv->names( 'fn1', 'fn2' );
+
+       The "names" method gets or sets the column name mapping for the parser.
+
+       If the parser has no names or fields, returns the null list.
+
+   errstr
+       On error, the "errstr" method returns the error that occured.
+
+       If the last action was NOT an error, returns the null string ''.
+
+SUPPORT
+       Bugs should always be reported via the CPAN bug tracker at
+
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Parse-CSV>
+
+       For other issues, or commercial enhancement or support, contact the
+       author.
+
+AUTHORS
+       Adam Kennedy <adamk@cpan.org>
+
+CONTRIBUTORS
+       Uwe Sarnowski <uwes@cpan.org>
+
+       Ken Williams <kwilliams@cpan.org>
+
+SEE ALSO
+       Text::CSV_XS, <http://ali.as/>
+
+COPYRIGHT
+       Copyright 2006 - 2012 Adam Kennedy.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+       The full text of the license can be found in the LICENSE file included
+       with this module.
+
+perl v5.40.2                      2020-11-16                     Parse::CSV(3)

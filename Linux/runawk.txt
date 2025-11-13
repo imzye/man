@@ -1,0 +1,337 @@
+runawk(1)                                                                                                                                                                                         runawk(1)
+
+NAME
+       runawk - wrapper for AWK interpreter
+
+SYNOPSIS
+       runawk [options] program_file
+
+       runawk -e program
+
+MOTIVATION
+       After years of using AWK for programming I've found that despite of its simplicity and limitations AWK is good enough for scripting a wide range of different tasks. AWK is not as poweful as their
+       bigger counterparts like Perl, Ruby, TCL and others but it has their own advantages like compactness, simplicity and availability on almost all UNIX-like systems. I personally also like its data-
+       driven nature and token orientation, very useful techniques for text processing utilities.
+
+       Unfortunately awk interpreters lacks some important features and sometimes do not work as good as they could do.
+
+       Problems I see (some of them, of course)
+
+       1.
+         AWK  lacks  support  for modules. Even if I create small programs, I often want to use functions created earlier and already used in other scripts. That is, it whould great to organise functions
+         into so called libraries (modules).
+
+       2.
+         In order to pass arguments to "#!/usr/bin/awk -f" script (not to awk interpreter), it is necessary to prepend a list of arguments with -- (two minus signes). In my view, this looks badly.   Also
+         such behaviour violates POSIX/SUS "Utility Syntax Guidelines".
+
+         Example:
+
+         awk_program:
+
+             #!/usr/bin/awk -f
+
+             BEGIN {
+                for (i=1; i < ARGC; ++i){
+                   printf "ARGV [%d]=%s\n", i, ARGV [i]
+                }
+             }
+
+         Shell session:
+
+             % awk_program --opt1 --opt2
+             /usr/bin/awk: unknown option --opt1 ignored
+
+             /usr/bin/awk: unknown option --opt2 ignored
+
+             % awk_program -- --opt1 --opt2
+             ARGV [1]=--opt1
+             ARGV [2]=--opt2
+             %
+
+         In my opinion awk_program script should work like this
+
+             % awk_program --opt1 --opt2
+             ARGV [1]=--opt1
+             ARGV [2]=--opt2
+             %
+
+       3.
+         When "#!/usr/bin/awk -f" script handles arguments (options) and wants to read from stdin, it is necessary to add /dev/stdin (or `-') as a last argument explicitly.
+
+         Example:
+
+         awk_program:
+
+             #!/usr/bin/awk -f
+
+             BEGIN {
+                if (ARGV [1] == "--flag"){
+                   flag = 1
+                   ARGV [1] = "" # to not read file named "--flag"
+                }
+             }
+
+             {
+                print "flag=" flag " $0=" $0
+             }
+
+         Shell session:
+
+             % echo test | awk_program -- --flag
+             % echo test | awk_program -- --flag /dev/stdin
+             flag=1 $0=test
+             %
+
+         Ideally awk_program should work like this
+
+             % echo test | awk_program --flag
+             flag=1 $0=test
+             %
+
+       4.
+         igawk(1) which is shipped with GNU awk can not be used in shebang.  On most (all?) UNIXes scripts beginning with
+
+             #!/usr/local/bin/igawk -f
+
+         will not work.
+
+       runawk was created to solve all these problems
+
+OPTIONS
+       -d    Turn on a debugging mode.
+
+       -e program
+             Specify program. If -e is not specified, the AWK code is read from program_file.
+
+       -f awk_module
+             Activate awk_module. This works the same way as
+
+                 #use "awk_module.awk"
+
+             directive in the code. Multiple -f options are allowed.
+
+       -F fs Set the input field separator FS to the regular expression fs.
+
+       -h    Display help information.
+
+       -t    If  this option is applied, a temporary directory is created by runawk and path to it is passed to awk child process. Temporary directory is created under ${RUNAWK_TMPDIR} (if it is set), or
+             ${TMPDIR} (if it is set) or /tmp directory otherwise.  If #use "tmpfile.awk" is detected in a program this option is activated automatically.
+
+       -T    Set FS to TAB character. This is equivalent to -F'\t'
+
+       -V    Display version information.
+
+       -v var=val
+             Assign the value val to the variable var before execution of the program begins.
+
+DETAILS/INTERNALS
+   Standalone script
+       Under UNIX-like OS-es you can use runawk by beginning your script with
+
+          #!/usr/local/bin/runawk
+
+       line or something like this instead of
+
+          #!/usr/bin/awk -f
+
+       or similar.
+
+   AWK modules
+       In order to activate modules you should add them into awk script like this
+
+         #use "module1.awk"
+         #use "module2.awk"
+
+       that is the line that specifies module name is treated as a comment line by normal AWK interpreter but is processed by runawk especially.
+
+       Unless you run runawk with option -e, #use must begin with column 0, that is no spaces or tabs symbols are allowed before it and no symbols are allowed between # and use.
+
+       Also note that AWK modules can also "use" another modules and so forth.  All them are collected in a depth-first order and each one is added to the list of awk interpreter arguments prepanded with
+       -f option.  That is #use directive is *NOT* similar to #include in C programming language, runawk's module code is not inserted into the place of #use.  Runawk's modules are closer to Perl's "use"
+       command.  In case some module is mentioned more than once, only one -f will be added for it, i.e duplications are removed automatically.
+
+       Position of #use directive in a source file does matter, i.e.  the earlier module is mentioned, the earlier -f will be generated for it.
+
+       Example:
+
+         file prog:
+            #!/usr/local/bin/runawk
+
+            #use "A.awk"
+            #use "B.awk"
+            #use "E.awk"
+
+            PROG code
+            ...
+
+         file B.awk:
+            #use "A.awk"
+            #use "C.awk"
+            B code
+            ...
+
+         file C.awk:
+            #use "A.awk"
+            #use "D.awk"
+
+            C code
+            ...
+
+         A.awk and D.awk don't contain #use directive
+
+       If you run
+
+         runawk prog file1 file2
+
+       or
+
+         /path/to/prog file1 file2
+
+       the following command
+
+         awk -f A.awk -f D.awk -f C.awk -f B.awk -f E.awk -f prog -- file1 file2
+
+       will actually run.
+
+       You can check this by running
+
+         runawk -d prog file1 file2
+
+   Module search strategy
+       Modules are first searched in a directory where main program (or module in which #use directive is specified) is placed.  If it is not found there, then AWKPATH environment  variable  is  checked.
+       AWKPATH keeps a colon separated list of search directories.  Finally, module is searched in system runawk modules directory, by default PREFIX/share/runawk but this can be changed at compile time.
+
+       An absolute path to the module can also be specified.
+
+   Program as an argument
+       Like some other interpreters runawk can obtain the script from a command line like this
+
+        /path/to/runawk -e '
+        #use "alt_assert.awk"
+
+        {
+          assert($1 >= 0 && $1 <= 10, "Bad value: " $1)
+
+          # your code below
+          ...
+        }'
+
+       runawk can also be used for writing oneliners
+
+        runawk -f abs.awk -e 'BEGIN {print abs(-1)}'
+
+   Selecting a preferred AWK interpreter
+       For  some  reason  you may prefer one AWK interpreter or another.  The reason may be efficiency for a particular task, useful but not standard extensions or enything else.  To tell runawk what AWK
+       interpreter to use, one can use #interp directive
+
+         file prog:
+            #!/usr/local/bin/runawk
+
+            #use "A.awk"
+            #use "B.awk"
+
+            #interp "/usr/pkg/bin/nbawk"
+
+            # your code here
+            ...
+
+       Note that #interp directive should also begin with column 0, no spaces are allowed before it and between # and interp.
+
+       Sometimes it also makes sense to give users ability to select their preferred AWK interpreter without changing the source code. In runawk it is possible using special directive  #interp-var  which
+       sets an environment variable name assignable by user that specifies an AWK interpreter.  For example, the following script
+
+         file foobar:
+            #!/usr/bin/env runawk
+
+            #interp-var "FOOBAR_AWK"
+
+            BEGIN {
+               print "This is a FooBar application"
+            }
+
+       can be run as
+
+            env FOOBAR_AWK=mawk foobar
+
+       or just
+
+            foobar
+
+       In the former case mawk will be used as AWK interpreter, in the latter -- the default AWK interpreter.
+
+   Using existing modules only
+       In  UNIX  world  it  is  common practise to write configuration files in a programming language of the application. That is, if application is written in Bourne shell, configuration files for such
+       application are often written in Bourne as well. Using RunAWK one can do the same for applications written in AWK. For example, the following code will use ~/.foobarrc file if it exists  otherwise
+       /etc/foobar.conf will be used if it exists.
+
+         file foobar:
+           #!/usr/bin/env runawk
+
+           #safe-use "~/.foobarrc" "/etc/foobar.conf"
+
+           BEGIN {
+             print foo, bar, baz
+           }
+
+         file ~/.foobarrc:
+           BEGIN {
+             foo = "foo10"
+             bar = "bar20"
+             baz = 123
+           }
+
+       Of  course,  #safe-use  directive  may be used for other purposes as well.  #safe-use directive accepts as much modules as you want, but at most one can be included using awk option -f, others are
+       silently ignored, also note that modules are analysed from left to right. Leading tilde in the module name is replaced with user's home directory.  Another example:
+
+         file foobar:
+           #!/usr/bin/env runawk
+
+           #use "/usr/share/foobar/default.conf"
+           #safe-use "~/.foobarrc" "/etc/foobar.conf"
+
+           your code is here
+
+       Here the default settings are set in /usr/share/foobar/default.conf, and configuration files (if any) are used for overriding them.
+
+   Setting environment
+       In some cases you may want to run AWK interpreter with a specific environment. For example, your script may be oriented to process ASCII text only. In this case you can  run  AWK  with  LC_CTYPE=C
+       environment and use regexp ranges.
+
+       runawk provides #env directive for this. String inside double quotes is passed to putenv(3) libc function.
+
+       Example:
+
+         file prog:
+            #!/usr/local/bin/runawk
+
+            #env "LC_ALL=C"
+
+            $1 ~ /^[A-Z]+$/ { # A-Z is valid if LC_CTYPE=C
+                print $1
+            }
+
+EXIT STATUS
+       If AWK interpreter exits normally, runawk exits with its exit status. If AWK interpreter was killed by signal, runawk exits with exit status 128+signal.
+
+ENVIRONMENT
+       AWKPATH
+             Colon separated list of directories where awk modules are searched.
+
+       RUNAWK_AWKPROG
+             Sets the path to the AWK interpreter, used by default, i.e. this variable overrides the compile-time default.  Note that #interp directive overrides this.
+
+       RUNAWK_KEEPTMP
+             If set, temporary files are not deleted.
+
+AUTHOR
+       Copyright (c) 2007-2014 Aleksey Cheusov <vle@gmx.net>
+
+BUGS/FEEDBACK
+       Please send any comments, questions, bug reports etc. to me by e-mail or register them at sourceforge project home.  Feature requests are also welcomed.
+
+HOME
+       <http://sourceforge.net/projects/runawk/>
+
+SEE ALSO awk(1)
+                                                                                                 2025-07-19                                                                                       runawk(1)

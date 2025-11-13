@@ -1,0 +1,348 @@
+DBIx::OO::Tree(3pm)                                                                 User Contributed Perl Documentation                                                                 DBIx::OO::Tree(3pm)
+
+NAME
+       DBIx::OO::Tree -- manipulate hierarchical data using the "nested sets" model
+
+SYNOPSYS
+           CREATE TABLE Categories (
+               id INTEGER UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+               label VARCHAR(255),
+
+               -- these columns are required by DBIx::OO::Tree
+               parent INTEGER UNSIGNED,
+               lft INTEGER UNSIGNED NOT NULL,
+               rgt INTEGER UNSIGNED NOT NULL,
+               mvg TINYINT DEFAULT 0,
+
+               INDEX(lft),
+               INDEX(rgt),
+               INDEX(mvg),
+               INDEX(parent)
+           );
+
+                                      *  *  *
+
+           package Category;
+           use base 'DBIx::OO';
+           use DBIx::OO::Tree;
+
+           __PACKAGE__->table('Categories');
+           __PACKAGE__->columns(P => [ 'id' ],
+                                E => [ 'label', 'parent' ]);
+
+           # note it's not necessary to declare lft, rgt, mvg or parent.  We
+           # declare parent simply because it might be useful, but
+           # DBIx::OO:Tree works with low-level SQL therefore it doesn't
+           # require that the DBIx::OO object has these fields.
+
+           # the code below creates the structure presented in [1]
+
+           my $electronics = Category->tree_append({ label => 'electronics' });
+           my $tvs = $electronics->tree_append({ label => 'televisions' });
+           my $tube = $tvs->tree_append({ label => 'tube' });
+           my $plasma = $tvs->tree_append({ label => 'plasma' });
+           my $lcd = $plasma->tree_insert_before({ label => 'lcd' });
+           my $portable = $tvs->tree_insert_after({ label => 'portable electronics' });
+           my $mp3 = $portable->tree_append({ label => 'mp3 players' });
+           my $flash = $mp3->tree_append({ label => 'flash' });
+           my $cds = $portable->tree_append({ label => 'cd players' });
+           my $radios = Category->tree_append($portable->id,
+                                              { label => '2 way radios' });
+
+           # fetch and display a subtree
+
+           my $data = $electronics->tree_get_subtree({
+               fields => [qw( label lft rgt parent )]
+           });
+           my $levels = Category->tree_compute_levels($data);
+
+           foreach my $i (@$data) {
+               print '  ' x $levels->{$i->{id}}, $i->{label}, "\n";
+           }
+
+           ## or, create DBIx::OO objects from returned data:
+
+           my $array = Category->init_from_data($data);
+           print join("\n", (map { '  ' x $levels->{$_->id} . $_->label } @$array));
+
+           # display path info
+
+           my $data = $flash->tree_get_path;
+           print join("\n", (map { $_->{label} } @$data));
+
+           # move nodes around
+
+           $mp3->tree_reparent($lcd->id);
+           $tvs->tree_reparent($portable->id);
+           $cds->tree_reparent(undef);
+
+           $plasma->tree_move_before($tube->id);
+           $portable->tree_move_before($electronics->id);
+
+           # delete nodes
+
+           $lcd->tree_delete;
+
+OVERVIEW
+       This module is a complement to DBIx::OO to facilitate storing trees in database using the "nested sets model", presented in [1].  Its main ambition is to be extremely fast at retrieving data
+       (sacrificing for this the performance of UPDATE-s, INSERT-s or DELETE-s).  Currently this module requires you to have these columns in the table:
+
+        - id: primary key (integer)
+        - parent: integer, references the parent node (NULL for root nodes)
+        - lft, rgt: store the node position
+        - mvg: used only when moving nodes
+
+       "parent" and "mvg" are not esentially required by the nested sets model as presented in [1], but they are necessary for this module to work.  In particular, "mvg" is only required by functions
+       that move nodes, such as tree_reparent().  If you don't want to move nodes around you can omit "mvg".
+
+       Retrieval functions should be very fast (one SQL executed).  To further promote speed, they don't return DBIx::OO blessed objects, but an array of hashes instead.  It's easy to create DBIx::OO
+       objects from these, if required, by calling DBIx::OO->init_from_data() (see DBIx::OO for more information).
+
+       Insert/delete/move functions, however, need to ensure the tree integrity.  Here's what happens currently:
+
+        - tree_append, tree_insert_before, tree_insert_after -- these execute
+          one SELECT and two UPDATE-s (that potentially could affect a lot of
+          rows).
+
+        - tree_delete: execute one SELECT, one DELETE and two UPDATE-s.
+
+        - tree_reparent -- executes 2 SELECT-s and 7 UPDATE-s.  I know, this
+          sounds horrible--if you have better ideas I'd love to hear them.
+
+       Note: this module could well work with Class::DBI, although it is untested.  You just need to provide the get_dbh() method to your packages, comply to this module's table requirements (i.e.
+       provide the right columns) and it should work just fine.  Any success/failure stories are welcome.
+
+DATABASE INTEGRITY
+       Since the functions that update the database need to run multiple queries in order to maintain integrity, they should normally do this inside a transaction.  However, it looks like MySQL does not
+       support nested transactions, therefore if I call transaction_start / transaction_commit inside these functions they will mess with an eventual transaction that might have been started by the
+       calling code.
+
+       In short: you should make sure the updates happen in a transaction, but we can't enforce this in our module.
+
+API
+   tree_append($parent_id, \%values)
+       Appends a new node in the subtree of the specified parent.  If $parent_id is undef, it will add a root node.  When you want to add a root node you can as well omit specifying the $parent_id (our
+       code will realize that the first argument is a reference).
+
+       $values is a hash as required by DBIx::OO::create().
+
+       Examples:
+
+           $node = Category->tree_append({ label => 'electronics' });
+           $node = Category->tree_append(undef, { label => 'electronics' });
+
+           $lcd = Category->tree_append($tvs->id, { label => 'lcd' });
+           $lcd->tree_append({ label => 'monitors' });
+
+       As you can see, you can call it both as a package method or as an object method.  When you call it as a package method, it will look at the type of the first argument.  If it's a reference, it
+       will guess that you want to add a root node.  Otherwise it will add the new node under the specified parent.
+
+       Beware of mistakes!  Do NOT call it like this:
+
+           $tvs = Category->search({ label => 'televisions' })->[0];
+           Category->tree_append($tvs, { label => 'lcd' });
+
+       If you specify a parent, it MUST be its ID, not an object!
+
+   tree_insert_before, tree_insert_after  ($anchor, \%values)
+       Similar in function to tree_append, but these functions allow you to insert a node before or after a specified node ($anchor).
+
+       Examples:
+
+           $lcd->tree_insert_after({ label => 'plasma' });
+           $lcd->tree_insert_before({ label => 'tube' });
+
+           # Or, as a package method:
+
+           Category->tree_insert_after($lcd->id, { label => 'plasma' });
+           Category->tree_insert_before($lcd->id, { label => 'tube' });
+
+       Note that specifying the parent is not required, because it's clearly that the new node should have the same parent as the anchor node.
+
+   tree_reparent($source_id, $dest_id)
+       This function will remove the $source node from its current parent and append it to the $dest node.  As with the other functions, you can call it both as a package method or as an object method.
+       When you call it as an object method, it's not necessary to specify $source.
+
+       You can specify undef for $dest_id, in which case $source will become a root node (as if it would be appended with tree_append(undef)).
+
+       No nodes are DELETE-ed nor INSERT-ed by this function.  It simply moves existing nodes, which means that any node ID-s that you happen to have should remain valid and point to the same nodes.
+       However, the tree structure is changed, so if you maintain the tree in memory you have to update it after calling this funciton.  Same applies to tree_move_before() and tree_move_after().
+
+       Examples:
+
+           # the following are equivalent
+
+           Category->tree_reparent($lcd->id, $plasma->id);
+           $lcd->tree_reparent($plasma->id);
+
+       This function does a lot of work in order to maintain the tree integrity, therefore it might be slow.
+
+       NOTE: it doesn't do any safety checks to make sure moving the node is allowed.  For instance, you can't move a node to one of its child nodes.
+
+   tree_move_before, tree_move_after  ($source_id, $anchor_id)
+       These functions are similar to a reparent operation, but they allow one to specify where to put the $source node, in the subtree of $anchor's parent.  See tree_reparent().
+
+       Examples:
+
+           $portable->tree_move_before($electronics->id);
+           Category->tree_move_after($lcd->id, $flash->id);
+
+   tree_delete($node_id)
+       Removes a node (and its full subtree) from the database.
+
+       Equivalent examples:
+
+           Category->tree_delete($lcd->id);
+           $lcd->tree_delete;
+
+   tree_get_subtree(\%args)
+       Retrieves the full subtree of a specified node.  $args is a hashref that can contain:
+
+        - parent : the ID of the node whose subtree we want to get
+        - where  : an WHERE clause in SQL::Abstract format
+        - limit  : allows you to limit the results (using SQL LIMIT)
+        - offset : SQL OFFSET
+        - fields : (arrayref) allows you to specify a list of fields you're
+                   interested in
+
+       This can be called as a package method, or as an object method.
+
+       Examples first:
+
+           $all_nodes = Category->tree_get_subtree;
+
+           $nodes = Category->tree_get_subtree({ parent => $portable->id });
+           ## OR
+           $nodes = $portable->tree_get_subtree;
+
+           # Filtering:
+           $nodes = Category->tree_get_subtree({ where => { label => { -like => '%a%' }}});
+
+           # Specify fields:
+           $nodes = Category->tree_get_subtree({ fields => [ 'label' ] });
+
+       This function returns an array of hashes that contain the fields you required.  If you specify no fields, 'id' and 'parent' will be SELECT-ed by default.  Even if you do specify an array of field
+       names, 'id' and 'parent' would still be included in the SELECT (so you don't want to specify them).
+
+       Using this array you can easily create DBIx::OO objects (or in our sample, Category objects):
+
+           $arrayref = Category->init_from_data($nodes);
+
+       OK, let's get to a more real-world example.  Suppose we have a forum and we need to list all messages in a thread ($thread_id).  Here's what we're going to do:
+
+           $data = ForumMessage->tree_get_subtree({
+               parent => $thread_id,
+               fields => [qw( subject body author date )],
+           });
+
+           # the above runs one SQL query
+
+           $objects = ForumMessage->init_from_data($data);
+
+           # the above simply initializes ForumMessage objects from the
+           # returned data, B<without> calling the database (since we have
+           # the primary key automatically selected by tree_get_subtree, and
+           # also have cared to select the fields we're going to use).
+
+           # compute the level of each message, to indent them easily
+
+           $levels = ForumMessage->tree_compute_levels($data);
+
+           # and now display them
+
+           foreach my $msg (@$objects) {
+               my $class = 'level' . $levels{$msg->id};
+               print "<div class='$class'>", $msg->subject, "<br><br>",
+                     $msg->body, "<br><br>By: ", $msg->author, "</div>";
+           }
+
+           # and indentation is now a matter of CSS. ;-) (define level0,
+           # level1, level2, etc.)
+
+       All this can be done with a single SQL query.  Of course, note that we didn't even need to initialize the $objects array--that's mainly useful when you want to update the database.
+
+   tree_get_path(\%args)
+       Retrieves the path of a given node.  $args is an hashref that can contain:
+
+        - id     : the ID of the node whose path you're interested in
+        - fields : array of field names to be SELECT-ed (same like
+          tree_get_subtree)
+
+       This returns data in the same format as tree_get_subtree().
+
+   tree_get_next_sibling, tree_get_prev_sibling
+       XXX: this info may be inaccurate
+
+       Return the next/previous item in the tree view.  $args has the same significance as in "tree_get_path".  $args->{id} defines the reference node; if missing, it's assumed to be $self.
+
+   tree_get_next, tree_get_prev
+       XXX: this info may be inaccurate
+
+       Similar to "tree_get_next_sibling" / "tree_get_prev_sibling" but allow $args->{where} to contain a WHERE clause (in SQL::Abstract format) and returns the next/prev item that matches the criteria.
+
+   tree_compute_levels($data)
+       This is an utility function that computes the level of each node in $data (where $data is an array reference as returned by tree_get_subtree or tree_get_path).
+
+       This is generic, and it's simply for convenience--in particular cases you might find it faster to compute the levels yourself.
+
+       It returns an hashref that maps node ID to its level.
+
+       In [1] we can see there is a method to compute the subtree depth directly in SQL, I will paste the relevant code here:
+
+         SELECT node.name, (COUNT(parent.name) - (sub_tree.depth + 1)) AS depth
+         FROM nested_category AS node,
+               nested_category AS parent,
+               nested_category AS sub_parent,
+               (
+                       SELECT node.name, (COUNT(parent.name) - 1) AS depth
+                       FROM nested_category AS node,
+                       nested_category AS parent
+                       WHERE node.lft BETWEEN parent.lft AND parent.rgt
+                       AND node.name = 'PORTABLE ELECTRONICS'
+                       GROUP BY node.name
+                       ORDER BY node.lft
+               )AS sub_tree
+         WHERE node.lft BETWEEN parent.lft AND parent.rgt
+               AND node.lft BETWEEN sub_parent.lft AND sub_parent.rgt
+               AND sub_parent.name = sub_tree.name
+         GROUP BY node.name
+         ORDER BY node.lft;
+
+       I find it horrible.
+
+TODO
+        - Allow custom names for the required fields (lft, rgt, mvg, id,
+          parent).
+
+        - Allow custom types for the primary key (currently they MUST be
+          integers).
+
+REFERENCES
+        [1] MySQL AB: Managing Hierarchical Data in MySQL, by Mike Hillyer
+            http://dev.mysql.com/tech-resources/articles/hierarchical-data.html
+
+SEE ALSO
+       DBIx::OO
+
+AUTHOR
+       Mihai Bazon, <mihai.bazon@gmail.com>
+           http://www.dynarch.com/
+           http://www.bazon.net/mishoo/
+
+COPYRIGHT
+       Copyright (c) Mihai Bazon 2006.  All rights reserved.
+
+       This module is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+DISCLAIMER OF WARRANTY
+       BECAUSE THIS SOFTWARE IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY FOR THE SOFTWARE, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS
+       AND/OR OTHER PARTIES PROVIDE THE SOFTWARE "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+       FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING,
+       REPAIR, OR CORRECTION.
+
+       IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR REDISTRIBUTE THE SOFTWARE AS PERMITTED BY THE ABOVE
+       LICENCE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE SOFTWARE (INCLUDING BUT NOT LIMITED TO
+       LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE SOFTWARE TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF SUCH HOLDER OR OTHER PARTY HAS
+       BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+perl v5.34.0                                                                                     2022-06-13                                                                             DBIx::OO::Tree(3pm)

@@ -1,0 +1,1702 @@
+PYTHON-FEDORA(1)                                                                               python-fedora                                                                               PYTHON-FEDORA(1)
+
+NAME
+       python-fedora - python-fedora 1.1.1
+
+       The  python-fedora module makes it easier for programmers to create both Fedora Services and clients that talk to the services.  It's licensed under the GNU Lesser General Public License version 2
+       or later.
+
+FEDORA CLIENT
+       Authors
+              Toshio Kuratomi Luke Macken
+
+       Date   28 May 2008
+
+       For Version
+              0.3.x
+
+       The client module allows you to easily code an application that talks to a Fedora Service.  It handles the details of decoding the data sent from the Service  into  a  python  data  structure  and
+       raises an Exception if an error is encountered.
+
+   BaseClient
+       The BaseClient class is the basis of all your interactions with the server.  It is flexible enough to be used as is for talking with a service but is really meant to be subclassed and have methods
+       written  for  it  that  do  the  things  you  specifically  need  to interact with the Fedora Service you care about.  Authors of a Fedora Service are encouraged to provide their own subclasses of
+       BaseClient that make it easier for other people to use a particular Service out of the box.
+
+   Using Standalone
+       If you don't want to subclass, you can use BaseClient as a utility class to talk to any Fedora Service.  There's three steps to this.  First you import the BaseClient and Exceptions from  the  fe‐
+       dora.client  module.   Then you create a new BaseClient with the URL that points to the root of the Fedora Service you're interacting with.  Finally, you retrieve data from a method on the server.
+       Here's some code that illustrates the process:
+
+          from fedora.client import BaseClient, AppError, ServerError
+
+          client = BaseClient('https://admin.fedoraproject.org/pkgdb')
+          try:
+              collectionData = client.send_request('/collections', auth=False)
+          except ServerError as e:
+              print('%s' % e)
+          except AppError as e:
+              print('%s: %s' % (e.name, e.message))
+
+          for collection in collectionData['collections']:
+              print('%s %s' % (collection['name'], collection['version'])
+
+   BaseClient Constructor
+       In our example we only provide BaseClient() with the URL fragment it uses as the base of all requests.  There are several more optional parameters that can be helpful.
+
+       If you need to make an authenticated request you can specify the username and password to use when you construct your BaseClient using the username and password keyword arguments.  If you  do  not
+       use  these,  authenticated requests will try to connect via a cookie that was saved from previous runs of BaseClient.  If that fails as well, BaseClient will throw an Exception which you can catch
+       in order to prompt for a new username and password:
+
+          from fedora.client import BaseClient, AuthError
+          import getpass
+          MAX_RETRIES = 5
+          client = BaseClient('https://admin.fedoraproject.org/pkgdb',
+                  username='foo', password='bar')
+          # Note this is simplistic.  It only prompts once for another password.
+          # Your application may want to loop through this several times.
+          while (count < MAX_RETRIES):
+              try:
+                  collectionData = client.send_request('/collections', auth=True)
+              except AuthError as e:
+                  client.password = getpass.getpass('Retype password for %s: ' % username)
+              else:
+                  # data retrieved or we had an error unrelated to username/password
+                  break
+              count = count + 1
+
+       WARNING:
+          Note that although you can set the username and password as shown above you do have to be careful in cases where your application is multithreaded or simply processes requests for more than one
+          user with the same BaseClient.  In those cases, you can accidentally overwrite the username and password between two requests.  To avoid this, make sure you instantiate  a  separate  BaseClient
+          for every thread of control or for every request you handle or use ProxyClient instead.
+
+       The useragent parameter is useful for identifying in log files that your script is calling the server rather than another.  The default value is Fedora BaseClient/VERSION where VERSION is the ver‐
+       sion of the BaseClient module.  If you want to override this just give another string to this:
+
+          client = BaseClient('https://admin.fedoraproject.org/pkgdb',
+                  useragent='Package Database Client/1.0')
+
+       The debug parameter turns on a little extra output when running the program.  Set it to true if you're having trouble and want to figure out what is happening inside of the BaseClient code.
+
+   send_request()
+       send_request() is what does the heavy lifting of making a request of the server, receiving the reply, and turning that into a python dictionary.  The usage is pretty straightforward.
+
+       The  first argument to send_request() is method. It contains the name of the method on the server.  It also has any of the positional parameters that the method expects (extra path information in‐
+       terpreted by the server for those building non-TurboGears applications).
+
+       The auth keyword argument is a boolean.  If True, the session cookie for the user is sent to the server.  If this fails, the username and password are sent.  If that fails, an Exception is  raised
+       that you can handle in your code.
+
+       req_params  contains  a  dictionary of additional keyword arguments for the server method.  These would be the names and values returned via a form if it was a CGI.  Note that parameters passed as
+       extra path information should be added to the method argument instead.
+
+       An example:
+
+          import BaseClient
+          client = BaseClient('https://admin.fedoraproject.org/pkgdb/')
+          client.send_request('/package/name/python-fedora', auth=False,
+                  req_params={'collectionVersion': '9', 'collectionName': 'Fedora'})
+
+       In this particular example, knowing how the server works, /packages/name/ defines the method that the server is going to invoke.  python-fedora is a positional parameter for the name of the  pack‐
+       age we're looking up.  auth=False means that we'll try to look at this method without having to authenticate.  The req_params sends two additional keyword arguments: collectionName which specifies
+       whether  to filter on a single distro or include Fedora, Fedora EPEL, Fedora OLPC, and Red Hat Linux in the output and collectionVersion which specifies which version of the distribution to output
+       for.
+
+       The URL constructed by BaseClient to the server could be expressed as[#]_:
+
+          https://admin.fedoraproject.org/pkgdb/package/name/python-fedora/?collectionName=Fedora&collectionVersion=9
+
+       In previous releases of python-fedora, there would be one further query parameter:  tg_format=json.  That parameter instructed the server to return the information as JSON data  instead  of  HTML.
+       Although this is usually still supported in the server, BaseClient has deprecated this method.  Servers should be configured  to use an Accept header to get this information instead.  See the JSON
+       output section of the Fedora Service documentation for more information about the server side.
+
+   Subclassing
+       Building  a  client  using subclassing builds on the information you've already seen inside of BaseClient.  You might want to use this if you want to provide a module for third parties to access a
+       particular Fedora Service.  A subclass can provide a set of standard methods for calling the server instead of forcing the user to remember the URLs used to access the server directly.
+
+       Here's an example that turns the previous calls into the basis of a python API to the Fedora Package Database:
+
+          import getpass
+          import sys
+          from fedora.client import BaseClient, AuthError
+
+          class MyClient(BaseClient):
+              def __init__(self, baseURL='https://admin.fedoraproject.org/pkgdb',
+                      username=None, password=None,
+                      useragent='Package Database Client/1.0', debug=None):
+                  super(BaseClient, self).__init__(baseURL, username, password,
+                          useragent, debug)
+
+              def collection_list(self):
+                  '''Return a list of collections.'''
+                  return client.send_request('/collection')
+
+              def package_owners(self, package, collectionName=None,
+                      collectionVersion=None):
+                  '''Return a mapping of release to owner for this package.'''
+                  pkgData = client.send_request('/packages/name/%s' % (package),
+                          {'collectionName': collectionName,
+                          'collectionVersion': collectionVersion})
+                  ownerMap = {}
+                  for listing in pkgData['packageListings']:
+                      ownerMap['-'.join(listing['collection']['name'],
+                              listing['collection']['version'])] = \
+                              listing['owneruser']
+                  return ownerMap
+
+       A few things to note:
+
+       1. In our constructor we list a default baseURL and useragent.  This is usually a good idea as we know the URL of the Fedora Service we're connecting to and we want to know that people  are  using
+          our specific API.
+
+       2. Sometimes  we'll  want  methods that are thin shells around the server methods like collection_list().  Other times we'll want to do more post processing to get specific results as package_own‐
+          ers() does.  Both types of methods are valid if they fit the needs of your API.  If you find yourself writing more of the latter, though, you may want to consider getting a  new  method  imple‐
+          mented  in  the  server  that can return results more appropriate to your needs as it could save processing on the server and bandwidth downloading the data to get information that more closely
+          matches what you need.
+
+       See pydoc fedora.client.fas2 for a module that implements a standard client API for the Fedora Account System
+
+   Handling Errors
+       BaseClient will throw a variety of errors that can be caught to tell you what kind of error was generated.
+
+   Exceptions
+       FedoraServiceError
+              The base of all exceptions raised by BaseClient.  If your code needs to catch any of the listed errors then you can catch that to do so.
+
+       ServerError
+              Raised if there's a problem communicating with the service.  For instance, if we receive an HTML response instead of JSON.
+
+       AuthError
+              If something happens during authentication, like an invalid usernsme or password, AuthError will be raised.  You can catch this to prompt the user for a new usernsme.
+
+       AppError
+              If there is a server side error when processing a request, the Fedora Service can alert the client of this by setting certain flags in the response.  BaseClient  will see  these  flags  and
+              raise an AppError.  The name of the error will be stored in AppError's name field.  The error's message will be stored in message.
+
+   Example
+       Here's an example of the exceptions in action:
+
+          from fedora.client import ServerError, AuthError, AppError, BaseClient
+          import getpass
+          MAXRETRIES = 5
+
+          client = BaseClient('https://admin.fedoraproject.org/pkgdb')
+          for retry in range(0, MAXRETRIES):
+              try:
+                  collectionData = client.send_request('/collections', auth=True)
+              except AuthError as e:
+                  from six.moves import input
+                  client.username = input('Username: ').strip()
+                  client.password = getpass.getpass('Password: ')
+                  continue
+              except ServerError as e:
+                  print('Error talking to the server: %s' % e)
+                  break
+              except AppError as e:
+                  print('The server issued the following exception: %s: %s' % (
+                        e.name, e.message))
+
+              for collection in collectionData['collections']:
+                  print('%s %s' % (collection[0]['name'], collection[0]['version']))
+
+   OpenIdBaseClient
+       Applications  that  use  OpenId  to authenticate are not able to use the standard BaseClient because the pattern of authenticating is very different.  We've written a separate client object called
+       OpenIdBaseClient to do this.
+
+EXISTING SERVICES
+       There are many Services in Fedora.  Many of these have an interface that we can query and get back information as JSON data.  There is documentation here about both the  services  and  the  client
+       modules that can access them.
+
+   Fedora Account System
+       FAS is the Fedora Account System.  It holds the account data for all of our contributors.
+
+       class fedora.client.AccountSystem(base_url='https://admin.fedoraproject.org/accounts/', *args, **kwargs)
+              An object for querying the Fedora Account System.
+
+              The  Account  System object provides a python API for talking to the Fedora Account System.  It abstracts the http requests, cookie handling, and other details so you can concentrate on the
+              methods that are important to your program.
+
+              WARNING:
+                 If your code is trying to use the AccountSystem object to connect to fas for multiple users you probably want to use FasProxyClient instead.  If your code is trying to reuse a single in‐
+                 stance of AccountSystem for multiple users you definitely want to use FasProxyClient instead.  Using AccountSystem in these cases may result in a user being  logged  in  as  a  different
+                 user.  (This may be the case even if you instantiate a new AccountSystem object for each user if :attr:cache_session: is True since that creates a file on the file system that can end up
+                 loading session credentials for the wrong person.
+
+              Changed in version 0.3.26: Added gravatar_url() that returns a url to a gravatar for a user.
+
+              Changed in version 0.3.33: Renamed gravatar_url() to avatar_url().
+
+              avatar_url(username, size=64, default=None, lookup_email=True, service=None)
+                     Returns a URL to an avatar for a given username.
+
+                     Avatars are drawn from third party services.
+
+                     Parameters
+
+                            • username -- FAS username to construct a avatar url for
+
+                            • size -- size of the avatar.  Allowed sizes are 32, 64, 140.  Default: 64
+
+                            • default -- If the service does not have a avatar image for the email address, this url is returned instead.  Default: the fedora logo at the specified size.
+
+                            • lookup_email  -- If true, use the email from FAS for gravatar.com lookups, otherwise just append @fedoraproject.org to the username.  For libravatar.org lookups, this is ig‐
+                              nored.  The openid identifier of the user is used instead.  Note that gravatar.com lookups will be much slower if lookup_email is set to True since we'd have to make a query
+                              against FAS itself.
+
+                            • service -- One of 'libravatar' or 'gravatar'.  Default: 'libravatar'.
+
+                     Raises ValueError -- if the size parameter is not allowed or if the service is not one of 'libravatar' or 'gravatar'
+
+                     Return type
+                            str
+
+                     Returns
+                            url of a avatar for the user
+
+                     If that user has no avatar entry, instruct the remote service to redirect us to the Fedora logo.
+
+                     If that user has no email attribute, then make a fake request to the third party service.
+
+                     Added in version 0.3.26.
+
+              create_group(name, display_name, owner, group_type, invite_only=0, needs_sponsor=0, user_can_remove=1, prerequisite='', joinmsg='', apply_rules='None')
+                     Creates a FAS group.
+
+                     Parameters
+
+                            • name -- The short group name (alphanumeric only).
+
+                            • display_name -- A longer version of the group's name.
+
+                            • owner -- The username of the FAS account which owns the new group.
+
+                            • group_type -- The kind of group being created. Current valid options are git, svn, hg, shell, and tracking.
+
+                            • invite_only -- Users must be invited to the group, they cannot join on their own.
+
+                            • needs_sponsor -- Users must be sponsored into the group.
+
+                            • user_can_remove -- Users can remove themselves from the group.
+
+                            • prerequisite -- Users must be in the given group (string) before they can join the new group.
+
+                            • joinmsg -- A message shown to users when they apply to the group.
+
+                            • apply_rules -- Rules for applying to the group, shown to users before they apply.
+
+                     Return type
+                            munch.Munch
+
+                     Returns
+                            A Munch containing information about the group that was created.
+
+                     Added in version 0.3.29.
+
+              get_config(username, application, attribute)
+                     Return the config entry for the key values.
+
+                     Parameters
+
+                            • username -- Username of the person
+
+                            • application -- Application for which the config is set
+
+                            • attribute -- Attribute key to lookup
+
+                     Raises AppError -- if the server returns an exception
+
+                     Returns
+                            The unicode string that describes the value.  If no entry matched the username, application, and attribute then None is returned.
+
+              get_configs_like(username, application, pattern='*')
+                     Return the config entries that match the keys and the pattern.
+
+                     Note: authentication on the server will prevent anyone but the user or a fas admin from viewing or changing their configs.
+
+                     Parameters
+
+                            • username -- Username of the person
+
+                            • application -- Application for which the config is set
+
+                            • pattern -- A pattern to select values for.  This accepts * as a wildcard character. Default='*'
+
+                     Raises AppError -- if the server returns an exception
+
+                     Returns
+                            A dict mapping attribute to value.
+
+              gravatar_url(*args, **kwargs)
+                     Deprecated - Use avatar_url.
+
+                     Added in version 0.3.26.
+
+              group_by_id(group_id)
+                     Returns a group object based on its id
+
+              group_by_name(groupname)
+                     Returns a group object based on its name
+
+              group_data(force_refresh=None)
+                     Return administrators/sponsors/users and group type for all groups
+
+                     Parameters
+                            force_refresh -- If true, the returned data will be queried from the database, as opposed to memcached.
+
+                     Raises AppError -- if the query failed on the server
+
+                     Returns
+                            A dict mapping group names to the group type and the user IDs of the administrator, sponsors, and users of the group.
+
+                     Added in version 0.3.8.
+
+              group_members(groupname)
+                     Return a list of people approved for a group.
+
+                     This method returns a list of people who are in the requested group.  The people are all approved in the group.  Unapproved people are not shown.  The format of data is:
+
+                        \[{'username': 'person1', 'role_type': 'user'},
+                        \{'username': 'person2', 'role_type': 'sponsor'}]
+
+                     role_type can be one of 'user', 'sponsor', or 'administrator'.
+
+                     Added in version 0.3.2.
+
+                     Changed in version 0.3.21: Return a Bunch instead of a DictContainer
+
+              property insecure
+                     If this attribute is set to True, do not check server certificates against their CA's.  This means that man-in-the-middle attacks are possible. You might  turn  this  option  on  for
+                     testing against a local version of a server with a self-signed certificate but it should be off in production.
+
+              people_by_groupname(groupname)
+                     Return a list of persons for the given groupname.
+
+                     Parameters
+                            groupname -- Name of the group to look up
+
+                     Returns
+                            A list of person objects from the group.  If the group contains no entries, then an empty list is returned.
+
+              people_by_id()
+                     Deprecated Use people_by_key() instead.
+
+                     Returns a dict relating user IDs to human_name, email, username, and bugzilla email
+
+                     Changed in version 0.3.21: Return a Bunch instead of a DictContainer
+
+              people_by_key(key='username', search='*', fields=None)
+                     Return a dict of people
+
+                     For example:
+
+                     >>> ret_val = FASCLIENT.people_by_key(
+                     ...     key='email', search='toshio*', fields=['id'])
+                     >>> ret_val.keys()
+                     a.badger@[...].com
+                     a.badger+test1@[...].com
+                     a.badger+test2@[...].com
+                     >>> ret_val.values()
+                     100068
+                     102023
+                     102434
+
+                     Parameters
+
+                            • key -- Key used to organize the returned dictionary.  Valid values are 'id', 'username', or 'email'.  Default is 'username'.
+
+                            • search -- Pattern to match usernames against.  Defaults to the '*' wildcard which matches everyone.
+
+                            • fields --
+
+                              Limit the data returned to a specific list of fields.  The default is to retrieve all fields.  Valid fields are:
+
+                                 • affiliation
+
+                                 • alias_enabled
+
+                                 • bugzilla_email
+
+                                 • certificate_serial
+
+                                 • comments
+
+                                 • country_code
+
+                                 • creation
+
+                                 • email
+
+                                 • emailtoken
+
+                                 • facsimile
+
+                                 • gpg_keyid
+
+                                 • group_roles
+
+                                 • human_name
+
+                                 • id
+
+                                 • internal_comments
+
+                                 • ircnick
+
+                                 • last_seen
+
+                                 • latitude
+
+                                 • locale
+
+                                 • longitude
+
+                                 • memberships
+
+                                 • old_password
+
+                                 • password
+
+                                 • password_changed
+
+                                 • passwordtoken
+
+                                 • postal_address
+
+                                 • privacy
+
+                                 • roles
+
+                                 • ssh_key
+
+                                 • status
+
+                                 • status_change
+
+                                 • telephone
+
+                                 • timezone
+
+                                 • unverified_email
+
+                                 • username
+
+                              Note that for most users who access this data, many of these fields will be set to None due to security or privacy settings.
+
+                     Returns
+                            a dict relating the key value to the fields.
+
+                     Changed in version 0.3.21: Return a Bunch instead of a DictContainer
+
+                     Changed in version 0.3.26: Fixed to return a list with both people who have signed the CLA and have not
+
+              people_query(constraints=None, columns=None)
+                     Returns a list of dicts representing database rows
+
+                     Parameters
+
+                            • constraints -- A dictionary specifying WHERE constraints on columns
+
+                            • columns -- A list of columns to be selected in the query
+
+                     Raises AppError -- if the query failed on the server (most likely because  the server was given a bad query)
+
+                     Returns
+                            A list of dicts representing database rows (the keys of the dict are the columns requested)
+
+                     Added in version 0.3.12.1.
+
+              person_by_id(person_id)
+                     Returns a person object based on its id
+
+              person_by_username(username)
+                     Returns a person object based on its username
+
+              proxy = None
+
+              set_config(username, application, attribute, value)
+                     Set a config entry in FAS for the user.
+
+                     Note: authentication on the server will prevent anyone but the user or a fas admin from viewing or changing their configs.
+
+                     Parameters
+
+                            • username -- Username of the person
+
+                            • application -- Application for which the config is set
+
+                            • attribute -- The name of the config key that we're setting
+
+                            • value -- The value to set this to
+
+                     Raises AppError -- if the server returns an exception
+
+              user_data()
+                     Return user data for all users in FAS
+
+                     Note: If the user is not authorized to see password hashes, '*' is returned for the hash.
+
+                     Raises AppError -- if the query failed on the server
+
+                     Returns
+                            A dict mapping user IDs to a username, password hash, SSH public key, email address, and status.
+
+                     Added in version 0.3.8.
+
+              user_gencert()
+                     Generate a cert for a user
+
+              user_id()
+                     Returns a dict relating user IDs to usernames
+
+              verify_password(username, password)
+                     Return whether the username and password pair are valid.
+
+                     Parameters
+
+                            • username -- username to try authenticating
+
+                            • password -- password for the user
+
+                     Returns
+                            True if the username/password are valid.  False otherwise.
+
+   Threadsafe Account System Access
+       It  is  not  safe to use a single instance of the AccountSystem object in multiple threads.  This is because instance variables are used to hold some connection-specific information (for instance,
+       the user who is logging in).  For this reason, we also provide the fedora.client.FasProxyClient object.
+
+       This is especially handy when writing authn and authz adaptors that talk to fas from a multithreaded webserver.
+
+       class fedora.client.FasProxyClient(base_url='https://admin.fedoraproject.org/accounts/', *args, **kwargs)
+              A threadsafe client to the Fedora Account System.
+
+              get_user_info(auth_params)
+                     Retrieve information about a logged in user.
+
+                     Parameters
+                            auth_params -- Auth information for a particular user.  For instance, this can be  a  username/password  pair  or  a  session_id.   Refer  to  fedora.client.proxyclient.Proxy‐
+                            Client.send_request() for all the legal values for this.
+
+                     Returns
+                            a tuple of session_id and information about the user.
+
+                     Raises AuthError -- if the auth_params do not give access
+
+              group_list(auth_params)
+                     Retrieve a list of groups
+
+                     Parameters
+                            auth_params  --  Auth  information  for  a  particular  user.   For  instance, this can be a username/password pair or a session_id.  Refer to fedora.client.proxyclient.Proxy‐
+                            Client.send_request() for all the legal values for this.
+
+                     Returns
+                            a tuple of session_id and information about groups.  The groups information is in two fields:
+
+                            groups contains information about each group
+
+                            memberships
+                                   contains information about which users are members of which groups
+
+                     Raises AuthError -- if the auth_params do not give access
+
+              login(username, password)
+                     Login to the Account System
+
+                     Parameters
+
+                            • username -- username to send to FAS
+
+                            • password -- Password to verify the username with
+
+                     Returns
+                            a tuple of the session id FAS has associated with the user and the user's account information.  This  is  similar  to  what  is  returned  by  fedora.client.proxyclient.Proxy‐
+                            Client.get_user_info()
+
+                     Raises AuthError -- if the username and password do not work
+
+              logout(session_id)
+                     Logout of the Account System
+
+                     Parameters
+                            session_id -- a FAS session_id to remove from FAS
+
+              person_by_id(person_id, auth_params)
+                     Retrieve information about a particular person
+
+                     Parameters
+                            auth_params  --  Auth  information  for  a  particular  user.   For  instance, this can be a username/password pair or a session_id.  Refer to fedora.client.proxyclient.Proxy‐
+                            Client.send_request() for all the legal values for this.
+
+                     Returns
+                            a tuple of session_id and information about the user.
+
+                     Raises
+
+                            • AppError -- if the server returns an exception
+
+                            • AuthError -- if the auth_params do not give access
+
+              refresh_session(session_id)
+                     Try to refresh a session_id to prevent it from timing out
+
+                     Parameters
+                            session_id -- FAS session_id to refresh
+
+                     Returns
+                            session_id that FAS has set now
+
+              verify_password(username, password)
+                     Return whether the username and password pair are valid.
+
+                     Parameters
+
+                            • username -- username to try authenticating
+
+                            • password -- password for the user
+
+                     Returns
+                            True if the username/password are valid.  False otherwise.
+
+              verify_session(session_id)
+                     Verify that a session is active.
+
+                     Parameters
+                            session_id -- session_id to verify is currently associated with a logged in user
+
+                     Returns
+                            True if the session_id is valid.  False otherwise.
+
+   Bodhi, the Update Server
+       Bodhi is used to push updates from the build system to the download repositories.  It lets packagers send packages to the testing repository or to the update repository.
+
+       pythyon-fedora currently supports both the old Bodhi1 interface and the new Bodhi2 interface.  By using fedora.client.BodhiCLient, the correct one should be returned to you depending  on  what  is
+       running live on Fedora Infrastructure servers.
+
+FEDORA SERVICES
+       Authors
+              Toshio Kuratomi Luke Macken
+
+       Date   02 February 2009
+
+       For Version
+              0.3.x
+
+       In  the  loosest  sense,  a  Fedora  Service  is a web application that sends data that BaseClient is able to understand.  This document defines things that a web application must currently do for
+       BaseClient to understand it.
+
+   TurboGears and fedora.tg
+       All current Fedora Services are written in TurboGears.  Examples in this document will be for that framework.  However, other frameworks can be used to write a Service if they can correctly create
+       the data that BaseClient needs.
+
+       A Fedora Service differs from other web applications in that certain URLs for the web application are an API layer that the Service can send and receive JSON data from for BaseClient to interpret.
+       This imposes certain constraints on what data can be sent and what data can be received from those URLs.  The fedora.tg module contains functions that help you write code  that  communicated  well
+       with BaseClient.
+
+       The  TurboGears  framework separates an application into model, view, and controller layers.  The model is typically a database and holds the raw data that the application needs.  The view formats
+       the data before output.  The controller makes decisions about what data to retrieve from the model and which view to pass it onto.  The code that you'll most often need to use from fedora.tg oper‐
+       ates on the controller layer but there's also code that works on the model and view behind the scenes.
+
+   Controllers
+       The controller is the code that processes an http request.  It validates and processes requests and parameters sent by the user, gets data from the model to satisfy the request, and then passes it
+       onto a view layer to be returned to the user.  fedora.tg.utils contains several helpful functions for working with controllers.
+
+   URLs as API
+       In TurboGears and most web frameworks, a URL is a kind of API for accessing the data your web app provides.  This data can be made available in multiple formats.  TurboGears allows you to use  one
+       URL to serve multiple formats by specifying a query parameter or a special header.
+
+   Selecting JSON Output
+       A URL in TurboGears can serve double duty by returning multiple formats depending on how it is called.  In most cases, the URL will return HTML or XHTML by default.  By adding the query parameter,
+       tg_format=json you can switch from returning the default format to returning JSON data.  You need to add an @expose(allow_json=True) decorator [1] to your controller method to tell TurboGears that
+       this controller should return JSON data:
+
+          @expose(allow_json=True)
+          @expose(template='my.templates.amplifypage')
+          def amplify(self, data):
+
+       allow_json=True is a shortcut for this:
+
+          @expose("json", content_type="text/javascript",
+                  as_format="json", accept_format="text/javascript")
+
+       That  means  that  the  controller method will use the json template (uses TurboJson to marshal the returned data to JSON) to return data of type text/javascript when either of these conditions is
+       met:  a query param of tg_format=json or an Accept: text/javascript header is sent.
+
+       BaseClient in python-fedora 0.1.x and 0.2.x use the query parameter method of selecting JSON output.  BaseClient 0.2.99.6 and 0.3.x use both the header method and the query parameter since the ar‐
+       gument was made that the header method is friendlier to other web frameworks.  0.4 intends to use the header alone.  If you use allow_json=True this change shouldn't matter.  If  you  specify  the
+       @expose("json")  decorator  only  accept_format is set.  So it is advisable to include both as_format and accept_format in your decorator.  Note that this is a limitation of TurboGears <= 1.0.4.4.
+       If your application is only going to run on TurboGears > 1.0.4.4 you should be able to use a plain @expose("json") [2].
+
+       [1]  http://docs.turbogears.org/1.0/ExposeDecorator#same-method-different-template
+
+       [2]  http://trac.turbogears.org/ticket/1459#comment:4
+
+   Why Two Formats from a Single URL?
+       When designing your URLs you might wonder why you'd want to return JSON and HTML from a single controller method instead of having two separate controller methods.  For  instance,  separating  the
+       URLs into their own namespaces might seem logical: /app/json/get_user/USERNAME as opposed to /app/user/USERNAME.  Doing things with two URLs as opposed to one has both benefits and drawbacks.
+
+   Benefits of One Method Handling Multiple Formats
+       • Usually less code as there's only one controller method
+
+       • When a user sees a page that they want to get data from, they can get it as JSON instead of screen scraping.
+
+       • Forces the application designer to think more about the API that is being provided to the users instead of just the needs of the web page they are creating.
+
+       • Makes  it easier to see what data an application will need to implement an alternate interface since you can simply look at the template code to see what variables are being used on a particular
+         page.
+
+   Benefits of Multiple Methods for Each Format
+       • Avoids special casing for error handlers (See below)
+
+       • Separates URLs that you intend users to grab JSON data from URLs where you only want to display HTML.
+
+       • Allows the URLs that support JSON to concentrate on trimming the size of the data sent while URLs that only return HTML can return whole objects.
+
+       • Organization can be better if you don't have to include all of the pages that may only be useful for user interface elements.
+
+       Personal use has found that allowing JSON requests on one controller method works well for cases where you want the user to get data and for traditional form based user interaction.  AJAX requests
+       have been better served via dedicated methods.
+
+   Return Values
+       The toplevel of the return values should be a dict.  This is the natural return value for TurboGears applications.
+
+   Marshaling
+       All data should be encoded in JSON before being returned.  This is normally taken care of automatically by TurboGears and simplejson.  If you are returning non-builtin objects you may have to  de‐
+       fine an __json__() method.
+
+   Unicode
+       simplejson (and probably other JSON libraries) will take care of encoding Unicode strings to JSON so be sure that you are passing Unicode strings around rather than encoded byte strings.
+
+   Error Handling
+       In  python,  error  conditions are handled by raising an exception.  However, an exception object will not propagate automatically through a return from the server.  Instead we set several special
+       variables in the returned data to inform BaseClient of any errors.
+
+       At present, when BaseClient receives an error it raises an exception of its own with the exception information from the server inside.  Raising the same exception as the server is  being  investi‐
+       gated but may pose security risks so hasn't yet been implemented.
+
+   exc
+       All URLs which return JSON data should set the exc variable when the method fails unexpectedly (a database call failed, a place where you would normally raise an exception, or where you'd redirect
+       to  an  error page if a user was viewing the HTML version of the web app).  exc should be set to the name of an exception and tg_flash set to the message that would normally be given to the excep‐
+       tion's constructor.  If the return is a success (expected values are being returned from the method or a value was updated successfully) exc may either be unset or set to None.
+
+   tg_flash
+       When viewing the HTML web app, tg_flash can be set with a message to display to the user either on the next page load or via an AJAX handler.  When used in conjunction  with  JSON,  exc=EXCEPTION‐
+       NAME, and BaseClient, tg_flash should be set to an error message that the client can use to identify what went wrong or display to the user.  It's equivalent to the message you would normally give
+       when raising an exception.
+
+   Authentication Errors
+       Errors in authentication are a special case.  Instead of returning an error with exc='AuthError' set, the server should return with response.status = 403.  BaseClient will see the 403 and raise an
+       AuthError.
+
+       This is the signal for the client to ask the user for new credentials (usually a new username and password).
+
+       NOTE:
+          Upstream  TurboGears has switched to sending a 401 for authentication problems.  However, their use of 401 is against the http specification (It doesn't set the 'WWW-Authentication' header) and
+          it causes problems for konqueror and webkit based browsers so we probably will not be switching.
+
+   Performing Different Actions when Returning JSON
+       So far we've run across three features of TurboGears that provide value to a web application but don't work when returning JSON data.  We provide  a  function  that  can  code  around  this.   fe‐
+       dora.tg.utils.request_format() will return the format that the page is being returned as.  Code can use this to check whether JSON output is expected and do something different based on it:
+
+          output = {'tg_flash': 'An Error Occurred'}
+          if fedora.tg.utils.request_format() == 'json':
+              output['exc'] = 'ServerError'
+          else:
+              output['tg_template'] = 'my.templates.error'
+          return output
+
+       In this example, we return an error through our "exception" mechanism if we are returning JSON and return an error page by resetting the template if not.
+
+   Redirects
+       Redirects do not play well with JSON [3] because TurboGears is unable to turn the function returned from the redirect into a dictionary that can be turned into JSON.
+
+       Redirects  are  commonly used to express errors.  This is actually better expressed using tg_template because that method leaves the URL intact.  That allows the end user to look for spelling mis‐
+       takes in their URL.  If you need to use a redirect, the same recipe as above will allow you to split your code paths.
+
+       [3]  Last checked in TurboGears 1.0.4
+
+   tg_template
+       Setting what template is returned to a user by setting tg_template in the return dict (for instance, to display an error page without changing the URL) is a perfectly valid way to use  TurboGears.
+       Unfortunately,  since  JSON  is simply another template in TurboGears you have to be sure not to interfere with the generation of JSON data.  You need to check whether JSON was requested using fe‐
+       dora.tg.utils.request_format() and only return a different template if that's not the case.  The recipe above shows how to do this.
+
+   Validators
+       Validators are slightly different than the issues we've encountered so far.  Validators are used to check and convert parameters sent to a controller method so that only good data is dealt with in
+       the controller method itself.  The problem is that when a validator detects a parameter that is invalid, it performs a special internal redirect to a method that is its  error_handler.   We  can't
+       intercept this redirect because it happens in the decorators before our method is invoked.  So we have to deal with the aftermath of the redirect in the error_handler method:
+
+          class NotNumberValidator(turbogears.validators.FancyValidator):
+              messages = {'Number': 'Numbers are not allowed'}
+
+              def to_python(self, value, state=None):
+                  try:
+                      number = turbogears.validators.Number(value.strip())
+                  except:
+                      return value
+                  raise validators.Invalid(self.message('Number', state), value,
+                          state)
+
+          class AmplifyForm(turbogears.widgets.Form):
+              template = my.templates.amplifyform
+              submit_text = 'Enter word to amplify'
+              fields = [
+                      turbogears.widgets.TextField(name='data',
+                              validator=NotNumberValidator())
+                      ]
+
+          amplify_form = AmplifyForm()
+
+          class mycontroller(RootController):
+
+              @expose(template='my.templates.errorpage', allow_json=True)
+              def no_numbers(self, data):
+                  errors = fedora.tg.utils.jsonify_validation_errors()
+                  if errors:
+                      return errors
+                  # Construct a dict to return the data error message as HTML via
+                  # the errorpage template
+                  pass
+
+              @validate(form=amplify_form)
+              @error_handler('no_numbers')
+              @expose(template='my.templates.amplifypage', allow_json=True)
+              def amplify(self, data):
+                  return dict(data=data.upper())
+
+       When  a  user hits amplify()'s URL, the validator checks whether data is a number.  If it is, it redirects to the error_handler, no_numbers().  no_numbers() will normally return HTML which is fine
+       if we're simply hitting amplify() from a web browser.  If we're hitting it from a BaseClient app, however, we need it to return JSON data instead.  To do that  we  use  jsonify_validation_errors()
+       which  checks  whether there was a validation error and whether we need to return JSON data.  If both of those are true, it returns a dictionary with the validation errors.  This dictionary is ap‐
+       propriate for returning from the controller method in response to a JSON request.
+
+       WARNING:
+          When defining @error_handler() order of decorators can be important.  The short story is to always make @validate() and @error_handler() the first decorators of your method.  The longer version
+          is that this is known to cause errors with the json request not being honored or skipping identity checks when the method is its own error handler.
+
+   Expected Methods
+       Certain controller methods are necessary in order for BaseClient to properly talk to your service.  TurboGears can quickstart an application template for you that sets most of these variables cor‐
+       rectly:
+
+          $ tg-admin quickstart -i -s -p my my
+          # edit my/my/controllers.py
+
+   login()
+       You need to have a login() method in your application's root.  This method allows BaseClient to authenticate against your Service:
+
+               @expose(template="my.templates.login")
+          +    @expose(allow_json=True)
+               def login(self, forward_url=None, previous_url=None, \*args, \**kw):
+
+                   if not identity.current.anonymous \
+                       and identity.was_login_attempted() \
+                       and not identity.get_identity_errors():
+          +            # User is logged in
+          +            if 'json' == fedora.tg.utils.request_format():
+          +                return dict(user=identity.current.user)
+          +            if not forward_url:
+          +                forward_url = turbogears.url('/')
+                       raise redirect(forward_url)
+
+   For non-TurboGears Implementors
+       If you are implementing a server in a non-TurboGears framework, note that one of the ways to reach the login() method is through special parameters parsed by the TurboGears framework.   BaseClient
+       uses these parameters instead of invoking the login() method directly as it saves a round trip when authenticating to the server.  It will be necessary for you to implement handling of these para‐
+       meters (passed via POST) on your application as well.
+
+       The parameters are: user_name, password, and login.  When these three parameters are sent to the server, the server authenticates the user and records their information before deciding what infor‐
+       mation to return to them from the URL.
+
+   logout()
+       The logout() method is similar to login().  It also needs to be modified to allow people to connect to it via JSON:
+
+          -    @expose()
+          +    @expose(allow_json=True)
+               def logout(self):
+                   identity.current.logout()
+          +        if 'json' in fedora.tg.utils.request_format():
+          +            return dict()
+                   raise redirect("/")
+
+   CSRF Protection
+       For an overview of CSRF and how to protect TurboGears 1 based services, look at this document.
+
+   Using SABase
+       fedora.tg.json contains several functions that help to convert SQLAlchemy objects into JSON.  For the most part, these do their work behind the scenes.  The SABase object, however, is one that you
+       might need to take an active role in using.
+
+       When  you  return an SQLAlchemy object in a controller to a template, the template is able to access any of the relations mapped to it.  So, instead of having to construct a list of people records
+       from a table and the the list of groups that each of them are in you can pass in the list of people and let your template reference the relation properties to get the groups.   This  is  extremely
+       convenient  for templates but has a negative effect when returning JSON. Namely, the default methods for marshaling SQLAlchemy objects to JSON only return the attributes of the object, not the re‐
+       lations that are linked to it.  So you can easily run into a situation where someone querying the JSON data for a page will not have all the information that a template has access to.
+
+       SABase fixes this by allowing you to specify relations that your SQLAlchemy backed objects should marshal as JSON data.
+
+       Further information on SABase can be found in the API documentation:
+
+          pydoc fedora.tg.json
+
+   Example
+       SABase is a base class that you can use when defining objects in your project's model.  So the first step is defining the classes in your model to inherit from SABase:
+
+          from fedora.tg.json import SABase
+          from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey
+          from turbogears.database import metadata, mapper
+
+          class Person(SABase):
+              pass
+          PersonTable = Table('person', metadata
+              Column('name', String, primary_key=True),
+              )
+
+          class Address(SABase):
+              pass
+          AddressTable = Table (
+              Column('id', Integer, primary_key=True),
+              Column('street', string),
+              Column('person_id', Integer, ForeignKey('person.name')
+              )
+
+          mapper(PersonTable, Person)
+          mapper(AddressTable, Address, properties = {
+              person: relation(Person, backref = 'addresses'),
+          })
+
+       The next step is to tell SABase which properties should be copied (this allows you to omit large trees of objects when you only need the data from a few of them):
+
+          @expose('my.templates.about_me')
+          @expose(allow_json=True)
+          def my_info(self):
+              person = Person.query.filter_by(name='Myself').one()
+              person.jsonProps = {'Person': ['addresses']}
+              return dict(myself=person}
+
+       Now, when someone requests JSON data from my_info, they should get back a record for person that includes a property addresses.  Addresses will be a list of address  records  associated  with  the
+       person.
+
+   How it Works
+       SABase adds a special __json__() method to the class.  By default, this method returns a dict with all of the attributes that are backed by fields in the database.
+
+       Adding  entries  to  jsonProps  adds  the  values for those properties to the returned dict as well.  If you need to override the __json__() method in your class you probably want to call SABase's
+       __json__() unless you know that neither you nor any future subclasses will need it.
+
+   Using __json__()
+       Sometimes you need to return an object that isn't a basic python type (list, tuple, dict, number. string, etc).  When that occurs, simplejson won't know how to marshal the data into JSON until you
+       write own method to transform the values.  If this method is named __json__(), TurboGears will automatically perform the conversion when you return the object.
+
+       Example:
+
+          class MyObject(object):
+              def _init__(self, number):
+                  self.someNumber = number
+                  self.cached = None
+
+              def _calc_data(self):
+                  if not self.cached:
+                      self.cached = self.someNumber * 2
+                  return self.cached
+
+              twiceData = property(_calc_data)
+
+              def __json__(self):
+                  return {'someNumber': self.someNumber, 'twiceData': self.twiceData}
+
+       In this class, you have a variable and a property.  If you were to return it from a controller method without defining the __json__() method, TurboGears would give you an error that it was  unable
+       to  adapt  the  object  to JSON.  The JSON method transforms the object into a dict with sensibly named values for the variable and property so that simplejson is able to marshal the data to JSON.
+       Note that you will often have to choose between space (more data takes more bandwidth to deliver to the end user) and completeness (you need to return enough data so the client isn't  looking  for
+       another method that can complete its needs) when returning data.
+
+AUTHENTICATION TO FAS
+       The  Fedora Account System has a JSON interface that we make use of to authenticate users in our web apps.  Currently, there are two modes of operation.  Some web apps have single sign-on capabil‐
+       ity with Fedora Account System.  These are the TurboGears applications that use the jsonfasprovider.  Other apps do not have single sign-on but they do connect to Fedora Account System  to  verify
+       the username and password so changing the password in Fedora Account System changes it everywhere.
+
+   TurboGears Identity Provider 2
+       An identity provider with CSRF protection.
+
+       This will install as a TurboGears identity plugin.  To use it, set the following in your APPNAME/config/app.cfg file:
+
+          identity.provider='jsonfas2'
+          visit.manager='jsonfas2'
+
+       SEE ALSO:
+          CSRF-Protection
+
+   Turbogears Identity Provider 1
+       These methods are deprecated because they do not provide the CSRF protection of TurboGears Identity Provider 2.  Please use that identity provider instead.
+
+   Django Authentication Backend
+   Flask Auth Plugin
+   Flask FAS OpenId Auth Plugin
+       The  flask_openid  provider is an alternative to the flask_fas auth plugin.  It leverages our FAS-OpenID server to do authn and authz (group memberships).  Note that not every feature is available
+       with a generic OpenID provider -- the plugin depends on the OpenID provider having certain extensions in order to provide more than basic OpenID auth.
+
+       • Any compliant OpenID server should allow you to use the basic authn features of OpenID OpenID authentication core: http://openid.net/specs/openid-authentication-2_0.html
+
+       • Retrieving simple information about the user such as username, human name, email is done with sreg: http://openid.net/specs/openid-simple-registration-extension-1_0.html which  is  an  extension
+         supported by many providers.
+
+       • Advanced  security  features  such  as  requiring  a  user  to  re-login  to  the  OpenID  provider  or  specifying  that  the  user  login  with  a hardware token requires the PAPE extension: ‐
+         http://openid.net/specs/openid-provider-authentication-policy-extension-1_0.html
+
+       • To get groups information, the provider must implement the https://dev.launchpad.net/OpenIDTeams extension.
+
+         • We have extended the teams extension so you can request a team name of _FAS_ALL_GROUPS_ to retrieve all the groups that a user belongs to.  Without this addition to  the  teams  extension  you
+           will need to manually configure which groups you are interested in knowing about.  See the documentation for how to do so.
+
+       • Retrieving information about whether a user has signed a CLA (For Fedora, this is the Fedora Project Contributor Agreement).  http://fedoraproject.org/specs/open_id/cla
+
+       If  the  provider  you  use does not support one of these extensions, the plugin should still work but naturally, it will return empty values for the information that the extension would have pro‐
+       vided.
+
+   FAS Flask OpenID Auth Plugin
+       Authors
+              Patrick Uiterwjk
+
+       Date   18 February 2013
+
+       For Version
+              0.3.x
+
+       The Fedora Account System has a OpenID provider that applications can use to authenticate users in web apps. For our Flask applications we have an identity provider that uses this  OpenID  service
+       to  authenticate users.  It is almost completely compatible with Flask Auth Plugin except that it does not use the username/password provided by the client application (it is silently ignored). It
+       can be configured to use any OpenID authentication service that implements the OpenID Teams Extension, Simple Registration Extension and CLA Extension.
+
+   Configuration
+       The FAS OpenID auth plugin has several config values that can be used to control how the auth plugin functions.  You can set these in your application's config file.
+
+       FAS_OPENID_ENDPOINT
+              Set this to the OpenID endpoint url you are authenticating against.  Default is "http://id.fedoraproject.org/"
+
+       FAS_CHECK_CERT
+              When set, this will check the SSL Certificate for the FAS server to make sure that it is who it claims to be.  This is useful to set to False when testing against a  local  FAS  server  but
+              should always be set to True in production.  Default: True
+
+   Sample Application
+       The following is a sample, minimal flask application that uses fas_flask for authentication:
+
+          #!/usr/bin/python -tt
+          # Flask-FAS-OpenID - A Flask extension for authorizing users with OpenID
+          # Primary maintainer: Patrick Uiterwijk <puiterwijk@fedoraproject.org>
+          #
+          # Copyright (c) 2012-2013, Red Hat, Inc., Patrick Uiterwijk
+          #
+          # Redistribution and use in source and binary forms, with or without
+          # modification, are permitted provided that the following conditions are met:
+          #
+          # * Redistributions of source code must retain the above copyright notice, this
+          # list of conditions and the following disclaimer.
+          # * Redistributions in binary form must reproduce the above copyright notice,
+          # this list of conditions and the following disclaimer in the documentation
+          # and/or other materials provided with the distribution.
+          # * Neither the name of the Red Hat, Inc. nor the names of its contributors may
+          # be used to endorse or promote products derived from this software without
+          # specific prior written permission.
+          #
+          # THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ''AS IS'' AND ANY
+          # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+          # WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+          # DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE FOR ANY
+          # DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+          # (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+          # LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+          # ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+          # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+          # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+          # This is a sample application.
+
+          import flask
+          from flask_fas_openid import fas_login_required, cla_plus_one_required, FAS
+
+          # Set up Flask application
+          app = flask.Flask(__name__)
+          # Set up FAS extension
+          fas = FAS(app)
+
+          # Application configuration
+          # SECRET_KEY is necessary for the Flask session system.  It needs to be secret to
+          # make the sessions secret but if you have multiple servers behind
+          # a load balancer, the key needs to be the same on each.
+          app.config['SECRET_KEY'] = 'change me!'
+          # Other configuration options for Flask-FAS-OpenID:
+          #     FAS_OPENID_ENDPOINT: the OpenID endpoint URL
+          #         (default http://id.fedoraproject.org/)
+          #     FAS_CHECK_CERT: check the SSL certificate of FAS (default True)
+          # You should use these options' defaults for production applications!
+          app.config['FAS_OPENID_ENDPOINT'] = 'http://id.fedoraproject.org/'
+          app.config['FAS_CHECK_CERT'] = True
+
+          # Inline templates keep this test application all in one file. Don't do this in
+          # a real application. Please.
+          TEMPLATE_START = """
+          <h1>Flask-FAS-OpenID test app</h1>
+          {% if g.fas_user %}
+              <p>Hello, {{ g.fas_user.username }} &mdash;
+              <a href="{{ url_for("logout") }}">Log out</a>
+          {% else %}
+              <p>You are not logged in &mdash;
+              <a href="{{ url_for("auth_login", next=request.url) + '' }}">Log in</a>
+          {% endif %}
+          &mdash; <a href="{{ url_for("index") }}">Main page</a></p>
+          """
+
+          @app.route('/')
+          def index():
+              data = TEMPLATE_START
+              data += '<p><a href="%s">Check if you are cla+1</a></p>' % \
+                      flask.url_for('claplusone')
+              data += '<p><a href="%s">See a secret message (requires login)</a></p>' % \
+                      flask.url_for('secret')
+              return flask.render_template_string(data)
+
+          @app.route('/login', methods=['GET', 'POST'])
+          def auth_login():
+              # Your application should probably do some checking to make sure the URL
+              # given in the next request argument is sane. (For example, having next set
+              # to the login page will cause a redirect loop.) Some more information:
+              # http://flask.pocoo.org/snippets/62/
+              if 'next' in flask.request.args:
+                  next_url = flask.request.args['next']
+              else:
+                  next_url = flask.url_for('index')
+              # If user is already logged in, return them to where they were last
+              if flask.g.fas_user:
+                  return flask.redirect(next_url)
+              return fas.login(return_url=next_url)
+
+          @app.route('/logout')
+          def logout():
+              if flask.g.fas_user:
+                  fas.logout()
+              return flask.redirect(flask.url_for('index'))
+
+          # This demonstrates the use of the fas_login_required decorator. The
+          # secret message can only be viewed by those who are logged in.
+          @app.route('/secret')
+          @fas_login_required
+          def secret():
+              data = TEMPLATE_START + '<p>Be sure to drink your Ovaltine</p>'
+              return flask.render_template_string(data)
+
+          # This demonstrates checking for group membership inside of a function.
+          # The flask_fas adapter also provides a cla_plus_one_required decorator that
+          # can restrict a url so that you can only access it from an account that has
+          # cla +1.
+          @app.route('/claplusone')
+          @cla_plus_one_required
+          def claplusone():
+              data = TEMPLATE_START
+              data += '<p>Your account is cla+1.</p>'
+              return flask.render_template_string(data)
+
+          if __name__ == '__main__':
+              app.run(debug=True)
+
+   FAS Who Plugin for TurboGears2
+   FASWho Plugin
+       Authors
+              Luke Macken Toshio Kuratomi
+
+       Date   3 September 2011
+
+       This  plugin provides authentication to the Fedora Account System using the repoze.who WSGI middleware.  It is designed for use with TurboGears2 but it may be used with any repoze.who using appli‐
+       cation.  Like TurboGears Identity Provider 2, faswho has builtin CSRF protection.  This protection is implemented as a second piece of middleware and may be used with other repoze.who  authentica‐
+       tion schemes.
+
+   Authenticating against FAS with TurboGears2
+       Setting up authentication against FAS in TurboGears2 is very easy.  It requires one change to be made to app/config/app_cfg.py.  This change will take care of registering faswho as the authentica‐
+       tion provider, enabling CSRF protection, switching tg.url() to use fedora.ta2g.utils.url() instead, and allowing the _csrf_token parameter to be given to any URL.
+
+   Using CSRF middleware with other Auth Methods
+       This section needs to be made clearer so that apps like mirrormanager can be ported to use this.
+
+   Templates
+       The fedora.tg2.utils module contains some templates to help you write CSRF aware login forms and buttons.  You can use the fedora_template() function to integrate them into your templates:
+
+       The templates themselves come in two flavors.  One set for use with mako and one set for use with genshi.
+
+   Mako
+   Genshi
+JAVASCRIPT
+       Authors
+              Toshio Kuratomi
+
+       Date   26 February 2009
+
+       For Version
+              0.3.x
+
+       python-fedora currently provides some JavaScript files to make coding Fedora Services easier.  In the future we may move these to their own package.
+
+   fedora.dojo
+       Module author: Toshio Kuratomi <tkuratom@redhat.com>
+
+       Added in version 0.3.10.
+
+       Dojo is one of several JavaScript Toolkits.  It aims to be a standard library for JavaScript.  The fedora.dojo module has JavaScript code that make use of Dojo to do their work.  It is most appro‐
+       priate to use when the Dojo libraries are being used as the JavaScript library for the app.  However, it is well namespaced and nothing should prevent it from being used in other apps as well.
+
+API DOCUMENTATION
+       This API Documentation is currently a catch-all.  We're going to merge the API docs into the hand created docs as we have time to integrate them.
+
+   Client
+       fedora.client is used to interact with Fedora Services.
+
+       Changed in version 0.3.21: Deprecate DictContainer in favor of bunch.Bunch
+
+       Changed in version 0.3.35: Add the openid clients
+
+       Module author: Ricky Zhou <ricky@fedoraproject.org>
+
+       Module author: Luke Macken <lmacken@redhat.com>
+
+       Module author: Toshio Kuratomi <tkuratom@redhat.com>
+
+       exception fedora.client.AppError(name, message, extras=None)
+              Error condition that the server is passing back to the client.
+
+       exception fedora.client.AuthError
+              Error during authentication.  For instance, invalid password.
+
+       exception fedora.client.CLAError
+              CLA Error
+
+       class fedora.client.DictContainer(*args, **kwargs)
+
+       exception fedora.client.FASError
+              FAS Error
+
+       exception fedora.client.FedoraClientError
+              Base Exception for problems which originate within the Clients.
+
+              This should be the base class for any exceptions that the Client generates.  For instance, if the client performs validation before passing the data on to the Fedora Service.
+
+              Problems returned while talking to the Services should be returned via a FedoraServiceError instead.
+
+       exception fedora.client.FedoraServiceError
+              Base Exception for any problem talking with the Service.
+
+              When the Client gets an error talking to the server, an exception of this type is raised.  This can be anything in the networking layer up to an error returned from the server itself.
+
+       exception fedora.client.ServerError(url, status, msg)
+              Unable to talk to the server properly.
+
+              This includes network errors and 500 response codes.  If the error was generated from an http response, code is the HTTP response code.  Otherwise, code will be -1.
+
+   Generic Clients
+   BaseClient
+       class fedora.client.BaseClient(base_url, useragent=None, debug=False, insecure=False, username=None, password=None, httpauth=None, session_cookie=None, session_id=None, session_name='tg-visit',
+       cache_session=True, retries=None, timeout=None)
+              A client for interacting with web services.
+
+              logout()
+                     Logout from the server.
+
+              send_request(method, req_params=None, file_params=None, auth=False, retries=None, timeout=None, **kwargs)
+                     Make an HTTP request to a server method.
+
+                     The given method is called with any parameters set in req_params.  If auth is True, then the request is made with an authenticated session cookie.
+
+                     Parameters
+
+                            • method -- Method to call on the server.  It's a url fragment that comes after the base_url set in __init__().
+
+                            • req_params -- Extra parameters to send to the server.
+
+                            • file_params  --  dict of files where the key is the name of the file field used in the remote method and the value is the local path of the file to be uploaded.  If you want
+                              to pass multiple files to a single file field, pass the paths as a list of paths.
+
+                            • auth -- If True perform auth to the server, else do not.
+
+                            • retries -- if we get an unknown or possibly transient error from the server, retry this many times.  Setting this to a negative number makes it try forever.  Default to  use
+                              the retries value set on the instance or in __init__() (which defaults to zero, no retries).
+
+                            • timeout -- A float describing the timeout of the connection. The timeout only affects the connection process itself, not the downloading of the response body. Default to use
+                              the timeout value set on the instance or in __init__() (which defaults to 120s).
+
+                     Return type
+                            Bunch
+
+                     Returns
+                            The data from the server
+
+                     Changed in version 0.3.21: * Return data as a Bunch instead of a DictContainer * Add file_params to allow uploading files
+
+                     Changed in version 0.3.33: * Added the timeout kwarg
+
+              property session_cookie
+                     Deprecated, use session_id instead.
+
+                     The session cookie is saved in a file in case it is needed in consecutive runs of BaseClient.
+
+              property session_id
+                     The session_id.
+
+                     The session id is saved in a file in case it is needed in consecutive runs of BaseClient.
+
+   ProxyClient
+       class fedora.client.ProxyClient(base_url, useragent=None, session_name='tg-visit', session_as_cookie=True, debug=False, insecure=False, retries=None, timeout=None)
+              A client to a Fedora Service.  This class is optimized to proxy multiple users to a service.  ProxyClient is designed to be threadsafe so that code can instantiate one instance of the class
+              and use it for multiple requests for different users from different threads.
+
+              If you want something that can manage one user's connection to a Fedora Service, then look into using BaseClient instead.
+
+              This  class  has  several attributes.  These may be changed after instantiation however, please note that this class is intended to be threadsafe.  Changing these values when another thread
+              may affect more than just the thread that you are making the change in.  (For instance, changing the debug option could cause other threads to start logging debug messages in the middle  of
+              a method.)
+
+              base_url
+                     Initial portion of the url to contact the server.  It is highly recommended not to change this value unless you know that no other threads are accessing this ProxyClient instance.
+
+              useragent
+                     Changes the useragent string that is reported to the web server.
+
+              session_name
+                     Name of the cookie that holds the authentication value.
+
+              session_as_cookie
+                     If True, then the session information is saved locally as a cookie.  This is here for backwards compatibility.  New code should set this to False when constructing the ProxyClient.
+
+              debug  If True, then more verbose logging is performed to aid in debugging issues.
+
+              insecure
+                     If True then the connection to the server is not checked to be sure that any SSL certificate information is valid.  That means that a remote host can lie about who it is.  Useful for
+                     development but should not be used in production code.
+
+              retries
+                     Setting this to a positive integer will retry failed requests to the web server this many times.  Setting to a negative integer will retry forever.
+
+              timeout
+                     A float describing the timeout of the connection. The timeout only affects the connection process itself, not the downloading of the response body. Defaults to 120 seconds.
+
+              Changed in version 0.3.33: Added the timeout attribute
+
+              property debug
+                     When True, we log extra debugging statements.  When False, we only log errors.
+
+              log = <Logger fedora.client.proxyclient (WARNING)>
+
+              send_request(method, req_params=None, auth_params=None, file_params=None, retries=None, timeout=None)
+                     Make an HTTP request to a server method.
+
+                     The  given  method is called with any parameters set in req_params.  If auth is True, then the request is made with an authenticated session cookie.  Note that path parameters should
+                     be set by adding onto the method, not via req_params.
+
+                     Parameters
+
+                            • method -- Method to call on the server.  It's a url fragment that comes after the base_url set in __init__().  Note that any parameters set as extra path information  should
+                              be listed here, not in req_params.
+
+                            • req_params -- dict containing extra parameters to send to the server
+
+                            • auth_params --
+
+                              dict containing one or more means of authenticating to the server.  Valid entries in this dict are:
+
+                              cookie Deprecated  Use  session_id  instead.   If both cookie and session_id are set, only session_id will be used.  A Cookie.SimpleCookie to send as a session cookie to the
+                                     server
+
+                              session_id
+                                     Session id to put in a cookie to construct an identity for the server
+
+                              username
+                                     Username to send to the server
+
+                              password
+                                     Password to use with username to send to the server
+
+                              httpauth
+                                     If set to basic then use HTTP Basic Authentication to send the username and password to the server.  This may be extended in the  future  to  support  other  httpauth
+                                     types than basic.
+
+                              Note  that  cookie can be sent alone but if one of username or password is set the other must as well.  Code can set all of these if it wants and all of them will be sent to
+                              the server.  Be careful of sending cookies that do not match with the username in this case as the server can decide what to do in this case.
+
+                            • file_params -- dict of files where the key is the name of the file field used in the remote method and the value is the local path of the file to be uploaded.  If  you  want
+                              to pass multiple files to a single file field, pass the paths as a list of paths.
+
+                            • retries  -- if we get an unknown or possibly transient error from the server, retry this many times.  Setting this to a negative number makes it try forever.  Default to use
+                              the retries value set on the instance or in __init__().
+
+                            • timeout -- A float describing the timeout of the connection. The timeout only affects the connection process itself, not the downloading of the response  body.  Defaults  to
+                              the timeout value set on the instance or in __init__().
+
+                     Returns
+                            If  ProxyClient  is  created  with  session_as_cookie=True  (the  default),  a  tuple  of  session  cookie  and  data  from  the  server.  If ProxyClient was created with ses‐
+                            sion_as_cookie=False, a tuple of session_id and data instead.
+
+                     Return type
+                            tuple of session information and data from server
+
+                     Changed in version 0.3.17: No longer send tg_format=json parameter.  We rely solely on the Accept: application/json header now.
+
+                     Changed in version 0.3.21: * Return data as a Bunch instead of a DictContainer * Add file_params to allow uploading files
+
+                     Changed in version 0.3.33: Added the timeout kwarg
+
+   OpenIdBaseClient
+       class fedora.client.OpenIdBaseClient(base_url, login_url=None, useragent=None, debug=False, insecure=False, openid_insecure=False, username=None, cache_session=True, retries=None, timeout=None,
+       retry_backoff_factor=0)
+              A client for interacting with web services relying on openid auth.
+
+              has_cookies()
+
+              login(username, password, otp=None)
+                     Open a session for the user.
+
+                     Log in the user with the specified username and password against the FAS OpenID server.
+
+                     Parameters
+
+                            • username -- the FAS username of the user that wants to log in
+
+                            • password -- the FAS password of the user that wants to log in
+
+                            • otp -- currently unused.  Eventually a way to send an otp to the API that the API can use.
+
+              send_request(method, auth=False, verb='POST', **kwargs)
+                     Make an HTTP request to a server method.
+
+                     The given method is called with any parameters set in req_params.  If auth is True, then the request is made with an authenticated session cookie.
+
+                     Parameters
+
+                            • method -- Method to call on the server.  It's a url fragment that comes after the base_url set in __init__().
+
+                            • auth -- If True perform auth to the server, else do not.
+
+                            • req_params -- Extra parameters to send to the server.
+
+                            • file_params -- dict of files where the key is the name of the file field used in the remote method and the value is the local path of the file to be uploaded.  If  you  want
+                              to pass multiple files to a single file field, pass the paths as a list of paths.
+
+                            • verb -- HTTP verb to use.  GET and POST are currently supported.  POST is the default.
+
+              property session_key
+
+       fedora.client.openidbaseclient.requires_login(func)
+              Decorator function for get or post requests requiring login.
+
+              Decorate a controller method that requires the user to be authenticated.  Example:
+
+                 from fedora.client.openidbaseclient import requires_login
+
+                 @requires_login
+                 def rename_user(new_name):
+                     user = new_name
+                     # [...]
+
+   OpenIdProxyClient
+       class fedora.client.OpenIdProxyClient(base_url, login_url=None, useragent=None, session_name='session', debug=False, insecure=False, openid_insecure=False, retries=None, timeout=None)
+              A client to a Fedora Service.  This class is optimized to proxy multiple users to a service.  OpenIdProxyClient is designed to be usable by code that creates a single instance of this class
+              and uses it in multiple threads. However it is not completely threadsafe.  See the information on setting attributes below.
+
+              If you want something that can manage one user's connection to a Fedora Service, then look into using OpenIdBaseClient instead.
+
+              This class has several attributes.  These may be changed after instantiation.  Please note, however, that changing these values when another thread is utilizing the same instance may affect
+              more than just the thread that you are making the change in.  (For instance, changing the debug option could cause other threads to start logging debug messages in the middle of a method.)
+
+              base_url
+                     Initial  portion  of  the url to contact the server.  It is highly recommended not to change this value unless you know that no other threads are accessing this OpenIdProxyClient in‐
+                     stance.
+
+              useragent
+                     Changes the useragent string that is reported to the web server.
+
+              session_name
+                     Name of the cookie that holds the authentication value.
+
+              debug  If True, then more verbose logging is performed to aid in debugging issues.
+
+              insecure
+                     If True then the connection to the server is not checked to be sure that any SSL certificate information is valid.  That means that a remote host can lie about who it is.  Useful for
+                     development but should not be used in production code.
+
+              retries
+                     Setting this to a positive integer will retry failed requests to the web server this many times.  Setting to a negative integer will retry forever.
+
+              timeout
+                     A float describing the timeout of the connection. The timeout only affects the connection process itself, not the downloading of the response body. Defaults to 120 seconds.
+
+              property debug
+                     When True, we log extra debugging statements.  When False, we only log errors.
+
+              login(username, password, otp=None)
+                     Open a session for the user.
+
+                     Log in the user with the specified username and password against the FAS OpenID server.
+
+                     Parameters
+
+                            • username -- the FAS username of the user that wants to log in
+
+                            • password -- the FAS password of the user that wants to log in
+
+                            • otp -- currently unused.  Eventually a way to send an otp to the API that the API can use.
+
+                     Returns
+                            a tuple containing both the response from the OpenID provider and the session used to by this provider.
+
+              send_request(method, verb='POST', req_params=None, auth_params=None, file_params=None, retries=None, timeout=None, headers=None)
+                     Make an HTTP request to a server method.
+
+                     The given method is called with any parameters set in req_params.  If auth is True, then the request is made with an authenticated session cookie.  Note that path  parameters  should
+                     be set by adding onto the method, not via req_params.
+
+                     Parameters
+
+                            • method  -- Method to call on the server.  It's a url fragment that comes after the base_url set in __init__().  Note that any parameters set as extra path information should
+                              be listed here, not in req_params.
+
+                            • req_params -- dict containing extra parameters to send to the server
+
+                            • auth_params --
+
+                              dict containing one or more means of authenticating to the server.  Valid entries in this dict are:
+
+                              cookie Deprecated Use session_id instead.  If both cookie and session_id are set, only session_id will be used.  A Cookie.SimpleCookie to send as a  session  cookie  to  the
+                                     server
+
+                              session_id
+                                     Session id to put in a cookie to construct an identity for the server
+
+                              username
+                                     Username to send to the server
+
+                              password
+                                     Password to use with username to send to the server
+
+                              httpauth
+                                     If  set  to  basic  then  use HTTP Basic Authentication to send the username and password to the server.  This may be extended in the future to support other httpauth
+                                     types than basic.
+
+                              Note that cookie can be sent alone but if one of username or password is set the other must as well.  Code can set all of these if it wants and all of them will be  sent  to
+                              the server.  Be careful of sending cookies that do not match with the username in this case as the server can decide what to do in this case.
+
+                            • file_params  --  dict of files where the key is the name of the file field used in the remote method and the value is the local path of the file to be uploaded.  If you want
+                              to pass multiple files to a single file field, pass the paths as a list of paths.
+
+                            • retries -- if we get an unknown or possibly transient error from the server, retry this many times.  Setting this to a negative number makes it try forever.  Default to  use
+                              the retries value set on the instance or in __init__().
+
+                            • timeout  --  A float describing the timeout of the connection.  The timeout only affects the connection process itself, not the downloading of the response body. Defaults to
+                              the timeout value set on the instance or in __init__().
+
+                            • headers -- A dictionary containing specific headers to add to the request made.
+
+                     Returns
+                            A tuple of session_id and data.
+
+                     Return type
+                            tuple of session information and data from server
+
+   Clients for Specific Services
+   Wiki
+       class fedora.client.Wiki(base_url='https://fedoraproject.org/w/', *args, **kwargs)
+
+              api_high_limits = False
+
+              check_api_limits()
+                     Checks whether you have the 'apihighlimits' right or not.
+
+              fetch_all_revisions(start=1, flags=True, timestamp=True, user=True, size=False, comment=True, content=False, title=True, ignore_imported_revs=True, ignore_wikibot=False, callback=None)
+                     Fetch data for all revisions. This could take a long time. You can start at a specific revision by modifying the 'start' keyword argument.
+
+                     To ignore revisions made by "ImportUser" and "Admin" set ignore_imported_revs to True (this is the default). To ignore edits made by Wikibot set ignore_wikibot to True (False is  the
+                     default).
+
+                     Modifying the remainder of the keyword arguments will return less/more data.
+
+              get_recent_changes(now, then, limit=500)
+                     Get recent wiki changes from now until then
+
+              login(username, password)
+
+              print_recent_changes(days=7, show=10)
+
+   Service
+   Transforming SQLAlchemy Objects into JSON
+GLOSSARY
+       controller
+              In  MVC design, the controller is in charge of things.  It takes processes events and decides what data to ask the model for, manipulates the data according to the information in the event,
+              and decides which view to send the results to to be rendered.
+
+       CSRF   Cross-site request forgery is a technique where a malicious website can gain access to another web site by hijaacking a currently open session that the user has  open  to  the  site.   This
+              technique can also affect identification via SSL Certificates or anything else that the browser sends to the server automatically when a request is made.
+
+              SEE ALSO:
+                 CSRF-Protection
+
+       Dojo   Dojo is a JavaScript toolkit that aims to be a standard library for JavaScript.  It provides a small core library with useful functions and an expanded set of scripts that can be added that
+              provide widgets and other features.
+
+              SEE ALSO:
+                 http://www.dojotoolkit.org
+
+       double submit
+              A  strategy to foil CSRF attacks.  This strategy involves sending the value of the authentication cookie (or something derivable only from knowing the value of the authentication cookie) in
+              the body of the request.  Since the Same Origin Policy prevents a web site other than the one originating the cookie from reading what's in the cookie, the server can be reasonably  assured
+              that  the  request  does not originate from an unknown request on another website.  Note that this and other anti-CSRF measures do not protect against spoofing or getting a user to actively
+              click on a link on an attacked website by mistake.
+
+       flask  A simple Python web framework that we're using in parts of Fedora Infrastructure.  It provides good documentation and simplicity in its design.
+
+              SEE ALSO:
+                 http://flask.pocoo.org/docs/
+
+       JSON   JavaScript Object Notation is a format for marshalling data.  It is based on a subset of JavaScript that is used to declare objects.  Compared to xml, JSON is a lightweight,  easily  parsed
+              format.
+
+              SEE ALSO:
+                 Wikipedia's JSON Entry
+
+       model  In MVC design, the layer that deals directly with the data.
+
+       OpenID A  specification  for  single  sign  on to web services where the authentication server and the application seeking to have the user authenticated do not need to have complete trust in each
+              other.
+
+              SEE ALSO:
+                 http://openid.net/get-an-openid/what-is-openid/
+
+       Same Origin Policy
+              A web browser security policy that prevents one website from reading: 1) the cookies from another website 2) the response body from another website
+
+              SEE ALSO:
+                 http://en.wikipedia.org/wiki/Same_origin_policy
+
+       single sign-on
+              A feature that allows one login to authenticate a user for multiple applications.  So logging into one application will authenticate you for all the applications that support the same  sin‐
+              gle-sign-on infrastructure.
+
+       TurboGears
+              A Python web framework that most of Fedora Infrastructure's apps are built on.
+
+              SEE ALSO:
+                 http://www.turbogears.org/
+
+       TurboGears2
+              The  successor to TurboGears, TurboGears2 provides a very similar framework to coders but has some notable differences. It is based on pylons and paste so it is much more tightly integrated
+              with WSGI.  The differences with :ref`TurboGears`1 are largely with the organization of code and how to configure the application.
+
+              SEE ALSO:
+                 http://www.turbogears.org/
+
+       view   In MVC design, the layer that takes care of formatting and rendering data for the consumer.  This could be displaying the data as an html page or marshalling it into JSON objects.
+
+       WSGI   WSGI is an interface between web servers and web frameworks that originated in the Python community.  WSGI lets different components embed each other even if they  were  originally  written
+              for different python web frameworks.
+
+              SEE ALSO:
+                 http://en.wikipedia.org/wiki/Web_Server_Gateway_Interface
+
+       • Glossary
+
+       • Index
+
+       • Module Index
+
+       • Search Page
+
+AUTHOR
+       Author name not set
+
+COPYRIGHT
+       2007-2020 Red Hat, Inc.
+
+0.3                                                                                           January 29, 2025                                                                             PYTHON-FEDORA(1)

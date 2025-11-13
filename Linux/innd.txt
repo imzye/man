@@ -1,0 +1,195 @@
+
+INND(8)                                                                                     System Manager's Manual                                                                                     INND(8)
+
+NAME
+       innd, inndstart - InterNetNews daemon
+
+SYNOPSIS
+       innd  [  -a ] [ -c days ] [ -d ] [ -f ] [ -i count ] [ -o count ] [ -l size ] [ -m mode ] [ -n flag ] [ -p port ] [ -r ] [ -s ] [ -S host ] [ -t timeout ] [ -u ] [ -x ] [ -L ] [ -N ] [ -H count ] [ -T
+       count ] [ -X seconds ]
+
+       inndstart [ flags ]
+
+DESCRIPTION
+       Innd, the InterNetNews daemon, handles all incoming NNTP feeds.  It reads the active(5), newsfeeds(5), and hosts.nntp(5) files into memory.  It then opens the NNTP port to receive articles from remote
+       sites (see the ``-p'' option), a Unix-domain stream socket to receive articles from local processes such as nnrpd(8) and rnews(1), and a Unix-domain datagram socket for use by ctlinnd(8) to direct the
+       server to perform certain actions.  It also opens the history(5) database and two log files to replace its standard output and standard error.
+
+       Once the files and sockets have been opened, innd waits for connections and data to be ready on its ports by using select(2) and non-blocking I/O.  If no data is available, then it will flush its  in-
+       core data structures.  The default number of seconds to timeout before flushing is 300 seconds.
+
+       If  innd  gets  an  NOSPC error (see intro(2)) while trying to write the active file, an article file, or the history database, it will send itself a ``throttle'' command.  This will also happen if it
+       gets too many I/O errors while writing to any files.
+
+       Any sub-processes spawned by the server will get a nice(2) value of 10.
+
+OPTIONS
+       -p     If the ``-p'' flag is used, then the NNTP port is assumed to be open on the specified descriptor.  (If this flag is used, then innd assumes it is running with the proper permissions and it will
+              not call chown(2) on any files or directories it creates.)
+
+       -t     Change the timeout period before flushing to timeoutseconds.
+
+       -i     To limit the number of incoming NNTP connections, use the ``-i'' flag.  A value of zero will suppress this check.  The default is 50.
+
+       -o     To limit the number of files that will be kept open for outgoing file feeds, use the ``-o'' flag.  The default is the number of available descriptors minus some reserved for internal use.
+
+       -l     To limit the size of an article, use the ``-l'' flag.  If this flag is used, then any article bigger than size bytes will be rejected.  The default is no checking, which can also be obtained by
+              using a value of zero.
+
+       -c     Innd rejects articles that are too old.  While this behavior can be controlled by the history database, occasionally a site dumps a batch of very old news back onto the network.  Use the ``-c''
+              flag to specify a cutoff.  For example ``-c21'' will reject any articles that were posted more than 21 days ago.  A value of zero will suppress this check.  The default is 14 days.
+
+       -d -f  Innd normally puts itself into the background, sets its standard output and error to log files, and disassociates itself from the terminal.  Using the ``-d'' flag instructs the server to not do
+              this, while using the ``-f'' flag just leaves the server running the foreground.
+
+       -u     The logs are normally buffered; use the ``-u'' flag to have them unbuffered.
+
+       -m     To start the server in a paused or throttled state (see ctlinnd(8)) use the ``-m'' flag to set the initial running mode.  The argument should start with a single letter g, p, or t,  to  emulate
+              the ``go,'' ``pause,'' or ``throttle'' commands, respectively.
+
+       -r     If the ``-r'' flag is used, the server will renumber the active file as if a ``renumber'' command were sent.
+
+       -s     If  the  ``-s'' flag is used, then innd will not do any work but will instead just check the syntax of the newsfeeds file.  It will exit with an error status if there are any errors; the actual
+              errors will be reported in syslog(3).
+
+       -n     The ``-n'' flag specifies whether or not pausing or throttling the server should also disable future newsreading processes.  A value of ``y'' will make newreaders act as the server, a value  of
+              ``n'' will allow newsreading even when the server is not running.  The default is to allow reading.
+
+       -S     If the ``-S'' flag is used, then innd will run in ``slave'' mode.  When running as a slave, the server will only accept articles from the specified host, which must use the ``xreplic'' protocol
+              extension described below.  Note that the host must either appear in the hosts.nntp file, or the server must be started with the ``-a'' flag.
+
+       -a     By default, if a host if not mentioned in the hosts.nntp file, then the connection is handed off to nnrpd.  If the ``-a'' flag is used, then any host can connect and transfer articles.
+
+       -L     If the ``-L'' flag is used, then innd will not create the links for cross posted articles.  A feed only type of site could use this option to improve performance.  Or it can be combined with  a
+              channel feed to the crosspost(8) program to move the delay associated with creating the links out of the innd processing loop.
+
+       -C     If  the ``-C'' flag is used, then innd will accept and propagate but not actually process cancel or supercedes messages.  This is intended for sites concerned about abuse of cancels and wish to
+              use another cancel mechanism with greater authentication.
+
+       -H -T -X
+              The ``-H'', ``-T'', and ``-X'' flags control the number of connects per minute allowed.  This code is meant to protect your server from newsreader clients that make too many connects per minute
+              to  your  server.   You  should probably not use it unless you are having a problem.  The table used for these checks is fixed at 128 entries and is used as a ring.  The size was chosen to make
+              calculating the index easy and to be pretty sure you won't run out of space.  In practice, it is doubtful that you will use even half the table at any given moment.
+
+              The ``-H'' flag limits the number of times a host is allowed to connect to the server per ``-X'' seconds.  The default is 2.
+
+              The ``-T'' flag limits the total number of incoming connects to innd per ``-X'' seconds.  The maximum value is 128.  The default is 60.
+
+              The ``-X'' sets the number of seconds used by the ``-H'' and ``-T'' flags.  A value of zero turns off checking.  The default is 0.
+
+       Inndstart is a small front-end program that opens the NNTP port, sets its userid and groupid to the news maintainer, and then execs innd with the ``-p'' flag and a minimal secure,  environment.   This
+       is a small, easily-understood front-end program that can be used if a site does not want to run innd with root privileges.
+
+CONTROL MESSAGES
+       Arriving articles that have a Control header or have a Subject header that starts with the five characters ``cmsg '' are called control messages.  Except for the cancel message, these messages are im‐
+       plemented by external programs in the /usr/lib/news/control directory.  (Cancel messages update the history database, so they must be handled internally; the cost of syncing, locking,  then  unlocking
+       would be too high given the number of cancel messages that are received.)
+
+       When  a  control message arrives, the first word of the text is converted to lowercase and used as the name of the program to execute; if the named program does not exist, then a program named default
+       is executed.
+
+       All control programs are invoked with four parameters.  The first is the address of the person who posted the message; this is taken from the Sender header.  If that header is empty, then it is  taken
+       from  the From header.  The second parameter is the address to send replies to; this is taken from the Reply-To header.  If that header is empty then the poster's address is used.  The third parameter
+       will be a name under which the article is filed, relative to the news spool directory.  The fourth parameter is the host that sent the article, as specified on the Path line.
+
+       The distribution of control message is also different from those of standard articles.
+
+       Control messages are normally filed in the newsgroup named control.  They can be filed in subgroups, however, based on the control message command.  For example, a newgroup message will  be  filed  in
+       control.newgroup if that group exists, otherwise it will be filed in control.
+
+       Sites  may  explicitly  have  the  ``control'' newsgroup in their subscription list, although it is usually best to exclude it.  If a control message is posted to a group whose name ends with the four
+       characters ``.ctl'' then the suffix is stripped off and what is left is used as the group name.  For example, a cancel message posted to ``news.admin.ctl'' will be sent to all sites that subscribe  to
+       ``control''  or  ``news.admin.''  Newgroup and rmgroup messages receive additional special treatment.  If the message is approved and posted to the name of the group being created or removed, then the
+       message will be sent to all sites whose subscription patterns would cause them to receive articles posted in that group.
+
+PROTOCOL DIFFERENCES
+       Innd implements the NNTP commands defined in RFC 977, with the following differences:
+
+       1.     The ``list'' maybe followed by an optional ``active'', ``active.times'', or ``newsgroups'' argument.  This common extension is not fully supported; see nnrpd(8).
+
+       2.     The ``authinfo user'' and ``authinfo pass'' commands are implemented.  These are based on the reference Unix implementation; no other documentation is available.
+
+       3.     A new command, ``mode reader'', is provided.  This command will cause the server to pass the connection on to nnrpd.  The command ``mode query'' is intended for future  use,  and  is  currently
+              treated the same way.
+
+       4.     A  new  command, ``xreplic news.group/art[,news.group/art]'', is provided.  This is similar to the ``ihave'' command (the same reply codes are used) except for the data that follows the command
+              word.  The data consists of entries separated by a single comma.  Each entry consists of a newsgroup name, a slash, and an article number.  Once processed, the article  will  be  filed  in  the
+              newsgroup and article numbers specified in the command.
+
+       5.     A new command, ``xpath messageid'', is provided.  The server responds with a 223 response and a space-separated list of filenames where the article was filed.
+
+       6.     The only other commands implemented are ``head'', ``help'', ``ihave'', ``quit'', and ``stat''.
+
+HEADER MODIFICATIONS
+       Innd modifies as few article headers as possible, although it could be better in this area.
+
+       The following headers, if present, are removed:
+              Date-Received
+              Posted
+              Posting-Version
+              Received
+              Relay-Version
+       Empty headers and headers that consist of nothing but whitespace are also dropped.
+
+       The local site's name (as determined by the ``pathhost'' value in inn.conf(5)) and an exclamation point are prepended to the Path header.
+
+       The Xref header is removed.  If the article is cross-posted a new header is generated.
+
+       The Lines header will be added if it is missing.
+
+       Innd does not rewrite incorrect headers.  For example, it will not replace an incorrect Lines header, but will reject the article.
+
+LOGGING
+       Innd reports all incoming articles in its log file.  This is a text file with a variable number of space-separated fields in one of the following formats:
+              mon dd hh:mm:ss.mmm + feed <Message-ID> site...
+              mon dd hh:mm:ss.mmm j feed <Message-ID> site...
+              mon dd hh:mm:ss.mmm c feed <Message-ID> site...
+              mon dd hh:mm:ss.mmm - feed <Message-ID> reason...
+       The  first  three fields are the date and time to millisecond resolution.  The fifth field is the site that sent the article (based on the Path header) and the sixth field is the article's Message-ID;
+       they will be a question mark if the information is not available.
+
+       The fourth field indicates whether the article was accepted or not.  If it is a plus sign, then the article was accepted.  If it is the letter ``j'' then the article was accepted,  but  all  of  news‐
+       groups have an ``j'' in their active field, so the article was filed into the ``junk'' newsgroup.  If the fourth field is the letter ``c'', then a cancel message was accepted before the original arti‐
+       cle arrived.  In all three cases, the article has been accepted and the ``site..'' field contains the space-separated list of sites to which the article is being sent.
+
+       If the fourth field is a minus sign, then the article was rejected.  The reasons for rejection include:
+              "%s" header too long
+              "%s" wants to cancel <%s> by "%s"
+              Article exceeds local limit of %s bytes
+              Article posted in the future -- "%s"
+              Bad "%s" header
+              Can't write history
+              Duplicate
+              Duplicate "%s" header
+              EOF in headers
+              Linecount %s != %s +- %s
+              Missing %s header
+              No body
+              No colon-space in "%s" header
+              No space
+              Space before colon in "%s" header
+              Too old -- "%s"
+              Unapproved for "%s"
+              Unwanted newsgroup "%s"
+              Unwanted distribution "%s"
+              Whitespace in "Newsgroups" header -- "%s"
+       Where ``%s'', above, is replaced by more specific information.
+
+       Note that if an article is accepted and none of the newsgroups are valid, it will be logged with two lines, a ``j'' line and a minus sign line.
+
+       Innd also makes extensive reports through syslog.  The first word of the log message will be the name of the site if the entry is site-specific (such as a ``connected'' message).  The first word  will
+       be ``ME'' if the message relates to the server itself, such as when a read error occurs.
+
+       If  the  second  word is the four letters ``cant'' then an error is being reported.  In this case, the next two words generally name the system call or library routine that failed, and the object upon
+       which the action was being performed.  The rest of the line may contain other information.
+
+       In other cases, the second word attempts to summarize what change has been made, while the rest of the line gives more specific information.  The word  ``internal''  generally  indicates  an  internal
+       logic error.
+
+HISTORY
+       Written by Rich $alz <rsalz@uunet.uu.net> for InterNetNews.  This is revision 1.37, dated 1996/12/06.
+
+SEE ALSO
+       active(5), ctlinnd(8), crosspost(8), dbz(3z), history(5), hosts.nntp(5), inn.conf(5), newsfeeds(5), nnrpd(8), rnews(1), syslog(8).
+
+                                                                                                                                                                                                        INND(8)

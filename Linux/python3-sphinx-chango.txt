@@ -1,0 +1,2771 @@
+CHANGO(1)                                                                                          chango                                                                                         CHANGO(1)
+
+NAME
+       chango - chango 0.5.0 PyPi Package VersionSupported Python versionsDocumentation StatusMIT LicenseGithub Actions workflowCode coveragepre-commit.ci statusRuff.SH INTRODUCTION
+
+       chango  is a changelog generation tool.  Changes are described alongside the code changes in the codebase.  chango extracts these changes and generates a changelog.  chango consists of both a com‐
+       mand line interface and a Python API.  All aspects of the data formats, storage, and rendering are customizable via an interface class approach.
+
+INSTALLING
+       You can install or upgrade chango via
+
+          pipx install chango --upgrade
+
+       Note that installation via pipx is recommended since chango should not interfere with your projects dependencies.
+
+MOTIVATION
+       Informative and helpful changelogs (or release notes) are an essential part of software development.  They are a core part of the communication between developers and users.   At  the  same  time,
+       creating  and maintaining changelogs can be a tedious and error-prone task, especially since this is often done only when a new release is prepared.  chango aims to make the process of maintaining
+       changelogs as easy as possible.  This is achieved roughly by two means:
+
+       1. Shifting the creation of changelogs to the time of development: Changes are described alongside the code changes in the codebase.  This reduces the chance to forget about crucial details in the
+          changes that should be mentioned in the changelog.  It also ensures that the changelog undergoes the same review process as the code changes.
+
+       2. Automating the generation of changelogs: chango extracts the changes from the codebase and generates a changelog.  At release time, the changelog is thus already up-to-date and  requires  close
+          to zero manual work.
+
+   Inspiration
+       This  package is heavily inspired by the towncrier  and reno packages.  Both packages are excellent tools for changelog generation but are rather specialized in their use cases.  chango aims to be
+       more flexible and customizable than these packages.
+
+QUICK START
+       A minimal setup of using chango for your project consists of the following steps.
+
+   Building a ChanGo instance
+       chango is designed to be highly customizable.
+
+       Store the following code in a file named chango.py in the root of your project.
+
+          from chango.concrete import (
+              CommentChangeNote,
+              CommentVersionNote,
+              DirectoryChanGo,
+              DirectoryVersionScanner,
+              HeaderVersionHistory,
+          )
+
+          chango_instance = DirectoryChanGo(
+              change_note_type=CommentChangeNote,
+              version_note_type=CommentVersionNote,
+              version_history_type=HeaderVersionHistory,
+              scanner=DirectoryVersionScanner(
+                  base_directory="changes", unreleased_directory="unreleased"
+              ),
+          )
+
+       Create the directories changes and changes/unreleased in the root of your project.
+
+       The chango_instance is the object that the CLI will use to interact with the changelog.  It contains information about the data type of individual changes, versions and the  history  of  versions.
+       It  also has instructions on how the individual changes are stored and how they are extracted from the codebase.  All these aspects can be customized by providing different classes to the Directo‐
+       ryChanGo constructor or using a different implementation of the ChanGo interface.
+
+   Configuring pyproject.toml
+       We still need to make the chango CLI aware of the chango_instance.  This is done by adding the following lines to your pyproject.toml file.
+
+          [tool.chango]
+          sys_path = "."
+          chango_instance = { name= "chango_instance", module = "chango" }
+
+       This instructs the CLI to import the chango_instance from the file chango.py in the root of your project.
+
+   Adding Changes
+       Now the chango CLI is ready to be used.  Go ahead and add a change to the changes/unreleased directory.  It's as simple als calling
+
+          chango new short-slug-for-the-change
+
+       For more information on how to use chango, please refer to the documentation.
+
+   GitHub Actions
+       When using chango in your project, you will want to ensure that each change adds a change note.  When hosted on GitHub, you can use GitHub Actions to support this process and automatically  create
+       a template change note for each new change.  chango defines the following methods to help you with this process:
+
+       • chango.abc.ChanGo.build_github_event_change_note()
+
+       • chango.abc.ChangeNote.build_from_github_event()
+
+       Going even further, chango provides a composite GitHub Action that does the heavy lifting for you.  You can configure it for example as follows:
+
+          name: Create Chango Change Note
+          on:
+            pull_request:
+              branches:
+                - main
+              types:
+                - opened
+                - reopened
+
+          jobs:
+            create-chango-fragment:
+              permissions:
+                # Give the default GITHUB_TOKEN write permission to commit and push the
+                # added chango note to the PR branch.
+                contents: write
+              name: create-chango-fragment
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+                - uses: Bibo-Joshi/chango@<sha-of-latest-release>
+                  with:
+                    # Optional: Specify a Python version to use
+                    python-version: '3.13'
+
+       This will automatically use your chango configuration to create a change note for each new change.
+
+   Inputs
+       The following inputs can be used to configure the action using the with keyword.
+                                       ┌────────────────────┬─────────────────────────────────────────────────────┬──────────┬───────────────────────────────────────────┐
+                                       │ Name               │ Description                                         │ Required │ Default                                   │
+                                       ├────────────────────┼─────────────────────────────────────────────────────┼──────────┼───────────────────────────────────────────┤
+                                       │ python-version     │ The Python version to use.                          │ No       │ 3.x                                       │
+                                       ├────────────────────┼─────────────────────────────────────────────────────┼──────────┼───────────────────────────────────────────┤
+                                       │ commit-and-push    │ Whether  to  commit  and  push the change           │ No       │ true                                      │
+                                       │                    │ note to the PR branch.                              │          │                                           │
+                                       ├────────────────────┼─────────────────────────────────────────────────────┼──────────┼───────────────────────────────────────────┤
+                                       │ pyproject-toml     │ Path to the  pyproject.toml  file.  Takes           │ No       │ None                                      │
+                                       │                    │ the         same         input         as           │          │                                           │
+                                       │                    │ chango.config.get_chango_instance().                │          │                                           │
+                                       ├────────────────────┼─────────────────────────────────────────────────────┼──────────┼───────────────────────────────────────────┤
+                                       │ data               │ Additional JSON data to pass to the para‐           │ No       │ An               instance              of │
+                                       │                    │ meter               data               of           │          │ chango.action.ChanGoActionData            │
+                                       │                    │ chango.abc.ChanGo.build_github_event_change_note(). │          │                                           │
+                                       ├────────────────────┼─────────────────────────────────────────────────────┼──────────┼───────────────────────────────────────────┤
+                                       │ github-token:      │ GitHub Token or Personal Access Token (PAT) used to │ No       │ GITHUB_TOKEN                              │
+                                       │                    │ authenticate with GitHub.                           │          │                                           │
+                                       ├────────────────────┼─────────────────────────────────────────────────────┼──────────┼───────────────────────────────────────────┤
+                                       │ query-issue-types: │ Whether to query the issue types of the linked  is‐ │ No       │ False                                     │
+                                       │                    │ sues.  Can only be used on organizations with issue │          │                                           │
+                                       │                    │ types enabled. In this case, an organization scoped │          │                                           │
+                                       │                    │ PAT is required.                                    │          │                                           │
+                                       └────────────────────┴─────────────────────────────────────────────────────┴──────────┴───────────────────────────────────────────┘
+
+   Sphinx Extension
+       In addition to the CLI, chango provides a Sphinx extension that can be used to automatically render change notes in your project documentation.
+
+   Setup
+       To enable the extension, simply add 'chango.sphinx_ext' to your extensions list in your conf.py file.
+
+          extensions = [
+              ...
+              'chango.sphinx_ext',
+          ]
+
+       To specify the path to the pyproject.toml file, you can use the chango_pyproject_toml configuration option in your conf.py file.
+
+          chango_pyproject_toml = 'path/to/pyproject.toml'
+
+       This is useful to ensure that chango can find the correct configuration file independent of the current working directory.
+
+       Now, you can use the chango directive in your documentation to render change notes.
+
+          .. chango:: Headline
+             :start_from: 1.0.0
+
+       This will render a list of change notes starting from version 1.0.0 up to the latest (unreleased) version.
+
+   Configuration
+       The following configuration options are available:
+
+       chango_pyproject_toml
+
+              Type   pathlib.Path | str | None.TP Default None.UNINDENT
+
+                     Path to the pyproject.toml file. Takes the same input as chango.config.get_chango_instance().
+
+       .. chango::
+              The chango directive renders the version history of your project.
+
+              If the directive has a body, it will be used as the headline for the change notes with = above and below the headline, which is the default reStructuredText syntax for a headline.
+
+                 Example
+
+                     .. chango:: Headline
+                        :start_from: "1.0.0"
+
+                 Renders as
+
+                     ========
+                     Headline
+                     ========
+
+                     ...
+
+              The options that are valid for the chango directive are the same as the options for load_version_history().
+
+              If your implementation of ChanGo has additional options, you can pass them as keyword arguments to the directive.  chango will inspect the signature of the method and configure the  options
+              accordingly.
+
+              IMPORTANT:
+                 Since the options will be interpreted as keyword arguments for load_version_history(), by default, each option is required to have a value.
+
+              TIP:
+                 The values be interpreted as JSON string and will be loaded using json.loads().
+
+              Since  you can only specify strings as options in reStructuredText, it may be necessary to use custom validator functions to convert the strings to the correct types.  Custom validators can
+              be specified by using typing.Annotated in the signature of the method.  Validators should have the following signature:
+
+                 def validator(value: str | None) -> Any:
+                     ...
+
+                 Example
+
+                     from collections.abc import Sequence
+                     from typing import Annotated
+
+                     def sequence_validator(value: str | None) -> Sequence[int]:
+                         if value is None:
+                             raise ValueError('Value must not be None')
+                         return tuple(map(int, value.split(',')))
+
+                     def flag_validator(value: str | None) -> bool:
+                         if value is not None:
+                             raise ValueError('Flag options must not have a value')
+                         return True
+
+                     class MyChanGo(ChanGo):
+                         def load_version_history(
+                             self,
+                             start_from: str | None = None,
+                             end_at: str | None = None,
+                             custom_option_1: dict[str, str] | None = None,
+                             custom_option_2: Annotated[Sequence[int], sequence_validator] = (1, 2, 3),
+                             custom_option_3: Annotated[bool, flag_validator] = False,
+                         ):
+                             ...
+
+                 With this signature, you can use the following directive:
+
+                     .. chango::
+                        :custom_option_1: {"key": "value"}
+                        :custom_option_2: 4,5,6
+                        :custom_option_3:
+
+              The following options are available by default:
+
+              Keyword Arguments:
+
+                     :start_from: (str, optional): The version to start from. Passed to parameter
+                            load_version_history of load_version_history(). Defaults to None.
+
+                     :end_at: (str, optional): The version to end at. Passed to parameter
+                            load_version_history of load_version_history(). Defaults to None.
+
+   chango
+       chango.__version__ = '0.5.0'
+              The version of the chango library as string
+
+              Type   str
+
+   ChangeNoteInfo
+       class chango.ChangeNoteInfo(uid, version, file_path)
+              Bases: object
+
+              Objects of this type represents metadata about a change note.
+
+              Parameters
+
+                     • uid (str) -- Unique identifier of this change note.
+
+                     • version (Version | None) -- The version the change note belongs to.  May be None if the change note is not yet released.
+
+                     • file_path (pathlib.Path) -- The file path this change note is stored at.
+
+              uid    Unique identifier of this change note.
+
+                     Type   str
+
+              version
+                     The version the change note belongs to.  May be None if the change note is not yet released.
+
+                     Type   Version | None
+
+              file_path
+                     The file path this change note is stored at.
+
+                     Type   pathlib.Path
+
+   Version
+       class chango.Version(uid, date)
+              Bases: object
+
+              Objects of this type represent a released version of a software project.
+
+              Parameters
+
+                     • uid (str) -- Unique identifier / version number of this version.
+
+                     • date (datetime.date) -- Release date of this version.
+
+              uid    Unique identifier / version number of this version.
+
+                     Type   str
+
+              date   Release date of this version.
+
+                     Type   datetime.date
+
+   abc
+       This module contains abstract base classes defining the interfaces that the chango package is build on.
+
+   ChangeNote
+       class chango.abc.ChangeNote(slug, uid=None)
+              Bases: ABC
+
+              Abstract base class for a change note describing a single change in a software project.
+
+              Parameters
+
+                     • slug (str) -- A short, human-readable identifier for the change note.
+
+                     • uid (str) -- A unique identifier for the change note. If not provided, a random identifier will be generated. Should be 8 characters long and consist of lowercase letters and  dig‐
+                       its.
+
+              classmethod build_from_github_event(event, data=None)
+                     Build a change note from a GitHub event.
+
+                     IMPORTANT:
+                        This is an optional method and by default raises a NotImplementedError.  Implement this method if you want to automatically create change notes based on GitHub events.
+
+                     TIP:
+                        This method is useful for automatically creating change note drafts in GitHub actions to ensure that each pull request has documented changes.
+
+                        SEE ALSO:
+                            GitHub Actions
+
+                     Parameters
+
+                            • event (Dict[str, Any]) -- The GitHub event data. This should be one of the events that trigger workflows. The event is represented as a JSON dictionary.
+
+                            • data (Dict[str, Any] | chango.action.ChanGoActionData,                optional) -- Additional data that may be required to build the change note.
+
+                     Returns
+                            The change note or None.
+
+                     Return type
+                            CNT
+
+                     Raises NotImplementedError -- If the method is not implemented.
+
+              abstractmethod classmethod build_template(slug, uid=None)
+                     Build a template change note for the concrete change note type.
+
+                     TIP:
+                        This will be used to create a new change note in the CLI.
+
+                     Parameters
+
+                            • slug (str) -- The slug to use for the change note.
+
+                            • uid (str) -- The unique identifier for the change note or None to generate a random one.
+
+                     Returns
+                            The ChangeNote object.
+
+              abstract property file_extension
+                     The file extension to use when writing the change note to a file. The extension must not include the leading dot.
+
+                     Type   str
+
+              property file_name
+                     The file name to use when writing the change note to a file.
+
+              classmethod from_bytes(slug, uid, data, encoding='utf-8')
+                     Read a change note from the specified byte data. The data will be the raw binary content of a change note file.
+
+                     TIP:
+                        This convenience method calls from_string() internally.
+
+                     Parameters
+
+                            • slug (str) -- The slug of the change note.
+
+                            • uid (str) -- The UID of the change note.
+
+                            • data (bytes) -- The bytes to read from.
+
+                            • encoding (str) -- The encoding to use for reading.
+
+                     Returns
+                            The ChangeNote object.
+
+                     Return type
+                            ChangeNote
+
+                     Raises chango.error.ValidationError -- If the data is not a valid change note file.
+
+              classmethod from_file(file_path, encoding='utf-8')
+                     Read a change note from the specified file.
+
+                     TIP:
+                        This convenience method calls from_bytes() internally.
+
+                     Parameters
+
+                            • file_path (pathlib.Path | str) -- The path to the file to read from.
+
+                            • encoding (str) -- The encoding to use for reading.
+
+                     Returns
+                            The ChangeNote object.
+
+                     Return type
+                            ChangeNote
+
+                     Raises chango.error.ValidationError -- If the data is not a valid change note file.
+
+              abstractmethod classmethod from_string(slug, uid, string)
+                     Read a change note from the specified string data. The implementation must be able to handle the case where the string is not a valid change note and raise an ValidationError in that
+                     case.
+
+                     Parameters
+
+                            • slug (str) -- The slug of the change note.
+
+                            • uid (str) -- The UID of the change note.
+
+                            • string (str) -- The string to read from.
+
+                     Returns
+                            The ChangeNote object.
+
+                     Return type
+                            ChangeNote
+
+                     Raises chango.error.ValidationError -- If the string is not a valid change note.
+
+              property slug
+                     The short, human-readable identifier for the change note.
+
+                     Type   str
+
+              to_bytes(encoding='utf-8')
+                     Write the change note to bytes. This binary data should be suitable for writing to a file and reading back in with from_bytes().
+
+                     TIP:
+                        This convenience method calls to_string() internally.
+
+                     Parameters
+                            encoding (str) -- The encoding to use.
+
+                     Returns
+                            The bytes data.
+
+                     Return type
+                            bytes
+
+              to_file(directory=None, encoding='utf-8')
+                     Write the change note to the directory.
+
+                     HINT:
+                        The file name will always be the file_name.
+
+                     Parameters
+
+                            • directory -- Optional. The directory to write the file to. If not provided, the file will be written to the current working directory.
+
+                            • encoding (str) -- The encoding to use for writing.
+
+                     Returns
+                            The path to the file that was written.
+
+                     Return type
+                            pathlib.Path
+
+              abstractmethod to_string(encoding='utf-8')
+                     Write the change note to a string. This string should be suitable for writing to a file and reading back in with from_string().
+
+                     Parameters
+                            encoding (str) -- The encoding to use for writing.
+
+                     Returns
+                            The string data.
+
+                     Return type
+                            str
+
+              property uid
+                     The unique identifier for the change note.
+
+                     Type   str
+
+              update_uid(uid)
+                     Update the UID of the change note.  Use with caution.
+
+                     Parameters
+                            uid (str) -- The new UID to use.
+
+   ChanGo
+       class chango.abc.ChanGo
+              Bases: ABC, Generic
+
+              Abstract  base class for loading ChangeNote, VersionNote and VersionHistory objects as well as writing ChangeNote objects.  This class holds the main interface for interacting with the ver‐
+              sion history and change notes.
+
+              build_github_event_change_note(event, data=None)
+                     Build a change note from a GitHub event.
+
+                     IMPORTANT:
+                        This is an optional method and by default raises a NotImplementedError.  Implement this method if you want to automatically create change notes based on GitHub events.
+
+                     TIP:
+                        This method is useful for automatically creating change note drafts in GitHub actions to ensure that each pull request has documented changes.
+
+                        SEE ALSO:
+                            GitHub Actions
+
+                     Parameters
+
+                            • event (Dict[str, Any]) -- The GitHub event data. This should be one of the events that trigger workflows. The event is represented as a JSON dictionary.
+
+                            • data (Dict[str, Any] | chango.action.ChanGoActionData,                optional) -- Additional data that may be required to build the change note.
+
+                     Returns
+
+                            The change note or None if no
+                                   change note should be created (e.g., if a change note is already available) for the change.
+
+                     Return type
+                            CNT | None
+
+                     Raises NotImplementedError -- If the method is not implemented.
+
+              abstractmethod build_template_change_note(slug, uid=None)
+                     Build a template change note for the concrete change note type.
+
+                     TIP:
+                        This will be used to create a new change note in the CLI.
+
+                     Parameters
+
+                            • slug (str) -- The slug to use for the change note.
+
+                            • uid (str, optional) -- The unique identifier for the change note or None to generate a random one.
+
+                     Returns
+                            The ChangeNote object.
+
+                     Return type
+                            CNT
+
+              abstractmethod build_version_history()
+                     VHT: Build a new empty version history.
+
+              abstractmethod build_version_note(version)
+                     Build a new empty version note.
+
+                     Parameters
+                            version (Version | None) -- The version of the software project this note is for. May be None if the version is not yet released.
+
+                     Returns
+                            The VersionNote object.
+
+                     Return type
+                            VNT
+
+              abstractmethod get_write_directory(change_note, version)
+                     Determine the directory to write a change note to.
+
+                     IMPORTANT:
+
+                        • It should be ensured that the directory exists.
+
+                        • The version does not need to be already available. In that case, it's expected that version is of type Version.
+
+                     Parameters
+
+                            • change_note (CNT | str) -- The change note to write or its UID.
+
+                            • version (Version | str | None) -- The version the change note belongs to. Maybe be None if the change note is not yet released.
+
+                     Returns
+                            The directory to write the change note to.
+
+                     Return type
+                            pathlib.Path
+
+                     Raises ChanGoError -- If the version is a str but not yet
+                                available.
+
+              abstractmethod load_change_note(uid)
+                     Load a change note with the given identifier.
+
+                     Parameters
+                            uid (str) -- The unique identifier or file name of the change note to load.
+
+                     Returns
+                            The ChangeNote object.
+
+                     Return type
+                            CNT
+
+                     Raises ChanGoError -- If the change note with the given identifier is not
+                                available.
+
+              load_version_history(start_from=None, end_at=None)
+                     Load the version history.
+
+                     IMPORTANT:
+                        By default, unreleased changes are included in the returned version history, if available.
+
+                     Parameters
+
+                            • start_from (Version | str, optional) -- The version to start from. If None, start from the earliest available version.
+
+                            • end_at (Version | str, optional) -- The version to end at.  If None, end at the latest available version, including unreleased changes.
+
+                     Returns
+                            The loaded version VersionHistory.
+
+                     Return type
+                            VHT
+
+              load_version_note(version)
+                     Load a version note.
+
+                     Parameters
+                            version (Version | str | None) -- The version of the version note to load or the corresponding uid. May be None if the version is not yet released.
+
+                     Returns
+                            The loaded VersionNote.
+
+                     Return type
+                            VNT
+
+                     Raises ChanGoError -- If the version is not available.
+
+              release(version)
+                     Release a version.  This calls get_write_directory() for all unreleased change notes and moves the file if necessary.
+
+                     TIP:
+                        This method calls chango.abc.VersionScanner.invalidate_caches() after releasing the version.
+
+                     Parameters
+                            version (Version) -- The version to release.
+
+                     Returns
+                            Whether a release was performed. If no unreleased changes are available, this method returns False.
+
+                     Return type
+                            bool
+
+              abstract property scanner
+                     The VersionScanner used by this instance.
+
+                     Type   VST
+
+              write_change_note(change_note, version, encoding='utf-8')
+                     Write a change note to disk.
+
+                     IMPORTANT:
+                        The version does not need to be already available. In that case, it's expected that version is of type Version.
+
+                     TIP:
+                        This method calls chango.abc.VersionScanner.invalidate_caches() after writing the change note to disk.
+
+                     Parameters
+
+                            • change_note (CNT | str) -- The change note to write.
+
+                            • version (Version | str | None) -- The version the change note belongs to. Maybe be None if the change note is not yet released.
+
+                            • encoding (str) -- The encoding to use for writing.
+
+                     Returns
+                            The file path the change note was written to.
+
+                     Return type
+                            pathlib.Path
+
+                     Raises ChanGoError -- If the version is a str but not yet
+                                available.
+
+   VersionHistory
+       class chango.abc.VersionHistory
+              Bases: MutableMapping[str | None, VNT], ABC, Generic
+
+              Abstract base class for a version history describing the versions in a software project over several versions.
+
+              HINT:
+                 Objects of this class can be used as MutableMapping, where the keys are the unique identifiers of the versions and the values are the version notes themselves.
+
+              add_version_note(version_note)
+                     Add a version note to the version note.
+
+                     Parameters
+                            version_note (VNT) -- The VersionNote note to add.
+
+              remove_version_note(version_note)
+                     Remove a version note from the version note.
+
+                     Parameters
+                            version_note (VNT) -- The VersionNote note to remove.
+
+              abstractmethod render(markup)
+                     Render the version note as a string. Must include information about all change notes contained in the version note.
+
+                     HINT:
+
+                        • Make use of chango.abc.VersionNote.render() to render the change notes.
+
+                        • The change notes should be rendered in reverse chronological order. This needs to be handled by the implementation and can be achieved either by applying appropriate sorting the
+                          uid or by sorting by date if available.
+
+                     Parameters
+                            markup (str) -- The markup language to use for rendering. If the markup language is not supported, an UnsupportedMarkupError should be raised.
+
+                     Returns
+                            The rendered version note.
+
+                     Return type
+                            str
+
+   VersionNote
+       class chango.abc.VersionNote(version)
+              Bases: MutableMapping[str, CNT], ABC, Generic
+
+              Abstract base class for a version note describing the set of changes in a software project for a single version.
+
+              HINT:
+                 Objects of this class can be used as MutableMapping, where the keys are the unique identifiers (or file names) of the change notes and the values are the change notes themselves.
+
+              WARNING:
+                 To ensure that the changes in this version are displayed in the correct order, the change notes should be added in the order they were made. Manual reordering of the change notes may in‐
+                 terfere with the order in which they are displayed.
+
+              Parameters
+                     version (Version | None) -- The version of the software project this note is for or May be None if the version is not yet released.
+
+              version
+                     (Version | None): The version of the software project this note is for or May be None if the version is not yet released.
+
+              add_change_note(change_note)
+                     Add a change note to the version note.
+
+                     Parameters
+                            change_note (CNT) -- The ChangeNote note to add.
+
+              property date
+                     Convenience property for the version UID.
+
+                     Returns
+
+                            The release date of version if available,
+                                   None otherwise.
+
+                     Return type
+                            datetime.date | None
+
+              remove_change_note(change_note)
+                     Remove a change note from the version note.
+
+                     Parameters
+                            change_note (CNT) -- The ChangeNote note to remove.
+
+              abstractmethod render(markup)
+                     Render the version note as a string.
+
+                     Parameters
+                            markup (str) -- The markup language to use for rendering. If the markup language is not supported, an UnsupportedMarkupError should be raised.
+
+                     Returns
+                            The rendered version note.
+
+                     Return type
+                            str
+
+              property uid
+                     Convenience property for the version UID.
+
+                     Returns
+
+                            The UID of version if available, None
+                                   otherwise.
+
+                     Return type
+                            str | None
+
+   VersionScanner
+       class chango.abc.VersionScanner
+              Bases: Collection[Version]
+
+              Abstract base class for a version scanner that can list available versions.
+
+              HINT:
+                 Objects of this class can be used as Collection of versions as returned by the get_available_versions() method.
+
+              abstractmethod get_available_versions(start_from=None, end_at=None)
+                     Get the available versions.
+
+                     IMPORTANT:
+                        Unreleased changes must not be included in the returned version identifiers.
+
+                     Parameters
+
+                            • start_from (Version | str, optional) -- The version identifier to start from. If None, start from the earliest available version.
+
+                            • end_at (Version | str, optional) -- The version identifier to end at. If None, end at the latest available version, excluding unreleased changes.
+
+                     Returns
+                            The available versions.
+
+                     Return type
+                            Tuple[Version]
+
+              abstractmethod get_changes(uid)
+                     Get the changes either for a given version identifier or all available.
+
+                     HINT:
+                        To easily extract the UIDs from the change files, chango.helpers.change_uid_from_file() can be used.
+
+                     IMPORTANT:
+                        The returned UIDs must be in the order in which the changes were made.
+
+                     Parameters
+                            uid (Version | str | None) -- The version identifier to get the change files for. If None, get the change files for unreleased changes must be returned.
+
+                     Returns
+                            UIDs of the changes corresponding to the version identifier.
+
+                     Return type
+                            Tuple[str]
+
+                     Raises ChanGoError -- If the version with the given identifier is not available.
+
+              abstractmethod get_latest_version()
+                     Get the latest version
+
+                     Returns
+                            The latest version
+
+                     Return type
+                            Version
+
+                     Raises ChanGoError -- If no versions are available.
+
+              get_version(uid)
+                     Get the version with the given identifier.
+
+                     HINT:
+                        The default implementation calls get_available_versions(). Implementations may override this method to provide a more efficient way to get the version.
+
+                     Parameters
+                            uid (str) -- The version identifier to get the version for.
+
+                     Returns
+                            The version.
+
+                     Return type
+                            Version
+
+                     Raises ChanGoError -- If the version with the given identifier is not available.
+
+              abstractmethod has_unreleased_changes()
+                     Check if there are changes in the repository that are not yet released in a version.
+
+                     Returns
+                            True if there are unreleased changes, False otherwise.
+
+                     Return type
+                            bool
+
+              invalidate_caches()
+                     Invalidate any internal caches that may be used by the implementation.
+
+                     IMPORTANT:
+
+                        • This method is not required to do anything if the implementation does not use any caches. By default, it does nothing.
+
+                        • This method is called by chango.abc.ChanGo.release() and chango.abc.ChanGo.write_change_note() after the respective operation has been completed. This gives  the  implementation
+                          the opportunity to clear any caches that may have been affected by the operation.
+
+              abstractmethod is_available(uid)
+                     Check if the version with the given identifier is available.
+
+                     TIP:
+                        None may be passed for convenience, but it's recommended that an implementation calls has_unreleased_changes() internally.
+
+                     Parameters
+                            uid (Version | str | None) -- The version identifier to check.
+
+              abstractmethod lookup_change_note(uid)
+                     Lookup a change note with the given identifier.
+
+                     Parameters
+                            uid (str) -- The unique identifier or file name of the change note to lookup
+
+                     Returns
+
+                            The metadata about the change note specifying the file
+                                   path and version it belongs to.
+
+                     Return type
+                            chango.ChangeNoteInfo
+
+                     Raises ChanGoError -- If the change note with the given identifier is not
+                                available.
+
+   concrete
+       This module contains implementations of the interface classes defined in the abc module that are shipped with this package.
+
+   BackwardCompatibleChanGo
+       class chango.concrete.BackwardCompatibleChanGo(main_instance, legacy_instances)
+              Bases: ChanGo[BackwardCompatibleVersionScanner, VHT, VNT, CNT], Generic
+
+              An  Implementation  of the ChanGo interface that wraps multiple other implementations of ChanGo.  The purpose of this class is to ease transition between different version note formats in a
+              project.
+
+              Parameters
+
+                     • main_instance (ChanGo) -- The ChanGo instance that should be used for new version notes.
+
+                     • legacy_instances (Collection[ChanGo]) -- A collection of ChanGo instances that should be used for loading older version notes.
+
+              build_github_event_change_note(event, data=None)
+                     Calls build_github_event_change_note() on main_instance.
+
+              build_template_change_note(slug, uid=None)
+                     Calls build_template_change_note() on main_instance.
+
+              build_version_history()
+                     Calls build_version_history() on main_instance.
+
+              build_version_note(version)
+                     Calls build_version_note() on main_instance or one of the legacy instances depending on the result of is_available().
+
+              get_write_directory(change_note, version)
+                     Calls get_write_directory() on main_instance.
+
+              load_change_note(uid)
+                     Load a change note with the given identifier.  Tries to load the change note from the main chango first and then from the legacy changos.
+
+              property scanner
+                     The BackwardCompatibleVersionScanner instance that is used by this BackwardCompatibleChanGo.
+
+                     HINT:
+                        The scanner is a composite of the scanners of main_instance and legacy_instance.
+
+   BackwardCompatibleVersionScanner
+       class chango.concrete.BackwardCompatibleVersionScanner(scanners)
+              Bases: VersionScanner
+
+              An Implementation of the VersionScanner interface that wraps multiple other implementations of VersionScanner.  The purpose of this class is to ease  transition  between  different  version
+              note formats in a project.
+
+              WARNING:
+                 This assumes that the versions available for each of the scanners are mutually exclusive, i.e. no two scanners can return the same version.
+
+              TIP:
+                 Use together with BackwardCompatibleChanGo.
+
+              Parameters
+                     scanners (Collection[VersionScanner]) -- The scanners to wrap.
+
+              get_latest_version()
+                     Implementation of chango.abc.VersionScanner.get_latest_version().
+
+                     IMPORTANT:
+                        The newest version is determined by the date of the version, not the order in which the scanners were passed to the constructor.
+
+                     Returns
+                            The latest version
+
+                     Return type
+                            Version
+
+              lookup_change_note(uid)
+                     Lookup a change note with the given identifier.
+
+                     Parameters
+                            uid (str) -- The unique identifier or file name of the change note to lookup
+
+                     Returns
+
+                            The metadata about the change note specifying the file
+                                   path and version it belongs to.
+
+                     Return type
+                            chango.ChangeNoteInfo
+
+   CommentChangeNote
+       class chango.concrete.CommentChangeNote(slug, comment, uid=None)
+              Bases: ChangeNote
+
+              A simple change note that consists of a single comment. May be multi-line.
+
+              Parameters
+                     comment (str) -- The comment text.
+
+              comment
+                     The comment text.
+
+                     Type   str
+
+              MARKUP = 'txt'
+                     The markup language used in the comment. Will also be used as file extension.
+
+                     Type   str
+
+              classmethod build_from_github_event(event, data=None)
+                     Implementation of build_from_github_event().
+
+                     Considers only events of type pull_request and pull_request_target.  Uses the pull request number as slug and the pull request title as comment.
+
+                     Currently only supports TEXT,
+                            MARKDOWN, RESTRUCTUREDTEXT and HTML.
+
+                     CAUTION:
+                        Does not consider any formatting in the pull request title!
+
+                     Raises ValueError -- If required data is missing or not in the expected format or
+                                if MARKUP is not supported.
+
+   CommentVersionNote
+       class chango.concrete.CommentVersionNote(version)
+              Bases: VersionNote[CommentChangeNote, V], Generic
+
+              A simple version note implementation that works with CommentChangeNote.
+
+              render(markup)
+                     Render  the version note to a string by listing all contained change notes separated by a newline.  For markup languages Markdown, HTML and reStructuredText, the change notes will be
+                     rendered as unordered lists.
+
+                     Parameters
+                            markup (str) -- The markup language to use for rendering.
+
+                     Raises UnsupportedMarkupError -- If the markup parameter does not
+                                coincide with chango.concrete.CommentChangeNote.MARKUP
+
+                     Returns
+                            The rendered version note.
+
+                     Return type
+                            str
+
+   DirectoryChanGo
+       class chango.concrete.DirectoryChanGo(change_note_type, version_note_type, version_history_type, scanner, directory_format='{uid}_{date}')
+              Bases: ChanGo[DirectoryVersionScanner, VHT, VNT, CNT], Generic
+
+              Implementation of the ChanGo interface that works with DirectoryVersionScanner and assumes that change notes are stored in subdirectories named after the version identifier.
+
+              Parameters
+
+                     • change_note_type (type) -- The type of change notes to load. Must be a subclass of ChangeNote.
+
+                     • version_note_type (type) -- The type of version notes to load. Must be a subclass of VersionNote.
+
+                     • version_history_type (type) -- The type of version histories to load. Must be a subclass of VersionHistory.
+
+                     • scanner (DirectoryVersionScanner) -- The version scanner to use.
+
+                     • directory_format (str, optional) -- Reverse of DirectoryVersionScannerdirectory_pattern.  Must be a string that can be used with str.format() and contain at least one  named  field
+                       uid for the version identifier and optionally a second named field date for the date of the version release in ISO format. The default value is compatible with the default value of
+                       DirectoryVersionScannerdirectory_pattern.
+
+              directory_format
+                     The format string used to create version directories.
+
+                     Type   str
+
+              build_github_event_change_note(event, data=None)
+                     Implementation of build_github_event_change_note().
+
+                     IMPORTANT:
+                        By  default,  this  will  always  call  chango.abc.ChangeNote.build_from_github_event()  and  does  not  check  if  a  new  change  note  is necessary.  The only exception is when
+                        change_note_type is a subclass of SectionChangeNote:
+
+                        • If there already is a change note for the current pull request, it is updated with the new information. If nothing changed, returns None.
+
+                        • If the data parameter is an instance of ChanGoActionData with a parent pull request, then this method will try to find an existing unreleased change note for the parent pull re‐
+                          quest and append the new information to it.
+
+              build_version_note(version)
+                     Implementation of build_version_note().  Includes special handling for SectionVersionNote, which has the required argument section_change_note_type.
+
+   DirectoryVersionScanner
+       class chango.concrete.DirectoryVersionScanner(base_directory, unreleased_directory, directory_pattern=re.compile('(?P<uid>[^_]+)_(?P<date>[\\d-]+)'))
+              Bases: VersionScanner
+
+              Implementation of a version scanner that assumes that change notes are stored in subdirectories named after the version identifier.
+
+              Parameters
+
+                     • base_directory (str | Path) --
+
+                       The base directory to scan for version directories.
+
+                       IMPORTANT:
+                          If the path is relative, it will be resolved relative to the directory of the calling module.
+
+                              Example
+
+                                     If you build your DirectoryVersionScanner within /home/user/project/chango.py, passing base_directory="changes" will resolve to /home/user/project/changes.
+
+                     • unreleased_directory (str | Path) --
+
+                       The directory that contains unreleased changes.
+
+                       IMPORTANT:
+                          If pathlib.Path.is_dir() returns False for this directory, it will be assumed to be a subdirectory of the base_directory.
+
+                     • directory_pattern (str | re.Pattern, optional) -- The pattern to match version directories against. Must contain one named group uid for the version identifier and a  second  named
+                       group for the date for the date of the version release in ISO format.
+
+              base_directory
+                     The base directory to scan for version directories.
+
+                     Type   Path
+
+              directory_pattern
+                     The pattern to match version directories against.
+
+                     Type   re.Pattern
+
+              unreleased_directory
+                     The directory that contains unreleased changes.
+
+                     Type   Path
+
+              get_available_versions(start_from=None, end_at=None)
+                     Implementation of chango.abc.VersionScanner.get_available_versions().
+
+                     IMPORTANT:
+                        Limiting the version range by start_from and end_at is based on lexicographical comparison of the version identifiers.
+
+                     Returns
+                            The available versions within the specified range.
+
+                     Return type
+                            Tuple[Version]
+
+              get_latest_version()
+                     Implementation of chango.abc.VersionScanner.get_latest_version().
+
+                     IMPORTANT:
+                        In case of multiple releases on the same day, lexicographical comparison of the version identifiers is employed.
+
+                     Returns
+                            The latest version
+
+                     Return type
+                            Version
+
+              has_unreleased_changes()
+                     Implementation of chango.abc.VersionScanner.has_unreleased_changes().  Checks if unreleased_directory contains any files.
+
+                     Returns
+                            True if there are unreleased changes, False otherwise.
+
+                     Return type
+                            bool
+
+   HeaderVersionHistory
+       class chango.concrete.HeaderVersionHistory
+              Bases: VersionHistory, Generic
+
+              A simple version history implementation that renders version notes by prefixing them with the version UID as header, followed by the release date if available.
+
+              render(markup)
+                     Does the rendering.
+
+                     TIP:
+                        Version notes are automatically sorted by release date before rendering. If unreleased changes are present, they are rendered first.
+
+                     IMPORTANT:
+                        Currently, only Markdown, HTML and reStructuredText are supported as markup languages.
+
+                     Parameters
+                            markup (str) -- The markup language to use for rendering.
+
+                     Returns
+                            The rendered version history.
+
+                     Return type
+                            str
+
+                     Raises UnsupportedMarkupError -- If the markup parameter does not
+                                coincide with MARKDOWN,
+                                HTML, or
+                                RESTRUCTUREDTEXT
+
+   sections
+       This  module  contains  an  implementation  of  ChangeNote  that  consists  of  multiple  sections  and  includes  references  to  pull  requests that are related to the change.  The main class is
+       SectionChangeNote, while Section and PullRequest are used to define the sections and pull requests, respectively.
+
+          Example
+
+                 To create a change note with two sections, one required and one optional, use
+
+              from chango.concrete.sections import GitHubSectionChangeNote, Section
+
+              class MySectionChangeNote(
+                  GitHubSectionChangeNote.with_sections(
+                      [
+                          Section(uid="required_section", title="Required Section", is_required=True),
+                          Section(uid="optional_section", title="Optional Section"),
+                      ]
+                  )
+              ):
+                  OWNER = "my-username"
+                  REPOSITORY = "my-repo"
+
+       class chango.concrete.sections.GitHubSectionChangeNote(slug, *args, uid=None, pull_requests=<factory>)
+              Bases: SectionChangeNote
+
+              Specialization of SectionChangeNote for projects hosted on GitHub.
+
+                 Example
+
+                     from chango.concrete.sections import GitHubSectionChangeNote, Section
+
+                     class MySectionChangeNote(
+                         GitHubSectionChangeNote.with_sections(
+                             [
+                                 Section(uid="req_section", title="Required Section", is_required=True),
+                                 Section(uid="opt_section", title="Optional Section"),
+                             ]
+                         )
+                     ):
+                         OWNER = "my-username"
+                         REPOSITORY = "my-repo"
+
+              OWNER = None
+                     The owner of the repository on GitHub. This must be set as a class variable.
+
+                     Type   str
+
+              REPOSITORY = None
+                     The name of the repository on GitHub. This must be set as a class variable.
+
+                     Type   str
+
+              classmethod build_from_github_event(event, data=None)
+                     Implementation of chango.abc.ChangeNote.build_from_github_event().
+
+                     This writes the pull request title to the sections determined by get_sections().  Uses the pull request number as slug.
+
+                     CAUTION:
+
+                        • Does not consider any formatting in the pull request title!
+
+                        • Considers the data argument only if it is an instance of ChanGoActionData.
+
+                     Raises ValueError -- If required data is missing or not in the expected format.
+
+              classmethod get_author_url(author_uid)
+                     Get the URL of an author with the given UID.
+
+                     Parameters
+                            author_uid (str) -- The UID of an author as defined in chango.concrete.sections.PullRequest.author_uids.
+
+                     Returns
+                            The URL of the author.
+
+                     Return type
+                            str
+
+              classmethod get_pull_request_url(pr_uid)
+                     Implementation of SectionChangeNote.get_pull_request_url() based on OWNER and REPOSITORY.
+
+              classmethod get_sections(labels, issue_types)
+                     Determine appropriate sections based on the labels of a pull request as well as the labels and types of the issues closed by the pull request.
+
+                     If this class has required sections, they are all returned.  Otherwise, the first section in the order of sort_order is returned.
+
+                     TIP:
+                        This method can be overridden to provide custom logic for determining the section based on the labels and issue types.
+
+                     Parameters
+
+                            • labels (Collection[str]) -- The combined set of labels of the pull request and the issues closed by the pull request.
+
+                            • issue_types (Collection[str]) --
+
+                              The types of the issues closed by the pull request.
+
+                              CAUTION:
+                                 Since issue types are currently in public preview, this set may be empty.
+
+                     Returns
+                            The UIDs of the sections.
+
+                     Return type
+                            Set[str]
+
+              classmethod get_thread_url(thread_uid)
+                     Implementation of SectionChangeNote.get_pull_request_url() based on OWNER and REPOSITORY.
+
+              model_post_init(context, /)
+                     This function is meant to behave like a BaseModel method to initialise private attributes.
+
+                     It takes context as an argument since that's what pydantic-core passes when calling it.
+
+                     Parameters
+
+                            • self -- The BaseModel instance.
+
+                            • context -- The context.
+
+       class chango.concrete.sections.PullRequest(*, uid, author_uids, closes_threads=<factory>)
+              Bases: BaseModel
+
+              Simple data structure to represent a pull/merge request.
+
+              Parameters
+
+                     • uid (str) -- The unique identifier for the pull request. For example, the pull request number.
+
+                     • author_uids (str | tuple[str, ...]) -- The unique identifier of the author(s) of the pull request. For example, the author's username.
+
+                     • closes_threads (tuple[str], optional) -- The threads that are closed by this pull request.
+
+              uid    The unique identifier for the pull request.
+
+                     Type   str
+
+              author_uids
+                     The unique identifier of the author(s) of the pull request.
+
+                     Type   tuple[str, ...]
+
+              closes_threads
+                     The threads that are closed by this pull request.  May be empty.
+
+                     Type   tuple[str]
+
+       class chango.concrete.sections.Section(*, uid, title, is_required=False, render_pr_details=True, sort_order=0)
+              Bases: BaseModel
+
+              Configuration for a section in a SectionChangeNote.
+
+              Parameters
+
+                     • uid (str) -- The unique identifier for the section. This is used as the field name in the change note.
+
+                     • title (str) -- The title of the section.
+
+                     • is_required (bool, optional) --
+
+                       Whether the section is required. Defaults to False.
+
+                       TIP:
+                          At least one section must be required.
+
+                     • render_pr_details (bool, optional) -- Whether to include details about the pull requests related to the change in the rendering for this section.  Defaults to True.
+
+                     • sort_order (int, optional) -- The sort order of the section. Defaults to 0.
+
+              uid    The unique identifier for the section.
+
+                     Type   str
+
+              title  The title of the section.
+
+                     Type   str
+
+              is_required
+                     Whether the section is required.
+
+                     Type   bool
+
+              render_pr_details
+                     Whether to include details about the pull requests related to the change in the rendering for this section.
+
+                     Type   bool, optional
+
+              sort_order
+                     The sort order of the section.
+
+                     Type   int
+
+       class chango.concrete.sections.SectionChangeNote(slug, *args, uid=None, pull_requests=<factory>)
+              Bases: BaseModel, ChangeNote, ABC
+
+              A change note that consists of multiple sections and includes references to pull requests that are related to the change.
+
+              Uses the toml format for specifying the content.
+
+              IMPORTANT:
+
+                 • This class does not contain any specified sections by default and must not be instantiated directly. Use with_sections() to create a suitable subclass with the desired sections.
+
+                 • Even though this class is in the concrete module, it is still an  abstract  base  class  and  must  be  subclassed  to  be  used.  However,  only  the  methods  get_pull_request_url(),
+                   get_thread_url(), and get_author_url() must be implemented in the subclass. A concrete subclass is provided in GitHubSectionChangeNote.
+
+              Parameters
+                     pull_requests (tuple[PullRequest], optional) -- The pull requests that are related to the change.
+
+              pull_requests
+                     The pull requests that are related to the change
+
+                     Type   tuple[PullRequest]
+
+              MARKUP = 'rst'
+                     The markup language used in the sections.
+
+                     Type   str
+
+              SECTIONS = FieldInfo(annotation=NoneType, required=False, default_factory=dict)
+                     The sections of the change note. Maps the UID of the section to the Section object containing the configuration for the section
+
+                     Type   dict[str, Section]
+
+              classmethod from_string(slug, uid, string)
+                     Implementation of from_string().
+
+                     Parameters
+
+                            • slug (str) -- The slug of the change note.
+
+                            • uid (str) -- The UID of the change note.
+
+                            • string (str) -- The toml string to read from.
+
+                     Returns
+                            The ChangeNote object.
+
+                     Return type
+                            ChangeNote
+
+                     Raises chango.error.ValidationError -- If the string is not a valid change note.
+
+              abstractmethod classmethod get_author_url(author_uid)
+                     Get the URL of an author with the given UID.
+
+                     Parameters
+                            author_uid (str) -- The UID of an author as defined in chango.concrete.sections.PullRequest.author_uids.
+
+                     Returns
+                            The URL of the author.
+
+                     Return type
+                            str
+
+              abstractmethod classmethod get_pull_request_url(pr_uid)
+                     Get the URL of the pull request with the given UID.
+
+                     Parameters
+                            pr_uid (str) -- The UID of the pull request as defined in chango.concrete.sections.PullRequest.uid.
+
+                     Returns
+                            The URL of the pull request.
+
+                     Return type
+                            str
+
+              abstractmethod classmethod get_thread_url(thread_uid)
+                     Get the URL of the thread with the given UID.
+
+                     Parameters
+                            thread_uid (str) -- The UID of the thread as defined in chango.concrete.sections.PullRequest.closes_threads.
+
+                     Returns
+                            The URL of the thread.
+
+                     Return type
+                            str
+
+              model_post_init(context, /)
+                     This function is meant to behave like a BaseModel method to initialise private attributes.
+
+                     It takes context as an argument since that's what pydantic-core passes when calling it.
+
+                     Parameters
+
+                            • self -- The BaseModel instance.
+
+                            • context -- The context.
+
+              classmethod with_sections(sections, name=None)
+                     Create a new subclass of SectionChangeNote with the given sections.
+
+                     Parameters
+
+                            • sections (Collection[Section]) --
+
+                              The sections to include in the change note.
+
+                              TIP:
+                                 All sections may be optional, but at least one section must be specified on instantiation. That is, a change note without content in any section is not allowed.
+
+                            • name (str, optional) -- The name of the new class. Defaults to DynamicSectionChangeNote.
+
+                     Returns
+                            The new subclass of SectionChangeNote.
+
+                     Return type
+                            type[SectionChangeNote]
+
+       class chango.concrete.sections.SectionVersionNote(version, section_change_note_type)
+              Bases: VersionNote, Generic
+
+              An implementation of VersionNote that works with SectionChangeNote.
+
+              IMPORTANT:
+                 Currently, only RESTRUCTUREDTEXT is supported.
+
+              Parameters
+                     section_change_note_type (type[SectionChangeNote]) --
+
+                     The type of the section change note to use.
+
+                     HINT:
+                        It will not be possible to add change notes of a different type to this version note.
+
+              render(markup)
+                     Render  the  version  note  to  a  string by listing all contained change notes.  Aggregates the content of all change notes for each section and renders them in the order defined by
+                     sort_order.
+
+                     IMPORTANT:
+                        Currently, only RESTRUCTUREDTEXT is supported.
+
+   Auxiliary modules
+   action
+       This module contains functionality required when using chango in GitHub Actions.
+
+       class chango.action.ChanGoActionData(*, parent_pull_request, linked_issues)
+              Data structure for the additional information that the chango action automatically provides in addition to the GitHub event payload.
+
+              Parameters
+
+                     • parent_pull_request (ParentPullRequest | None) -- If there is a pull request associated with the target branch of the current pull request, this field  contains  information  about
+                       it.
+
+                     • linked_issues (tuple[LinkedIssue], optional) -- Information about linked issues, i.e., issues that will be closed when the current pull request is merged.
+
+              parent_pull_request
+                     Optional. If there is a pull request associated with the target branch of the current pull request, this field contains information about it.
+
+                     Type   ParentPullRequest
+
+              linked_issues
+                     Optional. Information about linked issues, i.e., issues that will be closed when the current pull request is merged.
+
+                     Type   tuple[LinkedIssue]
+
+       class chango.action.LinkedIssue(*, number, title, labels, issue_type=None)
+              Data structure for an issue linked in a GitHub pull request.
+
+              Parameters
+
+                     • number (int) -- The issue number.
+
+                     • title (str) -- The title of the issue.
+
+                     • labels (tuple[str], optional) -- The labels of the issue.
+
+                     • issue_type (str, optional) -- The type of the issue.
+
+              number The issue number.
+
+                     Type   int
+
+              title  The title of the issue.
+
+                     Type   str
+
+              labels Optional. The labels of the issue.
+
+                     Type   tuple[str]
+
+              issue_type
+                     Optional. The type of the issue.
+
+                     Type   str
+
+       class chango.action.ParentPullRequest(*, number, author_login, title, url, state)
+              Data structure for a pull request associated with the target branch of the current pull request.
+
+              Parameters
+
+                     • number (int) -- The pull request number.
+
+                     • title (str) -- The title of the pull request.
+
+                     • url (str) -- The URL of the pull request.
+
+                     • state (str) -- The state of the pull request. Possible values are open, closed, and merged.
+
+              number The pull request number.
+
+                     Type   int
+
+              author_login
+                     The login of the author of the pull request.
+
+                     Type   str
+
+              title  The title of the pull request.
+
+                     Type   str
+
+              url    The URL of the pull request.
+
+                     Type   str
+
+              state  The state of the pull request. Possible values are OPEN, CLOSED, and MERGED.
+
+                     Type   str
+
+   config
+       This module provides the functionality to load the configuration for the ChanGo CLI.
+
+       class chango.config.ChanGoConfig(_case_sensitive=None, _nested_model_default_partial_update=None, _env_prefix=None, _env_file=PosixPath('.'), _env_file_encoding=None, _env_ignore_empty=None,
+       _env_nested_delimiter=None, _env_nested_max_split=None, _env_parse_none_str=None, _env_parse_enums=None, _cli_prog_name=None, _cli_parse_args=None, _cli_settings_source=None,
+       _cli_parse_none_str=None, _cli_hide_none_type=None, _cli_avoid_json=None, _cli_enforce_required=None, _cli_use_class_docs_for_groups=None, _cli_exit_on_error=None, _cli_prefix=None, _cli_flag_pre‐
+       fix_char=None, _cli_implicit_flags=None, _cli_ignore_unknown_args=None, _cli_kebab_case=None, _cli_shortcuts=None, _secrets_dir=None, *, sys_path=None, chango_instance)
+              Data structure for the ChanGos CLI configuration in the pyproject.toml file.
+
+              TIP:
+                 Rather than manually creating an instance of this class, use load() to load the configuration from the pyproject.toml file.
+
+              IMPORTANT:
+                 The  attributes  of chango_instance will be passed to importlib.import_module() to import the user defined ChanGo instance. For this to work, the module must be findable by Python, which
+                 may depend on your current working directory and the Python path. It can help to set sys_path accordingly.  Please evaluate the security implications of this before setting it.
+
+              Keyword Arguments
+
+                     • sys_path (Path, optional) --
+
+                       A path to temporarily add to the system path before importing the module.
+
+                          Example
+
+                                 To add the current working directory to the system path, set this to ..
+
+                       CAUTION:
+                          Since this class is usually loaded via load(), the path is resolved relative to the pyproject.toml file path. If the path is absolute, it will be used as is.  When instantiating
+                          this class manually, the path is resolved relative to the current working directory.
+
+                     • chango_instance (ChanGoInstanceConfig) -- Specification of how the ChanGo instance to use in the CLI is imported.
+
+              sys_path
+                     The path to temporarily add to the system path before importing the module. If the path is not absolute, it will considered as relative to the current working directory.
+
+                     Type   Path | None
+
+              chango_instance
+                     The instance of ChanGo to use in the CLI.
+
+                     Type   ChanGoInstanceConfig
+
+              copy(*, include=None, exclude=None, update=None, deep=False)
+                     Returns a copy of the model.
+
+                     !!! warning "Deprecated"
+                            This method is now deprecated; use model_copy instead.
+
+                     If you need include or exclude, use:
+
+                     `python {test="skip" lint="skip"} data = self.model_dump(include=include, exclude=exclude, round_trip=True) data = {**data, **(update or {})} copied = self.model_validate(data) `
+
+                     Parameters
+
+                            • include -- Optional set or mapping specifying which fields to include in the copied model.
+
+                            • exclude -- Optional set or mapping specifying which fields to exclude in the copied model.
+
+                            • update -- Optional dictionary of field-value pairs to override field values in the copied model.
+
+                            • deep -- If True, the values of fields that are Pydantic models will be deep-copied.
+
+                     Returns
+                            A copy of the model with included, excluded and updated fields as specified.
+
+              import_chango_instance()
+                     Import the ChanGo instance specified in chango_instance.  This considers the sys_path attribute to temporarily add a path to the system path.
+
+                     Returns
+                            The imported ChanGo instance.
+
+                     Return type
+                            ChanGo
+
+              classmethod load(path=None)
+                     Load the ChanGoConfig from the pyproject.toml file.
+
+                     TIP:
+                        If the specification of sys_path is relative, it will be resolved relative to the path parameter by this method.
+
+                     Keyword Arguments
+                            path (Path | None) --
+
+                            The path to the pyproject.toml file. The path resolution works as follows:
+
+                            • If path is None, the current working directory is used.
+
+                            • If path is absolute, it is used as is. Relative paths are resolved relative to the current working directory.
+
+                            • If the path does not point to a file, it is assumed to be a directory and the file name pyproject.toml is appended.
+
+                     Returns
+                            The loaded configuration.
+
+                     Return type
+                            ChanGoConfig
+
+              classmethod model_construct(_fields_set=None, **values)
+                     Creates a new instance of the Model class with validated data.
+
+                     Creates a new model setting __dict__ and __pydantic_fields_set__ from trusted or pre-validated data.  Default values are respected, but no other validation is performed.
+
+                     !!! note
+                            model_construct() generally respects the model_config.extra setting on the provided model.  That is, if model_config.extra == 'allow', then all extra passed values  are  added
+                            to  the model instance's __dict__ and __pydantic_extra__ fields. If model_config.extra == 'ignore' (the default), then all extra passed values are ignored.  Because no valida‐
+                            tion is performed with a call to model_construct(), having model_config.extra == 'forbid' does not result in an error if extra values are passed, but they will be ignored.
+
+                     Parameters
+
+                            • _fields_set -- A set of field names that were originally explicitly set during instantiation. If provided, this is directly used  for  the  [model_fields_set][pydantic.Base‐
+                              Model.model_fields_set] attribute.  Otherwise, the field names from the values argument will be used.
+
+                            • values -- Trusted or pre-validated data dictionary.
+
+                     Returns
+                            A new instance of the Model class with validated data.
+
+              model_copy(*, update=None, deep=False)
+
+                     !!! abstract "Usage Documentation"
+                            [model_copy](../concepts/models.md#model-copy)
+
+                     Returns a copy of the model.
+
+                     !!! note
+                            The  underlying  instance's  [__dict__][object.__dict__]  attribute  is copied. This might have unexpected side effects if you store anything in it, on top of the model fields
+                            (e.g. the value of [cached properties][functools.cached_property]).
+
+                     Parameters
+
+                            • update -- Values to change/add in the new model. Note: the data is not validated before creating the new model. You should trust this data.
+
+                            • deep -- Set to True to make a deep copy of the model.
+
+                     Returns
+                            New model instance.
+
+              model_dump(*, mode='python', include=None, exclude=None, context=None, by_alias=None, exclude_unset=False, exclude_defaults=False, exclude_none=False, round_trip=False, warnings=True, fall‐
+              back=None, serialize_as_any=False)
+
+                     !!! abstract "Usage Documentation"
+                            [model_dump](../concepts/serialization.md#python-mode)
+
+                     Generate a dictionary representation of the model, optionally specifying which fields to include or exclude.
+
+                     Parameters
+
+                            • mode -- The mode in which to_python should run.  If mode is 'json', the output will only contain JSON serializable types.  If  mode  is  'python',  the  output  may  contain
+                              non-JSON-serializable Python objects.
+
+                            • include -- A set of fields to include in the output.
+
+                            • exclude -- A set of fields to exclude from the output.
+
+                            • context -- Additional context to pass to the serializer.
+
+                            • by_alias -- Whether to use the field's alias in the dictionary key if defined.
+
+                            • exclude_unset -- Whether to exclude fields that have not been explicitly set.
+
+                            • exclude_defaults -- Whether to exclude fields that are set to their default value.
+
+                            • exclude_none -- Whether to exclude fields that have a value of None.
+
+                            • round_trip -- If True, dumped values should be valid as input for non-idempotent types such as Json[T].
+
+                            • warnings -- How to handle serialization errors. False/"none" ignores them, True/"warn" logs errors, "error" raises a [PydanticSerializationError][pydantic_core.PydanticSeri‐
+                              alizationError].
+
+                            • fallback  --  A  function  to  call  when an unknown value is encountered. If not provided, a [PydanticSerializationError][pydantic_core.PydanticSerializationError] error is
+                              raised.
+
+                            • serialize_as_any -- Whether to serialize fields with duck-typing serialization behavior.
+
+                     Returns
+                            A dictionary representation of the model.
+
+              model_dump_json(*, indent=None, ensure_ascii=False, include=None, exclude=None, context=None, by_alias=None, exclude_unset=False, exclude_defaults=False, exclude_none=False,
+              round_trip=False, warnings=True, fallback=None, serialize_as_any=False)
+
+                     !!! abstract "Usage Documentation"
+                            [model_dump_json](../concepts/serialization.md#json-mode)
+
+                     Generates a JSON representation of the model using Pydantic's to_json method.
+
+                     Parameters
+
+                            • indent -- Indentation to use in the JSON output. If None is passed, the output will be compact.
+
+                            • ensure_ascii -- If True, the output is guaranteed to have all incoming non-ASCII characters escaped.  If False (the default), these characters will be output as-is.
+
+                            • include -- Field(s) to include in the JSON output.
+
+                            • exclude -- Field(s) to exclude from the JSON output.
+
+                            • context -- Additional context to pass to the serializer.
+
+                            • by_alias -- Whether to serialize using field aliases.
+
+                            • exclude_unset -- Whether to exclude fields that have not been explicitly set.
+
+                            • exclude_defaults -- Whether to exclude fields that are set to their default value.
+
+                            • exclude_none -- Whether to exclude fields that have a value of None.
+
+                            • round_trip -- If True, dumped values should be valid as input for non-idempotent types such as Json[T].
+
+                            • warnings -- How to handle serialization errors. False/"none" ignores them, True/"warn" logs errors, "error" raises a [PydanticSerializationError][pydantic_core.PydanticSeri‐
+                              alizationError].
+
+                            • fallback -- A function to call when an unknown value is encountered. If  not  provided,  a  [PydanticSerializationError][pydantic_core.PydanticSerializationError]  error  is
+                              raised.
+
+                            • serialize_as_any -- Whether to serialize fields with duck-typing serialization behavior.
+
+                     Returns
+                            A JSON string representation of the model.
+
+              property model_extra
+                     Get extra fields set during validation.
+
+                     Returns
+                            A dictionary of extra fields, or None if config.extra is not set to "allow".
+
+              property model_fields_set
+                     Returns the set of fields that have been explicitly set on this model instance.
+
+                     Returns
+
+                            A set of strings representing the fields that have been set,
+                                   i.e. that were not filled from defaults.
+
+              classmethod model_json_schema(by_alias=True, ref_template='#/$defs/{model}', schema_generator=<class 'pydantic.json_schema.GenerateJsonSchema'>, mode='validation')
+                     Generates a JSON schema for a model class.
+
+                     Parameters
+
+                            • by_alias -- Whether to use attribute aliases or not.
+
+                            • ref_template -- The reference template.
+
+                            • schema_generator -- To override the logic used to generate the JSON schema, as a subclass of GenerateJsonSchema with your desired modifications
+
+                            • mode -- The mode in which to generate the schema.
+
+                     Returns
+                            The JSON schema for the given model class.
+
+              classmethod model_parametrized_name(params)
+                     Compute the class name for parametrizations of generic classes.
+
+                     This method can be overridden to achieve a custom naming scheme for generic BaseModels.
+
+                     Parameters
+                            params -- Tuple of types of the class. Given a generic class Model with 2 type variables and a concrete model Model[str, int], the value (str, int) would be passed to params.
+
+                     Returns
+                            String representing the new class where params are passed to cls as type variables.
+
+                     Raises TypeError -- Raised when trying to generate concrete names for non-generic models.
+
+              model_post_init(context, /)
+                     Override  this  method to perform additional initialization after __init__ and model_construct.  This is useful if you want to do some validation that requires the entire model to be
+                     initialized.
+
+              classmethod model_rebuild(*, force=False, raise_errors=True, _parent_namespace_depth=2, _types_namespace=None)
+                     Try to rebuild the pydantic-core schema for the model.
+
+                     This may be necessary when one of the annotations is a ForwardRef which could not be resolved during the initial attempt to build the schema, and automatic rebuilding fails.
+
+                     Parameters
+
+                            • force -- Whether to force the rebuilding of the model schema, defaults to False.
+
+                            • raise_errors -- Whether to raise errors, defaults to True.
+
+                            • _parent_namespace_depth -- The depth level of the parent namespace, defaults to 2.
+
+                            • _types_namespace -- The types namespace, defaults to None.
+
+                     Returns
+                            Returns None if the schema is already "complete" and rebuilding was not required.  If rebuilding _was_ required, returns True if rebuilding was successful, otherwise False.
+
+              classmethod model_validate(obj, *, strict=None, from_attributes=None, context=None, by_alias=None, by_name=None)
+                     Validate a pydantic model instance.
+
+                     Parameters
+
+                            • obj -- The object to validate.
+
+                            • strict -- Whether to enforce types strictly.
+
+                            • from_attributes -- Whether to extract data from object attributes.
+
+                            • context -- Additional context to pass to the validator.
+
+                            • by_alias -- Whether to use the field's alias when validating against the provided input data.
+
+                            • by_name -- Whether to use the field's name when validating against the provided input data.
+
+                     Raises ValidationError -- If the object could not be validated.
+
+                     Returns
+                            The validated model instance.
+
+              classmethod model_validate_json(json_data, *, strict=None, context=None, by_alias=None, by_name=None)
+
+                     !!! abstract "Usage Documentation"
+                            [JSON Parsing](../concepts/json.md#json-parsing)
+
+                     Validate the given JSON data against the Pydantic model.
+
+                     Parameters
+
+                            • json_data -- The JSON data to validate.
+
+                            • strict -- Whether to enforce types strictly.
+
+                            • context -- Extra variables to pass to the validator.
+
+                            • by_alias -- Whether to use the field's alias when validating against the provided input data.
+
+                            • by_name -- Whether to use the field's name when validating against the provided input data.
+
+                     Returns
+                            The validated Pydantic model.
+
+                     Raises ValidationError -- If json_data is not a JSON string or the object could not be validated.
+
+              classmethod model_validate_strings(obj, *, strict=None, context=None, by_alias=None, by_name=None)
+                     Validate the given object with string data against the Pydantic model.
+
+                     Parameters
+
+                            • obj -- The object containing string data to validate.
+
+                            • strict -- Whether to enforce types strictly.
+
+                            • context -- Extra variables to pass to the validator.
+
+                            • by_alias -- Whether to use the field's alias when validating against the provided input data.
+
+                            • by_name -- Whether to use the field's name when validating against the provided input data.
+
+                     Returns
+                            The validated Pydantic model.
+
+       class chango.config.ChanGoInstanceConfig(*, name, module, package=None)
+              Data structure for specifying how the ChanGo should be imported for the CLI.
+
+              Parameters
+
+                     • name (str) -- The name of the object to import.
+
+                     • module (str) -- The module to import the object from as passed to importlib.import_module().
+
+                     • package (str | None, optional) -- The module to import the object from as passed to importlib.import_module().
+
+              name   The name of the object to import.
+
+                     Type   str
+
+              module The module to import the object from as passed to importlib.import_module().
+
+                     Type   str
+
+              package
+                     The module to import the object from as passed to importlib.import_module().
+
+                     Type   str | None
+
+              copy(*, include=None, exclude=None, update=None, deep=False)
+                     Returns a copy of the model.
+
+                     !!! warning "Deprecated"
+                            This method is now deprecated; use model_copy instead.
+
+                     If you need include or exclude, use:
+
+                     `python {test="skip" lint="skip"} data = self.model_dump(include=include, exclude=exclude, round_trip=True) data = {**data, **(update or {})} copied = self.model_validate(data) `
+
+                     Parameters
+
+                            • include -- Optional set or mapping specifying which fields to include in the copied model.
+
+                            • exclude -- Optional set or mapping specifying which fields to exclude in the copied model.
+
+                            • update -- Optional dictionary of field-value pairs to override field values in the copied model.
+
+                            • deep -- If True, the values of fields that are Pydantic models will be deep-copied.
+
+                     Returns
+                            A copy of the model with included, excluded and updated fields as specified.
+
+              classmethod model_construct(_fields_set=None, **values)
+                     Creates a new instance of the Model class with validated data.
+
+                     Creates a new model setting __dict__ and __pydantic_fields_set__ from trusted or pre-validated data.  Default values are respected, but no other validation is performed.
+
+                     !!! note
+                            model_construct() generally respects the model_config.extra setting on the provided model.  That is, if model_config.extra == 'allow', then all extra passed values  are  added
+                            to  the model instance's __dict__ and __pydantic_extra__ fields. If model_config.extra == 'ignore' (the default), then all extra passed values are ignored.  Because no valida‐
+                            tion is performed with a call to model_construct(), having model_config.extra == 'forbid' does not result in an error if extra values are passed, but they will be ignored.
+
+                     Parameters
+
+                            • _fields_set -- A set of field names that were originally explicitly set during instantiation. If provided, this is directly used  for  the  [model_fields_set][pydantic.Base‐
+                              Model.model_fields_set] attribute.  Otherwise, the field names from the values argument will be used.
+
+                            • values -- Trusted or pre-validated data dictionary.
+
+                     Returns
+                            A new instance of the Model class with validated data.
+
+              model_copy(*, update=None, deep=False)
+
+                     !!! abstract "Usage Documentation"
+                            [model_copy](../concepts/models.md#model-copy)
+
+                     Returns a copy of the model.
+
+                     !!! note
+                            The  underlying  instance's  [__dict__][object.__dict__]  attribute  is copied. This might have unexpected side effects if you store anything in it, on top of the model fields
+                            (e.g. the value of [cached properties][functools.cached_property]).
+
+                     Parameters
+
+                            • update -- Values to change/add in the new model. Note: the data is not validated before creating the new model. You should trust this data.
+
+                            • deep -- Set to True to make a deep copy of the model.
+
+                     Returns
+                            New model instance.
+
+              model_dump(*, mode='python', include=None, exclude=None, context=None, by_alias=None, exclude_unset=False, exclude_defaults=False, exclude_none=False, round_trip=False, warnings=True, fall‐
+              back=None, serialize_as_any=False)
+
+                     !!! abstract "Usage Documentation"
+                            [model_dump](../concepts/serialization.md#python-mode)
+
+                     Generate a dictionary representation of the model, optionally specifying which fields to include or exclude.
+
+                     Parameters
+
+                            • mode -- The mode in which to_python should run.  If mode is 'json', the output will only contain JSON serializable types.  If  mode  is  'python',  the  output  may  contain
+                              non-JSON-serializable Python objects.
+
+                            • include -- A set of fields to include in the output.
+
+                            • exclude -- A set of fields to exclude from the output.
+
+                            • context -- Additional context to pass to the serializer.
+
+                            • by_alias -- Whether to use the field's alias in the dictionary key if defined.
+
+                            • exclude_unset -- Whether to exclude fields that have not been explicitly set.
+
+                            • exclude_defaults -- Whether to exclude fields that are set to their default value.
+
+                            • exclude_none -- Whether to exclude fields that have a value of None.
+
+                            • round_trip -- If True, dumped values should be valid as input for non-idempotent types such as Json[T].
+
+                            • warnings -- How to handle serialization errors. False/"none" ignores them, True/"warn" logs errors, "error" raises a [PydanticSerializationError][pydantic_core.PydanticSeri‐
+                              alizationError].
+
+                            • fallback  --  A  function  to  call  when an unknown value is encountered. If not provided, a [PydanticSerializationError][pydantic_core.PydanticSerializationError] error is
+                              raised.
+
+                            • serialize_as_any -- Whether to serialize fields with duck-typing serialization behavior.
+
+                     Returns
+                            A dictionary representation of the model.
+
+              model_dump_json(*, indent=None, ensure_ascii=False, include=None, exclude=None, context=None, by_alias=None, exclude_unset=False, exclude_defaults=False, exclude_none=False,
+              round_trip=False, warnings=True, fallback=None, serialize_as_any=False)
+
+                     !!! abstract "Usage Documentation"
+                            [model_dump_json](../concepts/serialization.md#json-mode)
+
+                     Generates a JSON representation of the model using Pydantic's to_json method.
+
+                     Parameters
+
+                            • indent -- Indentation to use in the JSON output. If None is passed, the output will be compact.
+
+                            • ensure_ascii -- If True, the output is guaranteed to have all incoming non-ASCII characters escaped.  If False (the default), these characters will be output as-is.
+
+                            • include -- Field(s) to include in the JSON output.
+
+                            • exclude -- Field(s) to exclude from the JSON output.
+
+                            • context -- Additional context to pass to the serializer.
+
+                            • by_alias -- Whether to serialize using field aliases.
+
+                            • exclude_unset -- Whether to exclude fields that have not been explicitly set.
+
+                            • exclude_defaults -- Whether to exclude fields that are set to their default value.
+
+                            • exclude_none -- Whether to exclude fields that have a value of None.
+
+                            • round_trip -- If True, dumped values should be valid as input for non-idempotent types such as Json[T].
+
+                            • warnings -- How to handle serialization errors. False/"none" ignores them, True/"warn" logs errors, "error" raises a [PydanticSerializationError][pydantic_core.PydanticSeri‐
+                              alizationError].
+
+                            • fallback -- A function to call when an unknown value is encountered. If  not  provided,  a  [PydanticSerializationError][pydantic_core.PydanticSerializationError]  error  is
+                              raised.
+
+                            • serialize_as_any -- Whether to serialize fields with duck-typing serialization behavior.
+
+                     Returns
+                            A JSON string representation of the model.
+
+              property model_extra
+                     Get extra fields set during validation.
+
+                     Returns
+                            A dictionary of extra fields, or None if config.extra is not set to "allow".
+
+              property model_fields_set
+                     Returns the set of fields that have been explicitly set on this model instance.
+
+                     Returns
+
+                            A set of strings representing the fields that have been set,
+                                   i.e. that were not filled from defaults.
+
+              classmethod model_json_schema(by_alias=True, ref_template='#/$defs/{model}', schema_generator=<class 'pydantic.json_schema.GenerateJsonSchema'>, mode='validation')
+                     Generates a JSON schema for a model class.
+
+                     Parameters
+
+                            • by_alias -- Whether to use attribute aliases or not.
+
+                            • ref_template -- The reference template.
+
+                            • schema_generator -- To override the logic used to generate the JSON schema, as a subclass of GenerateJsonSchema with your desired modifications
+
+                            • mode -- The mode in which to generate the schema.
+
+                     Returns
+                            The JSON schema for the given model class.
+
+              classmethod model_parametrized_name(params)
+                     Compute the class name for parametrizations of generic classes.
+
+                     This method can be overridden to achieve a custom naming scheme for generic BaseModels.
+
+                     Parameters
+                            params -- Tuple of types of the class. Given a generic class Model with 2 type variables and a concrete model Model[str, int], the value (str, int) would be passed to params.
+
+                     Returns
+                            String representing the new class where params are passed to cls as type variables.
+
+                     Raises TypeError -- Raised when trying to generate concrete names for non-generic models.
+
+              model_post_init(context, /)
+                     Override  this  method to perform additional initialization after __init__ and model_construct.  This is useful if you want to do some validation that requires the entire model to be
+                     initialized.
+
+              classmethod model_rebuild(*, force=False, raise_errors=True, _parent_namespace_depth=2, _types_namespace=None)
+                     Try to rebuild the pydantic-core schema for the model.
+
+                     This may be necessary when one of the annotations is a ForwardRef which could not be resolved during the initial attempt to build the schema, and automatic rebuilding fails.
+
+                     Parameters
+
+                            • force -- Whether to force the rebuilding of the model schema, defaults to False.
+
+                            • raise_errors -- Whether to raise errors, defaults to True.
+
+                            • _parent_namespace_depth -- The depth level of the parent namespace, defaults to 2.
+
+                            • _types_namespace -- The types namespace, defaults to None.
+
+                     Returns
+                            Returns None if the schema is already "complete" and rebuilding was not required.  If rebuilding _was_ required, returns True if rebuilding was successful, otherwise False.
+
+              classmethod model_validate(obj, *, strict=None, from_attributes=None, context=None, by_alias=None, by_name=None)
+                     Validate a pydantic model instance.
+
+                     Parameters
+
+                            • obj -- The object to validate.
+
+                            • strict -- Whether to enforce types strictly.
+
+                            • from_attributes -- Whether to extract data from object attributes.
+
+                            • context -- Additional context to pass to the validator.
+
+                            • by_alias -- Whether to use the field's alias when validating against the provided input data.
+
+                            • by_name -- Whether to use the field's name when validating against the provided input data.
+
+                     Raises ValidationError -- If the object could not be validated.
+
+                     Returns
+                            The validated model instance.
+
+              classmethod model_validate_json(json_data, *, strict=None, context=None, by_alias=None, by_name=None)
+
+                     !!! abstract "Usage Documentation"
+                            [JSON Parsing](../concepts/json.md#json-parsing)
+
+                     Validate the given JSON data against the Pydantic model.
+
+                     Parameters
+
+                            • json_data -- The JSON data to validate.
+
+                            • strict -- Whether to enforce types strictly.
+
+                            • context -- Extra variables to pass to the validator.
+
+                            • by_alias -- Whether to use the field's alias when validating against the provided input data.
+
+                            • by_name -- Whether to use the field's name when validating against the provided input data.
+
+                     Returns
+                            The validated Pydantic model.
+
+                     Raises ValidationError -- If json_data is not a JSON string or the object could not be validated.
+
+              classmethod model_validate_strings(obj, *, strict=None, context=None, by_alias=None, by_name=None)
+                     Validate the given object with string data against the Pydantic model.
+
+                     Parameters
+
+                            • obj -- The object containing string data to validate.
+
+                            • strict -- Whether to enforce types strictly.
+
+                            • context -- Extra variables to pass to the validator.
+
+                            • by_alias -- Whether to use the field's alias when validating against the provided input data.
+
+                            • by_name -- Whether to use the field's name when validating against the provided input data.
+
+                     Returns
+                            The validated Pydantic model.
+
+       chango.config.get_chango_instance(path=None)
+              Get the ChanGo instance specified in the configuration file.  Uses LRU caching to avoid reloading the configuration file multiple times.
+
+              Parameters
+                     path (Path | str | None, optional) -- The path to the configuration file as passed to ChanGoConfig.load().
+
+              Returns
+
+                     The instance of the ChanGo class
+                            specified in the configuration file.
+
+              Return type
+                     ChanGo
+
+   constants
+       This module contains constants used throughout the chango package.
+
+       class chango.constants.MarkupLanguage(*values)
+              Commonly known markup languages
+
+              ASCIIDOC = 'asciidoc'
+                     The AsciiDoc markup language
+
+              CREOLE = 'creole'
+                     The Creole markup language
+
+              HTML = 'html'
+                     The HyperText Markup Language
+
+              MARKDOWN = 'markdown'
+                     The Markdown markup language
+
+              MEDIAWIKI = 'mediawiki'
+                     The MediaWiki markup language
+
+              ORG = 'org'
+                     The Org-mode markup language
+
+              POD = 'pod'
+                     The Plain Old Documentation markup language
+
+              RDOC = 'rdoc'
+                     The RDoc markup language
+
+              RESTRUCTUREDTEXT = 'rst'
+                     The reStructuredText markup language
+
+              TEXT = 'txt'
+                     Plain text
+
+              TEXTILE = 'textile'
+                     The Textile markup language
+
+              classmethod from_string(string, mapping=None)
+                     Get the markup language enum member from a string by comparing against the members of this enum as well as commonly used file extensions. Case-insensitive. Leading dots are ignored.
+
+                     Parameters
+
+                            • string (str) -- The string to look up.
+
+                            • mapping (Mapping [str, MarkupLanguage] |                 None) -- A mapping of file extensions to markup languages. If not provided, the default mapping will be used.
+
+                     Returns
+                            The markup language enum member.
+
+                     Return type
+                            MarkupLanguage
+
+                     Raises ValueError -- If the file extension can not be resolved to a markup language.
+
+   error
+       This module contains error classes specific to the chango package.
+
+       exception chango.error.ChanGoError
+              Base class for all exceptions defined by the chango package.
+
+       exception chango.error.UnsupportedMarkupError
+              Exception raised when an unsupported markup is encountered.
+
+       exception chango.error.ValidationError
+              Exception raised when a validation error occurs.
+
+   helpers
+       chango.helpers.change_uid_from_file(file)
+              Get the change note identifier from a file name or path.
+
+              Parameters
+                     file (str | pathlib.Path) -- The file name or path to get the identifier from.
+
+              Returns
+                     The uid of the change note.
+
+              Return type
+                     str
+
+       chango.helpers.ensure_uid(obj)
+              Extract the unique identifier of an object. Input of type str and None is returned unchanged.
+
+              Parameters
+                     obj (str | None | has uid) -- An object that either has a string attribute uid (e.g. ChangeNote or Version), is a str or is None.
+
+              Returns
+                     The extracted UID if available and None else.
+
+              Return type
+                     str | None
+
+   sphinx_ext
+       This module contains functionality that allows automatically rendering changelogs in Sphinx documentation using chango.
+
+       SEE ALSO:
+          Sphinx Extension
+
+       chango.sphinx_ext.setup(app)
+              Sets up the chango Sphinx extension.  This currently does two things:
+
+              1. Adds the chango directive to Sphinx, which allows you to include changelogs in your documentation.
+
+              2. Adds a configuration value chango_pyproject_toml_path to the Sphinx configuration, which allows you to specify the path to the pyproject.toml file that contains the chango configuration.
+
+              Parameters
+                     app (sphinx.application.Sphinx) -- The Sphinx application object.
+
+              Returns
+
+                     A dictionary containing metadata about the
+                            extension.
+
+              Return type
+                     dict[str, typing.Any]
+
+   CLI
+   chango
+       CLI for chango - CHANgelog GOvernor for Your Project
+
+          chango [OPTIONS] COMMAND [ARGS]...
+
+       Options
+
+       --version
+              Show the version and exit.
+
+              Default
+                     False
+
+       --install-completion
+              Install completion for the current shell.
+
+       --show-completion
+              Show completion for the current shell, to copy it or customize the installation.
+
+       Arguments
+
+   config
+       Show or verify the configuration of the chango CLI.
+
+          chango config [OPTIONS] COMMAND [ARGS]...
+
+       Options
+
+       --path <path>
+              The path to the pyproject.toml file. Input behavior as for chango.config.ChanGoConfig.load.
+
+       Arguments
+
+   show
+       Show the configuration.
+
+          chango config show [OPTIONS]
+
+       Options
+
+       Arguments
+
+   validate
+       Validate the configuration.
+
+          chango config validate [OPTIONS]
+
+       Options
+
+       Arguments
+
+   edit
+       Edit an existing change note in the default editor.
+
+          chango edit [OPTIONS] UID
+
+       Options
+
+       Arguments
+
+       UID    Required argument
+
+              The unique identifier of the change note to edit.
+
+   new
+       Create a new change note.
+
+          chango new [OPTIONS]
+
+       Options
+
+       -s, --slug <slug>
+              Required The slug of the change note.
+
+       -e, --edit, -ne, --no-edit
+              Whether to open the change note in the default editor.
+
+              Default
+                     True
+
+       Arguments
+
+   release
+       Release the unreleased changes to a new version.
+
+          chango release [OPTIONS]
+
+       Options
+
+       --uid <uid>
+              Required The unique identifier of the version release.
+
+       --date <date>
+              The date of the version release. Defaults to today.
+
+              Default
+                     <function _today at 0x7f1f77417060>
+
+       Arguments
+
+   report
+       Generate reports for one or multiple versions.
+
+          chango report [OPTIONS] COMMAND [ARGS]...
+
+       Options
+
+       Arguments
+
+   history
+       Print a report of the version history.
+
+          chango report history [OPTIONS]
+
+       Options
+
+       -m, --markup <markup>
+              The markup language to use for the report.
+
+              Default
+                     <MarkupLanguage.MARKDOWN: 'markdown'>
+
+       -o, --output <output>
+              The file to write to. If not specified, the output is printed to the console.
+
+       Arguments
+
+   version
+       Print a report of the change notes for a specific version.
+
+          chango report version [OPTIONS]
+
+       Options
+
+       --uid <uid>
+              Required The unique identifier of the version to report on. Leave empty for unreleased changes.
+
+       -m, --markup <markup>
+              The markup language to use for the report.
+
+              Default
+                     <MarkupLanguage.MARKDOWN: 'markdown'>
+
+       -o, --output <output>
+              The file to write to. If not specified, the output is printed to the console.
+
+       Arguments
+
+   Changelog
+   0.5.0
+       2025-08-02
+
+   New Features
+       • Use git add in Chango.write_change_note if available (#108 by @Bibo-Joshi closes #106)
+
+       • Allow Several author_uids in sections.PullRequest (#110 by @Bibo-Joshi closes #107)
+
+   Internal Changes
+       • Bump actions/setup-python from 5.4.0 to 5.5.0 (#83 by @dependabot[bot])
+
+       • Bump codecov/test-results-action from 1.0.2 to 1.1.0 (#84 by @dependabot[bot])
+
+       • Bump github/codeql-action from 3.28.10 to 3.28.13 (#85 by @dependabot[bot])
+
+       • Bump actions/download-artifact from 4.1.8 to 4.2.1 (#86 by @dependabot[bot])
+
+       • Bump actions/upload-artifact from 4.6.0 to 4.6.2 (#87 by @dependabot[bot])
+
+       • Bump pre-commit Dependency Versions (#88 by @pre-commit-ci[bot])
+
+       • Bump actions/setup-python from 5.5.0 to 5.6.0 (#89 by @dependabot[bot])
+
+       • Bump actions/download-artifact from 4.2.1 to 4.3.0 (#90 by @dependabot[bot])
+
+       • Bump stefanzweifel/git-auto-commit-action from 5.1.0 to 5.2.0 (#91 by @dependabot[bot])
+
+       • Bump github/codeql-action from 3.28.13 to 3.28.16 (#92 by @dependabot[bot])
+
+       • Bump astral-sh/setup-uv from 5.3.0 to 6.0.1 (#93 by @dependabot[bot])
+
+       • Bump codecov/codecov-action from 5.4.0 to 5.4.3 (#94 by @dependabot[bot])
+
+       • Bump github/codeql-action from 3.28.16 to 3.28.18 (#96 by @dependabot)
+
+       • Bump codecov/test-results-action from 1.1.0 to 1.1.1 (#97 by @dependabot[bot])
+
+       • Adapt Test Suite to click Update (#98 by @Bibo-Joshi)
+
+       • Implement PEP 735 Dependency Groups (#99 by @Bibo-Joshi)
+
+       • Bump stefanzweifel/git-auto-commit-action from 5.2.0 to 6.0.1 (#100 by @dependabot)
+
+       • Bump pre-commit Dependency Versions (#101 by @pre-commit-ci)
+
+       • Update furo requirement from ~=2024.8 to >=2024.8,<2026.0 (#102 by @dependabot)
+
+       • Bump astral-sh/setup-uv from 6.0.1 to 6.4.3 (#103 by @dependabot)
+
+       • Bump github/codeql-action from 3.29.2 to 3.29.5 (#104 by @dependabot)
+
+       • Bump sigstore/gh-action-sigstore-python from 3.0.0 to 3.0.1 (#105 by @dependabot)
+
+   0.4.0
+       2025-03-09
+
+   New Features
+       • Add Workaround for PRs from Forks (#79 by @Bibo-Joshi)
+
+       • Check for Changes in DirectoryChanGo.build_github_event_change_note (#80 by @Bibo-Joshi)
+
+   Documentation
+       • Documentation Improvements (#81 by @Bibo-Joshi)
+
+   Internal Changes
+       • Bump stefanzweifel/git-auto-commit-action from 5.0.1 to 5.1.0 (#74 by @dependabot[bot])
+
+       • Bump codecov/codecov-action from 5.3.1 to 5.4.0 (#75 by @dependabot[bot])
+
+       • Bump pypa/gh-action-pypi-publish from 1.12.3 to 1.12.4 (#76 by @dependabot[bot])
+
+       • Bump github/codeql-action from 3.28.8 to 3.28.10 (#77 by @dependabot[bot])
+
+       • Bump astral-sh/setup-uv from 5.1.0 to 5.3.0 (#78 by @dependabot[bot])
+
+       • Bump Version to 0.4.0 (#82 by @Bibo-Joshi)
+
+   0.3.2
+       2025-02-07
+
+   Bug Fixes
+       • Fix Link Returned by GitHubSectionChangeNot.get_thread_url (#72 by @Bibo-Joshi closes #71)
+
+   Internal Changes
+       • Remove Debugging Content (#70 by @Bibo-Joshi)
+
+       • Bump Version to 0.3.2 (#73 by @Bibo-Joshi)
+
+   0.3.1
+       2025-02-06
+
+   Bug Fixes
+       • Fix Faulty Build Configuration (#68 by @Bibo-Joshi)
+
+   Internal Changes
+       • Bump Version to 0.3.1 (#69 by @Bibo-Joshi)
+
+   0.3.0
+       2025-02-04
+
+   Breaking Changes
+       • Adapt expected exceptions in ChanGo and VersionScanner to use ChanGoError (#64 by @Bibo-Joshi)
+
+   New Features
+       • Add Classes BackwardCompatibleVersionScanner and BackwardCompatibleChanGo allowing to easily transition between change not formats (#64 by @Bibo-Joshi)
+
+   Internal Changes
+       • Switch to using GitHubSectionChangeNote (#64 by @Bibo-Joshi)
+
+       • Bump Version to 0.3.0 (#66 by @Bibo-Joshi)
+
+   0.2.0
+       2025-02-03
+
+       • FIx Sorting Direction in HeaderVersionHistory.render (#46)
+
+       • Add chango.concrete.sections (#47)
+
+       • Implement GitHubSectionChangeNote.build_from_github_event And Several Adaptions on GitHub Automation (#50)
+
+       • Bump astral-sh/setup-uv from 4.2.0 to 5.1.0 (#52)
+
+       • Bump actions/upload-artifact from 4.4.3 to 4.5.0 (#53)
+
+       • Bump github/codeql-action from 3.27.9 to 3.28.0 (#54)
+
+       • Bump codecov/codecov-action from 5.1.1 to 5.1.2 (#55)
+
+       • Bump pre-commit Dependency Versions (#56)
+
+       • Don't Enforce One Required Section in SectionChangeNote (#57)
+
+       • Fix Nesting Bug in Parsing rich to sphinx Syntax (#58)
+
+       • Bump github/codeql-action from 3.28.0 to 3.28.8 (#59)
+
+       • Bump codecov/test-results-action from 1.0.1 to 1.0.2 (#60)
+
+       • Bump actions/setup-python from 5.3.0 to 5.4.0 (#61)
+
+       • Bump actions/upload-artifact from 4.5.0 to 4.6.0 (#62)
+
+       • Bump codecov/codecov-action from 5.1.2 to 5.3.1 (#63)
+
+       • Bump Version to 0.2.0 (#65)
+
+   0.1.0
+       2024-12-15
+
+       • Use git mv in ChanGo.release if Available (#43)
+
+       • Set up Action Metadata for Publishing on Marketplace (#44)
+
+       • Bump Version to 0.1.0 (#45)
+
+   0.0.1
+       2024-12-13
+
+       • Initial Commit
+
+       • Add Initial Functionality (#1)
+
+       • Set Up Initial ReadTheDocs Build (#2)
+
+       • Add Types to Docstrings: chango and chango.abc (#4)
+
+       • Add Types To Docstrings: chango.concrete (#5)
+
+       • Add CLI to Sphinx Documentation (#6)
+
+       • Set Up Unified Formatting for CLI Help Texts and HTML Documentation (#7)
+
+       • Add Unit Tests for Direct Members of chango Package (#8)
+
+       • Make Use of pytest-xdist and pytest-randomly (#9)
+
+       • Cache Dependencies in CI (#10)
+
+       • Add Python 3.13 to Test Matrix (#11)
+
+       • Improve Coverage of Existing Tests (#12)
+
+       • Add Unit Tests for chango.abc.ChangeNote (#13)
+
+       • Improve Coverage Configuration (#14)
+
+       • Make ChangeNote.to_bytes Concrete (#15)
+
+       • Add Unit Tests for chango.abc.VersionNote (#16)
+
+       • Add Unit Tests for chango.abc.VersionHistory (#17)
+
+       • Add Unit Tests for chango.concrete.Comment(Change|Version)Note (#18)
+
+       • Remove Redundant Logic From and Add Unit Tests for HeaderVersionHistory (#19)
+
+       • Add Unit Tests for DirectoryVersionScanner (#20)
+
+       • Add Unit Tests for VersionScanner (#21)
+
+       • Add Unit Tests for DirectoryChanGo (#22)
+
+       • Remove Redundant CommentChangeNote.to_bytes (#23)
+
+       • Add Unit Tests for ChanGo (#24)
+
+       • Initial Setup for Testing the CLI (#25)
+
+       • Initial Readme Content and Changelog Setup (#26)
+
+       • Create Change Notes from GitHub Events and Add GitHub Action (#27)
+
+       • Add Sphinx Extension (#28)
+
+       • Add Public chango.config Module (#29)
+
+       • Make Parameter base_directory of DirectoryVersionScanner Relative to Calling Module (#33)
+
+       • Add VersionScanner.invalidate_caches (#34)
+
+       • Increase Code Coverage (#35)
+
+       • Add Unit Tests for CLI (#36)
+
+       • Add Dependabot and Security Scanning for GitHub Actions (#37)
+
+       • Update sphinx requirement from ~=8.0 to ~=8.1 (#38)
+
+       • Add Workflows for Automated Releases (#39)
+
+       • Bump Version to 0.0.1 (#41)
+
+AUTHOR
+       Hinrich Mahler
+
+COPYRIGHT
+       2024, Hinrich Mahler
+
+0.5.0                                                                                           Aug 28, 2025                                                                                      CHANGO(1)

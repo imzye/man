@@ -1,0 +1,455 @@
+Beanstalk::Client(3)  User Contributed Perl Documentation Beanstalk::Client(3)
+
+
+NAME
+       Beanstalk::Client - Client class to talk to beanstalkd server
+
+SYNOPSIS
+         use Beanstalk::Client;
+
+         my $client = Beanstalk::Client->new(
+           { server       => "localhost",
+             default_tube => 'mine',
+           }
+         );
+
+         # Send a job with explicit data
+         my $job = $client->put(
+           { data     => "data",
+             priority => 100,
+             ttr      => 120,
+             delay    => 5,
+           }
+         );
+
+         # Send job, data created by encoding @args. By default with YAML
+         my $job2 = $client->put(
+           { priority => 100,
+             ttr      => 120,
+             delay    => 5,
+           },
+           @args
+         );
+
+         # Send job, data created by encoding @args with JSON
+         use JSON::XS;
+         $client->encoder(sub { encode_json(\@_) });
+         my $job2 = $client->put(
+           { priority => 100,
+             ttr      => 120,
+             delay    => 5,
+           },
+           @args
+         );
+
+         # fetch a job
+         my $job3 = $client->reserve;
+
+DESCRIPTION
+       Beanstalk::Client provides a Perl API of protocol version 1.0 to the
+       beanstalkd server, a fast, general-purpose, in-memory workqueue service
+       by Keith Rarick.
+
+METHODS
+   Constructor
+       new ($options)
+           The constructor accepts a single argument, which is a reference to
+           a hash containing options.  The options can be any of the accessor
+           methods listed below.
+
+   Accessor Methods
+       server ([$hostname])
+           Get/set the hostname, and port, to connect to. The port, which
+           defaults to 11300, can be specified by appending it to the hostname
+           with a ":" (eg "localhost:1234").  (Default: "localhost:11300")
+
+       socket
+           Get the socket connection to the server.
+
+       delay ([$delay])
+           Set/get a default value, in seconds, for job delay. A job with a
+           delay will be placed into a delayed state and will not be placed
+           into the ready queue until the time period has passed.  This value
+           will be used by "put" and "release" as a default. (Default: 0)
+
+       ttr ([$ttr])
+           Set/get a default value, in seconds, for job ttr (time to run).
+           This value will be used by "put" as a default. (Default: 120)
+
+       priority ([$priority])
+           Set/get a default value for job priority. The highest priority job
+           is the job where the priority value is the lowest (ie jobs with a
+           lower priority value are run first). This value will be used by
+           "put", "release" and "bury" as a default. (Default: 10000)
+
+       encoder ([$encoder])
+           Set/get serialization encoder. $encoder is a reference to a
+           subroutine that will be called when arguments to "put" need to be
+           encoded to send to the beanstalkd server. The subroutine should
+           accept a list of arguments and return a string representation to
+           pass to the server. (Default: YAML::Syck::Dump)
+
+       decoder ([$decoder])
+           Set/get the serialization decoder. $decoder is a reference to a
+           subroutine that will be called when data from the beanstalkd server
+           needs to be decoded. The subroutine will be passed the data fetched
+           from the beanstalkd server and should return a list of values the
+           application can use.  (Default: YAML::Syck::Load)
+
+       error
+           Fetch the last error that happened.
+
+       connect_timeout ([$timeout])
+           Get/set timeout, in seconds, to use for the connect to the server.
+
+       default_tube ([$tube])
+           Set/get the name of a default tube to put jobs into and fetch from.
+
+           By default a connection to a beanstalkd server will put into the
+           "default" queue and also watch the "default" queue. If
+           "default_tube" is set when "connect" is called the connection will
+           be initialized so that "put" will put into the given tube and
+           "reserve" will fetch jobs from the given tube.  (Default: none)
+
+       debug ([$debug])
+           Set/get debug value. If set to a true value then all communication
+           with the server will be output with "warn"
+
+   Producer Methods
+       These methods are used by clients that are placing work into the queue
+
+       put ($options [, @args])
+           Insert job into the currently used tube. Options may be
+
+           priority
+               priority to use to queue the job.  Jobs with smaller priority
+               values will be scheduled before jobs with larger priorities.
+               The most urgent priority is 0
+
+               Defaults to "$self-"priority>
+
+           delay
+               An integer number of seconds to wait before putting the job in
+                  the ready queue. The job will be in the "delayed" state
+               during this time
+
+               Defaults to "$self-"delay>
+
+           ttr "time to run" - An integer number of seconds to allow a worker
+               to run this job. This time is counted from the moment a worker
+               reserves this job. If the worker does not delete, release, or
+               bury the job within "ttr" seconds, the job will time out and
+               the server will release the job.  The minimum ttr is 1. If the
+               client sends 0, the server will silently increase the ttr to 1.
+
+           data
+               The job body. Defaults to the result of calling the current
+               encoder passing @args
+
+       use ($tube)
+           Change tube that new jobs are inserted into
+
+   Worker Methods
+       reserve ([$timeout])
+           Reserve a job from the list of tubes currently being watched.
+
+           Returns a Beanstalk::Job on success. $timeout is the maximum number
+           of seconds to wait for a job to become ready. If $timeout is not
+           given then the client will wait indefinitely.
+
+           Returns undef on error or if $timeout expires.
+
+       delete ($id)
+           Delete the specified job.
+
+       release ($id, [, $options])
+           Release the specified job. Valid options are
+
+           priority
+               New priority to assign to the job
+
+           delay
+               An integer number of seconds to wait before putting the job in
+               the ready queue. The job will be in the "delayed" state during
+               this time
+
+       bury ($id [, $options])
+           The bury command puts a job into the "buried" state. Buried jobs
+           are put into a FIFO linked list and will not be touched by the
+           server again until a client kicks them with the "kick" command.
+
+           Valid options are
+
+           priority
+               New priority to assign to the job
+
+       touch ($id)
+           Calling "touch" with the id of a reserved job will reset the time
+           left for the job to complete back to the original ttr value.
+
+       watch ($tube)
+           Specifies a tube to add to the watch list. If the tube doesn't
+           exist, it will be created
+
+       ignore ($tube)
+           Stop watching $tube
+
+       watch_only (@tubes)
+           Watch only the list of given tube names
+
+   Other Methods
+       connect
+           Connect to server. If sucessful, set the tube to use and tube to
+           watch if a "default_tube" was specified.
+
+       disconnect
+           Disconnect from server. "socket" method will return undef.
+
+       quit
+           Disconnect from server. "socket" method will return undef.
+
+       peek ($id)
+           Peek at the job id specified. If the job exists returns a
+           Beanstalk::Job object. Returns "undef" on error or if job does not
+           exist.
+
+       peek_ready
+           Peek at the first job that is in the ready queue. If there is a job
+           in the ready queue returns a Beanstalk::Job object. Returns "undef"
+           on error or if there are no ready jobs.
+
+       peek_delayed
+           Peek at the first job that is in the delayed queue. If there is a
+           job in the delayed queue returns a Beanstalk::Job object. Returns
+           "undef" on error or if there are no delayed jobs.
+
+       peek_buried
+           Peek at the first job that is in the buried queue. If there is a
+           job in the buried queue returns a Beanstalk::Job object. Returns
+           "undef" on error or if there are no buried jobs.
+
+       kick ($bound)
+           The kick command applies only to the currently used tube. It moves
+           jobs into the ready queue. If there are any buried jobs, it will
+           only kick buried jobs.  Otherwise it will kick delayed jobs. The
+           server will not kick more than $bound jobs. Returns the number of
+           jobs kicked, or undef if there was an error.
+
+       stats_job ($id)
+           Return stats for the specified job $id. Returns "undef" on error.
+
+           If the job exists, the return will be a Stats object with the
+           following methods
+
+           •   id - The job id
+
+           •   tube - The name of the tube that contains this job
+
+           •   state - is "ready" or "delayed" or "reserved" or "buried"
+
+           •   pri - The priority value set by the put, release, or bury
+               commands.
+
+           •   age - The time in seconds since the put command that created
+               this job.
+
+           •   time_left - The number of seconds left until the server puts
+               this job into the ready queue. This number is only meaningful
+               if the job is reserved or delayed. If the job is reserved and
+               this amount of time elapses before its state changes, it is
+               considered to have timed out.
+
+           •   reserves - The number of times this job has been reserved
+
+           •   timeouts - The number of times this job has timed out during a
+               reservation.
+
+           •   releases - The number of times a client has released this job
+               from a reservation.
+
+           •   buries - The number of times this job has been buried.
+
+           •   kicks - The number of times this job has been kicked.
+
+       stats_tube ($tube)
+           Return stats for the specified tube $tube. Returns "undef" on
+           error.
+
+           If the tube exists, the return will be a Stats object with the
+           following methods
+
+           •   name - The tube's name.
+
+           •   current_jobs_urgent - The number of ready jobs with priority <
+               1024 in this tube.
+
+           •   current_jobs_ready - The number of jobs in the ready queue in
+               this tube.
+
+           •   current_jobs_reserved - The number of jobs reserved by all
+               clients in this tube.
+
+           •   current_jobs_delayed - The number of delayed jobs in this tube.
+
+           •   current_jobs_buried - The number of buried jobs in this tube.
+
+           •   total_jobs - The cumulative count of jobs created in this tube.
+
+           •   current_waiting - The number of open connections that have
+               issued a reserve command while watching this tube but not yet
+               received a response.
+
+           •   pause - The number of seconds the tube has been paused for.
+
+           •   cmd_pause_tube - The cumulative number of pause-tube commands
+               for this tube.
+
+           •   pause_time_left - The number of seconds until the tube is un-
+               paused.
+
+       stats
+           •   current_jobs_urgent - The number of ready jobs with priority <
+               1024.
+
+           •   current_jobs_ready - The number of jobs in the ready queue.
+
+           •   current_jobs_reserved - The number of jobs reserved by all
+               clients.
+
+           •   current_jobs_delayed - The number of delayed jobs.
+
+           •   current_jobs_buried - The number of buried jobs.
+
+           •   cmd_put - The cumulative number of put commands.
+
+           •   cmd_peek - The cumulative number of peek commands.
+
+           •   cmd_peek_ready - The cumulative number of peek-ready commands.
+
+           •   cmd_peek_delayed - The cumulative number of peek-delayed
+               commands.
+
+           •   cmd_peek_buried - The cumulative number of peek-buried
+               commands.
+
+           •   cmd_reserve - The cumulative number of reserve commands.
+
+           •   cmd_use - The cumulative number of use commands.
+
+           •   cmd_watch - The cumulative number of watch commands.
+
+           •   cmd_ignore - The cumulative number of ignore commands.
+
+           •   cmd_delete - The cumulative number of delete commands.
+
+           •   cmd_release - The cumulative number of release commands.
+
+           •   cmd_bury - The cumulative number of bury commands.
+
+           •   cmd_kick - The cumulative number of kick commands.
+
+           •   cmd_stats - The cumulative number of stats commands.
+
+           •   cmd_stats_job - The cumulative number of stats-job commands.
+
+           •   cmd_stats_tube - The cumulative number of stats-tube commands.
+
+           •   cmd_list_tubes - The cumulative number of list-tubes commands.
+
+           •   cmd_list_tube_used - The cumulative number of list-tube-used
+               commands.
+
+           •   cmd_list_tubes_watched - The cumulative number of list-tubes-
+               watched commands.
+
+           •   cmd_pause_tube - The cumulative number of pause-tube commands
+
+           •   job_timeouts - The cumulative count of times a job has timed
+               out.
+
+           •   total_jobs - The cumulative count of jobs created.
+
+           •   max_job_size - The maximum number of bytes in a job.
+
+           •   current_tubes - The number of currently-existing tubes.
+
+           •   current_connections - The number of currently open connections.
+
+           •   current_producers - The number of open connections that have
+               each issued at least one put command.
+
+           •   current_workers - The number of open connections that have each
+               issued at least one reserve command.
+
+           •   current_waiting - The number of open connections that have
+               issued a reserve command but not yet received a response.
+
+           •   total_connections - The cumulative count of connections.
+
+           •   pid - The process id of the server.
+
+           •   version - The version string of the server.
+
+           •   rusage_utime - The accumulated user CPU time of this process in
+               seconds and microseconds.
+
+           •   rusage_stime - The accumulated system CPU time of this process
+               in seconds and microseconds.
+
+           •   uptime - The number of seconds since this server started
+               running.
+
+           •   binlog_oldest_index - The index of the oldest binlog file
+               needed to store the current jobs
+
+           •   binlog_current_index - The index of the current binlog file
+               being written to. If binlog is not active this value will be 0
+
+           •   binlog_max_size - The maximum size in bytes a binlog file is
+               allowed to get before a new binlog file is opened
+
+       list_tubes
+           Returns a list of tubes
+
+       list_tube_used
+           Returns the current tube being used. This is the tube which "put"
+           will place jobs.
+
+       list_tubes_watched
+           Returns a list of tubes being watched, or the number of tubes being
+           watched in a scalar context.  These are the tubes that "reserve"
+           will check to find jobs. On error an empty list, or undef in a
+           scalar context, will be returned.
+
+       pause_tube ($tube, $delay)
+           Pause from reserving any jobs in $tube for $delay seconds.
+
+           Returns true on success and "undef" on error.
+
+TODO
+       More tests
+
+ACKNOWLEDGEMTS
+       Large parts of this documention were lifted from the documention that
+       comes with beanstalkd
+
+SEE ALSO
+       http://xph.us/software/beanstalkd/
+
+       Beanstalk::Pool, Beanstalk::Job, Beanstalk::Stats
+
+AUTHOR
+       Graham Barr <gbarr@pobox.com>
+
+CREDITS
+       •   Ask Bjørn Hansen
+
+       •   Rhesa Rozendaal
+
+COPYRIGHT
+       Copyright (C) 2008 by Graham Barr.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2009-12-11              Beanstalk::Client(3)

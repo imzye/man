@@ -1,0 +1,400 @@
+IO::Socket::Netlink(3)                     User Contributed Perl Documentation
+
+
+NAME
+       "IO::Socket::Netlink" - Object interface to "PF_NETLINK" domain sockets
+
+SYNOPSIS
+        use Socket::Netlink;
+        use IO::Socket::Netlink;
+
+        my $sock = IO::Socket::Netlink->new( Protocol => 0 ) or die "socket: $!";
+
+        $sock->send_nlmsg( $sock->new_request(
+           nlmsg_type  => 18,
+           nlmsg_flags => NLM_F_DUMP,
+           nlmsg       => "\0\0\0\0\0\0\0\0",
+        ) ) or die "send: $!";
+
+        $sock->recv_nlmsg( my $message, 65536 ) or die "recv: $!";
+
+        printf "Received type=%d flags=%x:\n%v02x\n",
+           $message->nlmsg_type, $message->nlmsg_flags, $message->nlmsg;
+
+DESCRIPTION
+       This module provides an object interface to "PF_NETLINK" sockets on
+       Linux, by building on top of the IO::Socket class. While useful on its
+       own, it is intended itself to serve as a base class, for particular
+       netlink protocols to extend.
+
+CLASS METHODS
+   register_protocol
+          $class->register_protocol( $proto )
+
+       May be called by a subclass implementing a Netlink protocol. If so,
+       then any object constructed using a known protocol on this base class
+       will be automatically reblessed into the appropriate package.
+
+CONSTRUCTOR
+   new
+          $sock = IO::Socket::Netlink->new( %args )
+
+       Creates a new "IO::Socket::Netlink" object.
+
+       The recognised arguments are:
+
+       Protocol => INT
+               The netlink protocol. This is a required argument.
+
+       Pid => INT
+               Socket identifier (usually the process identifier)
+
+       Groups => INT
+               32bit bitmask of multicast groups to join
+
+METHODS
+   sockpid
+          $pid = $sock->sockpid
+
+       Returns the socket identifier
+
+   sockgroups
+          $groups = $sock->sockgroups
+
+       Returns the 32bit bitmask of multicast groups
+
+   new_message
+          $msg = $sock->new_message( %args )
+
+       Returns a new message object containing the given arguments. The named
+       arguments are in fact read as an list of key/value pairs, not a hash,
+       so order is significant. The basic "nlmsg_*" keys should come first,
+       followed by any required by the inner level header.
+
+       For more detail, see the "MESSAGE OBJECTS" section below.
+
+   new_request
+          $msg = $sock->new_request( %args )
+
+       A convenience wrapper around "new_message" which sets the
+       "NLM_F_REQUEST" flag on the returned message.
+
+   new_command
+          $sock->new_command( %args )
+
+       As "new_request", but may use a different class for messages. This is
+       for such netlink protocols as "TASKSTATS", which uses a different set
+       of message attributes for userland-to-kernel commands, as for kernel-
+       to-userland event messages.
+
+   send_nlmsg
+          $sock->send_nlmsg( $message )
+
+       Sends the given message object to the kernel. $message should be a
+       message object, constructed using the socket's "new_message" factory
+       method.
+
+   recv_nlmsg
+          $sock->recv_nlmsg( $message, $maxlen )
+
+       Receives a single message from the kernel. The $message parameter
+       should be a variable, which will contain the new message object when
+       this method returns successfully.
+
+       Sometimes the kernel will respond multiple messages in reply to just
+       one. If this may be the case, see instead "recv_nlmsgs".
+
+       This method returns success or failure depending only on the result of
+       the underlying socket "recv" call. If a message was successfully
+       received it returns true, even if that message contains an error. To
+       detect the error, see the "nlerr_error" accessor.
+
+   recv_nlmsgs
+          $sock->recv_nlmsgs( \@messages, $maxlen )
+
+       Receives message from the kernel. If the first message received has the
+       "NLM_F_MULTI" flag, then messages will be collected up until the final
+       "NLMSG_DONE" which indicates the end of the list. Each message is
+       pushed into the @messages array (which is not cleared initially),
+       excluding the final "NLMSG_DONE".
+
+       This method returns success or failure depending only on the result of
+       the underlying socket "recv" call or calls. If any calls fails then the
+       method will return false. If messages were successfully received it
+       returns true, even if a message contains an error. To detect the error,
+       see the "nlerr_error" accessor.
+
+MESSAGE OBJECTS
+       Netlink messages are passed in to "send_nlmsg" and returned by
+       "recv_nlmsg" and "recv_nlmsgs" in the form of objects, which wrap the
+       protocol headers.  These objects are not directly constructed; instead
+       you should use the "new_message" method on the socket to build a new
+       message to send.
+
+       These objects exist also to wrap higher-level protocol fields, for
+       messages in some particular netlink protocol. A subclass of
+       "IO::Socket::Netlink" would likely use its own subclass of message
+       object; extra fields may exist on these objects.
+
+       The following accessors may be used to set or obtain the fields in the
+       toplevel "nlmsghdr" structure:
+
+       •   $message->nlmsg_type
+
+       •   $message->nlmsg_flags
+
+       •   $message->nlmsg_seq
+
+       •   $message->nlmsg_pid
+
+           Set or obtain the fields in the "nlmsghdr" structure.
+
+       •   $message->nlmsg
+
+           Set or obtain the packed message body. This method is intended to
+           be overridden by specific protocol implementations, to pack or
+           unpack their own structure type.
+
+       Many Netlink-based protocols use standard message headers with
+       attribute bodies. Messages may start with structure layouts containing
+       standard fields, optionally followed by a sequence of one or more
+       attributes in a standard format. Each attribute is an ID number and a
+       value.
+
+       Because this class is intended to be subclassed by specific Netlink
+       protocol implementations, a number of class methods exist to declare
+       metadata about the protocol to assist generating the code required to
+       support it. A message class can declare its header format, which
+       defines what extra accessor fields will be created, and functions to
+       pack and unpack the fields to or from the message body. It can also
+       declare its mapping of attribute names, ID numbers, and data types. The
+       message class will then support automatic encoding and decoding of
+       named attributes to or from the buffer.
+
+   $messageclass->is_header( %args )
+       Called by a subclass of the message class, this class method declares
+       that messages of this particular type contain a message header. The
+       four required fields of %args define how this behaves:
+
+       •   data => STRING
+
+           Gives the name of the accessor method on its parent class which
+           contains the data buffer for the header. Normally this would be
+           "nlmsg" for direct subclasses of the base message class, but
+           further subclasses would need to use the trailing data buffer
+           accessor of their parent class.
+
+       •   fields => ARRAY
+
+           Reference to an array of definitions for the fields, in the order
+           returned by the pack function or expected by the unpack function. A
+           new accessor method will be created for each.
+
+           Each field item should either be an ARRAY reference containing the
+           following structure, or a plain scalar denoting simply its name
+
+            [ $name, $type, %opts ]
+
+           The $type defines the default value of the attribute, and
+           determines how it will be printed by the "STRING" method:
+
+           •   decimal
+
+               Default 0, printed with printf "%d"
+
+           •   hex
+
+               Default 0, printed with printf "%x"
+
+           •   bytes
+
+               Default "", printed with printf "%v02x"
+
+           •   string
+
+               Default "", printed with printf "%s"
+
+           The following options are recognised:
+
+           default => SCALAR
+                   A value to set for the field when the message header is
+                   packed, if no other value has been provided.
+
+           Fields defined simply by name are given the type of "decimal" with
+           a default value of 0, and no other options.
+
+       •   pack => CODE
+
+       •   unpack => CODE
+
+           References to code that, respectively, packs a list of field values
+           into a packed string value, or unpacks a packed string value back
+           out into a list of values.
+
+       When the header is declared, the base class's method named by "data"
+       will be overridden by generated code. This overridden method unpacks
+       the values of the fields into accessors when it is set, or packs the
+       accessors into a value when queried.
+
+       This arrangement can be continued by further subclasses which implement
+       further levels of wrapping, if the pack and unpack functions implement
+       a data tail area; that is, the pack function takes an extra string
+       buffer and the unpack function returns one, for extra bytes after the
+       header itself. The last named field will then contain this buffer.
+
+   $messageclass->is_subclassed_by_type
+       Called by a subclass of the message class, this class method declares
+       that messages are further subclassed according to the value of their
+       "nlmsg_type".  This will override the "nlmsg_type" accessor to
+       re-"bless" the object into its declared subclass according to the types
+       declared to the generated "register_nlmsg_type" method.
+
+       For example
+
+        package IO::Socket::Netlink::SomeProto::_Message;
+        use base qw( IO::Socket::Netlink::_Message );
+
+        __PACKAGE__->is_subclassed_by_type;
+
+        package IO::Socket::Netlink::SomeProto::_InfoMessage;
+
+        __PACKAGE__->register_nlmsg_type( 123 );
+
+        ...
+
+       At this point, if a message is constructed with this type number,
+       either by code calling "new_message", or received from the socket, it
+       will be automatically reblessed to the appropriate class.
+
+       This feature is intended for use by netlink protocols where different
+       message types have different stucture types.
+
+   $messageclass->has_nlattrs( $fieldname, %attrs )
+       Called by a subclass of the message class, this class method is
+       intended to be used by subclass authors to declare the attributes the
+       message protocol understands. The data declared here is used by the
+       "nlattrs" method.
+
+       $fieldname should be the name of an existing method on the object
+       class; this method will be used to obtain or set the data field
+       containing the attributes (typically this will be the trailing message
+       body). %attrs should be a hash, mapping symbolic names of fields into
+       their typeid and data format. Each entry should be of the form
+
+        $name => [ $typeid, $datatype ]
+
+       When the "attrs" method is packing attributes into the message body, it
+       will read attributes by $name and encode them using the given $datatype
+       to store in the body by $typeid. When it is unpacking attributes from
+       the body, it will use the $typeid to decode the data, and return it in
+       a hash key of the given $name.
+
+       The following standard definitions exist for $datatype:
+
+       •   u8
+
+           An unsigned 8-bit number
+
+       •   u16
+
+           An unsigned 16-bit number
+
+       •   u32
+
+           An unsigned 32-bit number
+
+       •   u64
+
+           An unsigned 64-bit number
+
+       •   asciiz
+
+           A NULL-terminated string of ASCII text
+
+       •   raw
+
+           No encoding or decoding will take place; the value contains the raw
+           byte buffer
+
+       •   nested
+
+           The buffer itself contains more attributes in the same schema.
+           These will be taken or returned in a HASH reference.
+
+       A subclass can define new data types by providing methods called
+       "pack_nlattr_$datatype" and "unpack_nlattr_$datatype" which will be
+       used to encode or decode the attribute value into a string buffer.
+
+   $message->nlattrs( \%newattrs )
+       Sets the message body field by encoding the attributes given by
+       %newattrs, keyed by name, into Netlink attribute values, by using the
+       definitions declared by the subclass's "has_nlattrs" method.
+
+   \%attrs = $message->nlattrs
+       Returns the decoded attributes from the message body field.
+
+   $value = $message->get_nlattr( $name )
+       Returns the decoded value of a single attribute from the message body
+       field.  Similar to
+
+        $value = $message->nlattrs->{$name}
+
+       except it does not incur the extra cost of decoding the other attribute
+       values that remain unused.
+
+   $message->change_nlattrs( %newvalues )
+       Changes the stored values of the given attributes in the message body
+       field.  Similar to
+
+        $message->nlattrs( { %{ $message->nlattrs }, %newvalues } );
+
+       except it does not incur the extra cost of decoding and reencoding the
+       unmodified attribute values.
+
+       A value of "undef" may be assigned to delete an attribute.
+
+       The following accessors are provided for debugging purposes
+
+   $str = $message->nlmsg_type_string
+       Renders the message type into a readable string form. Subclasses may
+       wish to override this method to return other strings they recognise, or
+       call to "SUPER" if they don't.
+
+   $str = $message->nlmsg_flags_string
+       Renders the flags into a readable string form. Each flag present is
+       named, joined by "|" characters.
+
+   $str = $message->nlmsg_string
+       Intended for subclasses to override, to include more of their own
+       information about nested headers.
+
+   $str = $message->STRING
+   $str = "$message"
+       Returns a human-readable string form of the message, giving details of
+       the values of the fields. Provided primarily for debugging purposes.
+
+ERROR MESSAGE OBJECTS
+       If a message object has its "nlmsg_type" field set to "NLMSG_ERROR"
+       then the object will be reblessed into a subclass that encapsulates the
+       error message.
+
+   $message->nlerr_error
+       Accessor for the error value from the kernel. This will be a system
+       error value such used by $!. This accessor also exists on non-error
+       messages, but returns false. This makes it easy to test for an error
+       after "recv_nlmsg":
+
+        $sock->recv_nlmsg( my $message, 2**15 ) or die "Cannot recv - $!";
+        ( $! = $message->nlerr_error ) and die "Received NLMSG_ERROR - $!";
+
+   $message->nlerr_msg
+       Accessor for the original netlink message header that invoked the
+       error. This value may be unpacked using "unpack_nlmsghdr".
+
+SEE ALSO
+       •   Socket::Netlink - interface to Linux's "PF_NETLINK" socket family
+
+AUTHOR
+       Paul Evans <leonerd@leonerd.org.uk>
+
+perl v5.40.2                      2025-08-09            IO::Socket::Netlink(3)

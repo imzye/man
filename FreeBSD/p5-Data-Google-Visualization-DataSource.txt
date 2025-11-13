@@ -1,0 +1,265 @@
+Data::Google::Visualization::DataSource(3) User Contributed Perl Documentation
+
+
+NAME
+       Data::Google::Visualization::DataSource - Google Chart Datasources
+
+VERSION
+       version 0.01
+
+DESCRIPTION
+       Helper class for implementing the Google Chart Tools Datasource
+       Protocol (v0.6)
+
+SYNOPSIS
+        # Step 1: Create the container based on the HTTP request
+        my $datasource = Data::Google::Visualization::DataSource->new({
+           tqx => $q->param('tqx'),
+           xda => ($q->header('X-DataSource-Auth') || undef)
+        });
+
+        # Step 2: Add data
+        $datasource->datatable( Data::Google::Visualiation::DataSource object );
+
+        # Step 3: Show the user...
+        my ( $headers, $body ) = $datasource->serialize;
+
+        printf("%s: %s\n", @$_) for $headers;
+        print "\n" . $body . "\n";
+
+OVERVIEW
+       The Google Visualization API
+       <https://developers.google.com/chart/interactive/docs/reference> is a
+       nifty bit of kit for generating pretty pictures from your data. By
+       design it has a fair amount of Google-cruft, such as non-standard JSON
+       and stuffing configuration options in to a single CGI query parameter.
+       It's also got somewhat confusing documentation, and some non-obvious
+       rules for generating certain message classes.
+
+       Data::Google::Visualization::DataTable takes care of preparing data for
+       the API, but this module implements the Google Chart Tools Datasource
+       Protocol, or Google Visualization API wire protocol, or whatever it is
+       they've decided to call it this week.
+
+       This documentation is not laid out like standard Perl documentation,
+       because it needs extra explanation. You should read this whole document
+       sequentially if you wish to make use of it.
+
+THREE SIMPLE STEPS
+       There's quite a bit of logic around how to craft a response, how to
+       throw errors, how to throw warnings, etc. After some thought, I have
+       discovered an interface that hopefully won't make you want to throw
+       yourself off a cliff.
+
+       At its essence, Google Datasources allow querying clients to specify a
+       lot about what they want the response to look like. This information is
+       specified in the "tqx" parameter (Request Format
+       <https://developers.google.com/chart/interactive/docs/dev/implementing_data_source#requestformat>)
+       and also somewhat implied by the existence of an "X-DataSource-Auth"
+       header.
+
+       In order to use this module, you will need to create a container for
+       the outgoing data. This is as easy as passing in whatever the caller
+       gave you as their "tqx" parameter.
+
+       You then set any data and any messages you wish to. This is your chance
+       to tell the user they're not logged in, or you can't connect to the
+       database, or - if everything worked out, build and set the
+       Data::Google::Visualization::DataTable object they're ultimately
+       requesting.
+
+       Finally, serialize attempts to build the response, checking the
+       messages to see if we should return an error or actual data, and giving
+       you appropriate headers and the body itself.
+
+   Container Creation
+       Our first job is to specify what the response container will look like,
+       and the easiest way to do this is to pass new() the contents of the
+       "tqx" parameter and the "X-DataSource-Auth" header.
+
+       new()
+
+        # Give the user what they requested
+        ->new({ tqx => $q->param('tqx') });
+
+        # Be conscientious and pass in contents of X-DataSource-Auth
+        ->new({
+           tqx => $q->param('tqx'),
+           datasource_auth => $q->header('X-DataSource-Auth')
+        });
+
+        # Set it by hand...
+        ->new({ reqId => 3, out => 'json', sig => 'deadbeef' });
+
+       new() will set the following object attributes based on this, all based
+       on the Request Format linked above:
+
+       "reqId" - allegedy required, and required to be an int. In fact, the
+       documentation reveals that if you leave it blank, it should default to
+       0.
+       "version" - allows the calling client to specify the version of the API
+       it wishes to use. Please note this module currently ONLY CLAIMS TO
+       support 0.06. If any other version is passed, a "warning" message will
+       be added, but we will try to continue anyway - see "Adding Messages"
+       below.
+       "sig" - allows the client to specify an identifier for the last request
+       retrieved, so it's not redownloaded. If the "sig" matches the data we
+       were about to send, we'll follow the documentation, and add an "error"
+       message, as per "Adding Messages" below.
+       "out" - output format. This defaults to "json", although whether JSON
+       or JSONP is returned depends on if "X-DataSource-Auth" has been
+       included - see the Google docs. Other formats are theoretically
+       provided for, but this version of the software doesn't support them,
+       and will add an "error" message (at serialization time) if they're
+       specified.
+       "responseHandler" - in the case of our outputting JSONP, we wrap our
+       payload in a function call to this method name. It defaults to
+       "google.visualization.Query.setResponse". An effort is made to strip
+       out unsafe characters.
+       "outFileName" - certain output formats allow us to specify that the
+       data should be returned as a named file. This is simply ignored in this
+       version.
+       "datasource_auth" - this does NOT correspond to the normal request
+       object - instead it's used to capture the "X-DataSource-Auth" header,
+       whose presence will cause us to output JSON instead of using the
+       "responseHandler".
+
+   Adding Messages
+       Having created our container, we then need to put data in it. There are
+       two types of data - messages, and the DataTable.
+
+       Messages are errors or warnings that need to be passed back to the
+       client, but they also have potential to change the rest of the data
+       payload. The following algorithm is used:
+
+        1. Have any error messages been added? If so, discard all but the first, set
+           the response status to 'error', and discard the DataTable and all warning
+           messages. We discard all the other messages (error and warning) to prevent
+           malicious data discovery.
+
+        2. An integrity check is run on the attributes that have been set. We check the
+           attributes listed above, and generate any needed messages from those. If we
+           generate any error messages, step 1 is rerun.
+
+        2. Have any warning messages been added? If so, set the response status to
+           'warning'. Include all warning messages and the DataTable in the response.
+
+        3. If there are no warning or error messages, set the response status to 'ok',
+           and include the DataTable in the response.
+
+       When messages are described as discarded, they are not included in the
+       returned "body" - they're still available to the developer in the
+       returned "messages".  See the documentation on "serialize" below.
+
+       add_message()
+
+       Messages are added using the "add_message" method:
+
+        $datasource->add_message({
+           type    => 'error',         # Required. Can also be 'warning'
+           reason  => 'access_denied', # Required. See Google Docs for allowed options
+           message => 'Unauthorized User', # Optional
+           detailed_message => 'Please login to use the service' # Optional
+        });
+
+       datatable
+
+       The datatable is added via the "datatable" method:
+
+        $datasource->datatable( $datatable_object );
+
+       and must be a Data::Google::Visualization::DataTable object. If you
+       know you've already added an "error" message, you don't need to set
+       this - it won't be checked.
+
+   Generating Output
+       Up to this point, we've just accumulated data without actually acting
+       on it. If the user has specified some inputs we can't handle, well we
+       haven't checked that yet.
+
+       To kick the whole circus off, call "serialize".
+
+       serialize
+
+        my ( $headers, $body, $messages ) = $datasource->serialize();
+
+       Serialize accepts no arguments, and does not change the state of the
+       underlying object. It returns:
+
+       headers
+
+       An arrayref or arrayrefs, which in this version of this module will
+       always be:
+
+        [[ 'Content-Type', 'text/javascript' ]]
+
+       However, don't use that knowledge, as future versions will definitely
+       add new headers, based on other user options - "Content-Disposition",
+       for starters.  You should return all received headers to the user. As
+       future versions will allow returning of different data types, you must
+       allow control of "Content-Type" and "Content-Disposition" to fall to
+       this module in their entirity.
+
+       body
+
+       A JSON-like string containing the response. Google JSON is not real
+       JSON (see the continually linked documentation), and what's more, this
+       may well be JSONP instead. This string will come back UTF-8 encoded, so
+       make sure whatever you're serving this with doesn't re-encode that.
+
+       messages
+
+        {
+           errors => [
+               {
+                   reason  => 'not_modified',
+                   message => 'Data not modified'
+               }
+           ]
+           warnings => []
+        }
+
+       A hashref of arrayrefs containing all messages raised. You must not
+       show this to the user - it's purely for your own debugging. When we
+       talk about messages being discarded in the "Adding Messages" section,
+       they will turn up here instead. DO NOT MAKE DECISIONS ABOUT WHAT TO
+       RETURN TO THE USER BY POKING THROUGH THIS DATA. The "not_modified"
+       error is a great example of why not - it is not an error for the user,
+       and the user has to act a certain way on getting it - it's expected in
+       the normal course of use.
+
+BUGS, TODO
+       It'd be nice to support the other data types, but currently
+       Data::Google::Visualization::DataTable serializes its data a little too
+       early which makes this impracticle. I tend to do hassle-related
+       development, so if you are in desparate need of this feature, I
+       recommend emailing me.
+
+SUPPORT
+       If you find a bug, please use this modules page on the CPAN bug tracker
+       <https://rt.cpan.org/Ticket/Create.html?Queue=Data-Google-
+       Visualization-DataSource> to raise it, or I might never see.
+
+AUTHOR
+       Peter Sergeant "pete@clueball.com"
+
+SEE ALSO
+       Data::Google::Visualization::DataTable - for preparing your data
+
+       Python library that does the same thing
+       <http://code.google.com/p/google-visualization-python/>
+
+       Google Visualization API
+       <http://code.google.com/apis/visualization/documentation/reference.html#dataparam>.
+
+       Github Page for this code <https://github.com/sheriff/data-google-
+       visualization-datatable-perl>
+
+COPYRIGHT
+       Copyright 2012 Peter Sergeant, some rights reserved.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2012-05-09
+                                    Data::Google::Visualization::DataSource(3)

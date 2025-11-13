@@ -1,0 +1,444 @@
+Mail::Procmail(3)     User Contributed Perl Documentation    Mail::Procmail(3)
+
+
+NAME
+       Mail::Procmail - Procmail-like facility for creating easy mail filters.
+
+SYNOPSIS
+           use Mail::Procmail;
+
+           # Set up. Log everything up to log level 3.
+           my $m_obj = pm_init ( loglevel  => 3 );
+
+           # Pre-fetch some interesting headers.
+           my $m_from              = pm_gethdr("from");
+           my $m_to                = pm_gethdr("to");
+           my $m_subject           = pm_gethdr("subject");
+
+           # Default mailbox.
+           my $default = "/var/spool/mail/".getpwuid($>);
+
+           pm_log(1, "Mail from $m_from");
+
+           pm_ignore("Non-ASCII in subject")
+             if $m_subject =~ /[\232-\355]{3}/;
+
+           pm_resend("jojan")
+             if $m_to =~ /jjk@/i;
+
+           # Make sure I see these.
+           pm_deliver($default, continue => 1)
+             if $m_subject =~ /getopt(ions|(-|::)?long)/i;
+
+           # And so on ...
+
+           # Final delivery.
+           pm_deliver($default);
+
+DESCRIPTION
+       procmail is a great mail filter program, but it has weird recipe
+       format. It's pattern matching capabilities are basic and often
+       insufficient. I wanted something flexible whereby I could filter my
+       mail using the power of Perl.
+
+       I've been considering to write a procmail replacement in Perl for a
+       while, but it was Simon Cozen's "Mail::Audit" module, and his article
+       in The Perl Journal #18, that set it off.
+
+       I first started using Simon's great module, and then decided to write
+       my own since I liked certain things to be done differently. And I
+       couldn't wait for his updates.
+
+       "Mail::Procmail" allows a piece of email to be logged, examined,
+       delivered into a mailbox, filtered, resent elsewhere, rejected, and so
+       on. It is designed to allow you to easily create filter programs to
+       stick in a .forward or .procmailrc file, or similar.
+
+DIFFERENCES WITH MAIL::AUDIT
+       Note that several changes are due to personal preferences and do not
+       necessarily imply deficiencies in "Mail::Audit".
+
+       General
+           Not object oriented. Procmail functionality typically involves one
+           single message. All (relevant) functions are exported.
+
+       Delivery
+           Each of the delivery methods is able to continue (except pm_reject
+           and pm_ignore).
+
+           Each of the delivery methods is able to pretend they did it (for
+           testing a new filter).
+
+           No default file argument for mailbox delivery, since this is system
+           dependent.
+
+           Each of the delivery methods logs the line number in the calling
+           program so one can deduce which 'rule' caused the delivery.
+
+           Message IDs can be checked to suppress duplicate messages.
+
+           System commands can be executed for their side-effects.
+
+           pm_ignore logs a reason as well.
+
+           pm_reject will fake a "No such user" status to the mail transfer
+           agent.
+
+       Logging
+           The logger function is exported as well. Logging is possible to a
+           named file, STDOUT or STDERR.
+
+           Since several deliveries can take place in parallel, logging is
+           protected against concurrent access, and a timestamp/pid is
+           included in log messages.
+
+           A log reporting tool is included.
+
+       Robustness
+           Exit with TEMPFAIL instead of die in case of problems.
+
+           pm_pipe_to ignores  SIGPIPE.
+
+           pm_pipe_to returns the command exit status if continuation is
+           selected.
+
+           Commands and pipes can be protected  against concurrent access
+           using lockfiles.
+
+EXPORTED ROUTINES
+       Note that most delivery routines exit the program unless the attribute
+       "continue=>1" is passed.
+
+       Also, the delivery routines log the line number in the calling program
+       so it is easy to find out which 'rule' caused a specific delivery to
+       take place.
+
+   pm_init
+       This routine performs the basic initialisation. It must be called once.
+
+       Example:
+
+           pm_init (logfile => "my.log", loglevel => 3, test => 1);
+
+       Attributes:
+
+       •   fh
+
+           An open file handle to read the message from. Defaults to STDIN.
+
+       •   logfile
+
+           The name of a file to log messages to. Each message will have a
+           timestamp attached.
+
+           The attribute may be 'STDOUT' or 'STDERR' to achieve logging to
+           standard output or error respectively.
+
+       •   loglevel
+
+           The amount of information that will be logged.
+
+       •   test
+
+           If true, no actual delivery will be done. Suitable to test a new
+           setup.  Note that file locks are done, so lockfiles may be created
+           and deleted.
+
+       •   debug
+
+           Provide some debugging info.
+
+       •   trace
+
+           Provide some tracing info, eventually.
+
+       •   verbose
+
+           Produce verbose information, eventually.
+
+   pm_gethdr
+       This routine fetches the contents of a header. The result will have
+       excess whitepace tidied up.
+
+       The header is reported using warn() if the debug attribute was passed
+       (with a true value) to pm_init();
+
+       Example:
+
+           $m_rcvd = pm_gethdr("received");    # get first (or only) Received: header
+           $m_rcvd = pm_gethdr("received",2);  # get 3rd Received: header
+           @m_rcvd = pm_gethdr("received");    # get all Received: headers
+
+   pm_gethdr_raw
+       Like pm_gethdr, but without whitespace cleanup.
+
+   pm_body
+       This routine fetches the body of a message, as a reference to an array
+       of lines.
+
+       Example:
+
+           $body = pm_body();                  # ref of lines
+           $body = join("", @{pm_body()});     # as one string
+
+   pm_deliver
+       This routine performs delivery to a Unix style mbox file, or maildir.
+
+       In case of an mbox file, the file is locked first by acquiring
+       exclusive access. Note that older style locking, with a lockfile with
+       ".lock" extension, is not supported.
+
+       Example:
+
+           pm_deliver("/var/spool/mail/".getpwuid($>));
+
+       Attributes:
+
+       •   continue
+
+           If true, processing will continue after delivery. Otherwise the
+           program will exit with a DELIVERED status.
+
+   pm_pipe_to
+       This routine performs delivery to a command via a pipe.
+
+       Return the command exit status if the continue attribute is supplied.
+       If execution is skipped due to test mode, the return value will be 0.
+       See also attribute "testalso" below.
+
+       If the name of a lockfile is supplied, multiple deliveries are
+       throttled.
+
+       Example:
+
+           pm_pipe_to("my_filter", lockfile => "/tmp/pm.lock");
+
+       Attributes:
+
+       •   lockfile
+
+           The name of a file that is used to guard against multiple
+           deliveries.  The program will try to exclusively create this file
+           before proceding.  Upon completion, the lock file will be removed.
+
+       •   continue
+
+           If true, processing will continue after delivery. Otherwise the
+           program will exit with a DELIVERED status, even when the command
+           failed.
+
+       •   testalso
+
+           Do this, even in test mode.
+
+   pm_command
+       Executes a system command for its side effects.
+
+       If the name of a lockfile is supplied, multiple executes are throttled.
+       This would be required if the command manipulates external data in an
+       otherwise unprotected manner.
+
+       Example:
+
+           pm_command("grep foo some.dat > /tmp/pm.dat",
+                      lockfile => "/tmp/pm.dat.lock");
+
+       Attributes:
+
+       •   lockfile
+
+           The name of a file that is used to guard against multiple
+           executions.  The program will try to exclusively create this file
+           before proceding.  Upon completion, the lock file will be removed.
+
+           testalso
+
+           Do this, even in test mode.
+
+   pm_resend
+       Send this message through to some other user.
+
+       Example:
+
+           pm_resend("root");
+
+       Attributes:
+
+       •   continue
+
+           If true, processing will continue after delivery. Otherwise the
+           program will exit with a DELIVERED status.
+
+   pm_reject
+       Reject a message. The sender will get a mail back with the reason for
+       the rejection (unless stderr has been redirected).
+
+       Example:
+
+           pm_reject("Non-existent address");
+
+   pm_ignore
+       Ignore a message. The program will do nothing and just exit with a
+       DELIVERED status. A descriptive text may be passed to log the reason
+       for ignoring.
+
+       Example:
+
+           pm_ignore("Another make money fast message");
+
+   pm_dupcheck
+       Check for duplicate messages. Reject the message if its message ID has
+       already been received.
+
+       Example:
+
+           pm_dupcheck(scalar(pm_gethdr("message-id")));
+
+       Attributes:
+
+       •   dbm
+
+           The name of a DBM file (created if necessary) to store the message
+           IDs.  The default name is ".msgids" in the HOME directory.
+
+       •   retain
+
+           The amount of time, in days, that subsequent identical message IDs
+           are considered duplicates. Each new occurrence will refresh the
+           time stamp.  The default value is 14 days.
+
+       •   continue
+
+           If true, the routine will return true or false depending on the
+           message ID being duplicate. Otherwise, if it was duplicate, the
+           program will exit with a DELIVERED status.
+
+       Warning: In the current implementation, the DBM file will grow
+       unlimited. A separate tool will be supplied to expire old message IDs.
+
+   pm_lockfile
+       The program will try to get an exclusive lock using this file.
+
+       Example:
+
+           $lock_id = pm_lockfile("my.mailbox.lock");
+
+       The lock id is returned, or undef on failure.
+
+   pm_unlockfile
+       Unlocks a lock acquired earlier using pm_lockfile().
+
+       Example:
+
+           pm_unlockfile($lock_id);
+
+       If unlocking succeeds, the lock file is removed.
+
+   pm_log
+       Logging facility. If pm_init() was supplied the name of a log file,
+       this file will be opened, created if necessary. Every log message
+       written will get a timestamp attached. The log level (first argument)
+       must be less than or equal to the loglevel attribute used with
+       pm_init(). If not, this message will be skipped.
+
+       Example:
+
+           pm_log(2,"Retrying");
+
+   pm_report
+       pm_report() produces a summary report from log files from
+       Mail::Procmail applications.
+
+       Example:
+
+           pm_report(logfile => "pmlog");
+
+       The report shows the deliveries, and the rules that caused the
+       deliveries. For example:
+
+         393  393  deliver[203]  /home/jv/Mail/perl5-porters.spool
+         370  370  deliver[203]  /home/jv/Mail/perl6-language.spool
+         174  174  deliver[203]  /home/jv/Mail/perl6-internals.spool
+         160   81  deliver[311]  /var/spool/mail/jv
+               46  deliver[337]
+               23  deliver[363]
+               10  deliver[165]
+
+       The first column is the total number of deliveries for this target.
+       The second column is the number of deliveries triggered by the
+       indicated rule. If more rules apply to a target, this line is followed
+       by additional lines with an empty first and last column.
+
+       Attributes:
+
+       •   logfile
+
+           The name of the logfile to process.
+
+       If no logfile attribute is passed, pm_report() reads all files supplied
+       on the command line. This makes it straighforward to run from the
+       command line:
+
+           $ perl -MMail::Procmail -e 'pm_report()' syslog/pm_logs/*
+
+USING WITH PROCMAIL
+       The following lines at the start of .procmailrc will cause a copy of
+       each incoming message to be saved in $HOME/syslog/mail, after which the
+       procmail-pl is run as a TRAP program (see the procmailrc
+       documentation). As a result, procmail will transfer the exit status of
+       procmail-pl to the mail transfer agent that invoked procmail (e.g.,
+       sendmail, or postfix).
+
+           LOGFILE=$HOME/syslog/procmail
+           VERBOSE=off
+           LOGABSTRACT=off
+           EXITCODE=
+           TRAP=$HOME/bin/procmail-pl
+
+           :0:
+           $HOME/syslog/mail
+
+       WARNING: procmail seems to have problems when $HOME/syslog/mail gets
+       too big (over 50Mb). If you want to maintain a huge archive, you can
+       specify excess extents, like this:
+
+           :0:
+           $HOME/syslog/mail-ext1
+
+           :0:
+           $HOME/syslog/mail-ext2
+
+EXAMPLE
+       An extensive example can be found in the examples directory of the
+       "Mail::Procmail" kit.
+
+SEE ALSO
+       Mail::Internet
+
+       LockFile::Simple
+
+       procmail documentation.
+
+AUTHOR
+       Johan Vromans, Squirrel Consultancy <jvromans@squirrel.nl>
+
+       Some parts are shamelessly stolen from Mail::Audit by Simon Cozens
+       <simon@cpan.org>, who admitted that he stole most of it from programs
+       by Tom Christiansen.
+
+COPYRIGHT and DISCLAIMER
+       This program is Copyright 2000,2004 by Squirrel Consultancy. All rights
+       reserved.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the terms of either: a) the GNU General Public License as
+       published by the Free Software Foundation; either version 1, or (at
+       your option) any later version, or b) the "Artistic License" which
+       comes with Perl.
+
+       This program is distributed in the hope that it will be useful, but
+       WITHOUT ANY WARRANTY; without even the implied warranty of
+       MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See either the GNU
+       General Public License or the Artistic License for more details.
+
+perl v5.40.2                      2004-09-19                 Mail::Procmail(3)

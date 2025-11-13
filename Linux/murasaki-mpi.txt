@@ -1,0 +1,374 @@
+MURASAKI(1)                                                                         User Contributed Perl Documentation                                                                         MURASAKI(1)
+
+NAME
+       murasaki - compute anchors between multiple sequences
+
+SYNOPSIS
+        murasaki [OPTIONS] -p[pattern] seq1.fa seq2.gbk [seq3.raw ...] #compute anchors between seq1.fa and seq2.gbk using [pattern]
+        mpirun murasaki [OPTIONS] -p[pattern] seq1.fa seq2.gbk [seq3.raw ...] #compute anchors between seq1.fa and seq2.gbk using [pattern] in parallel via MPI
+
+DESCRIPTION
+       Murasaki generates anchors based on all supplied sequences based on the user supplied pattern and hash tables. Essentially each base of each sequence is masked by the pattern, forming a seed that
+       is used to generate a hash. The location of the seed is stored in the hash table. Once all seeds have been hashed and stored, Murasaki scans the hash table, generating anchors for all matching
+       seeds. An anchor refers to a set intervals across a subset of the input sequences. These are stored in name.anchors files, and described in "FILE FORMATS". By default anchors are maximally
+       extended until their minimum pairwise ungapped alignment score drops below a threshold in the same fashion the X-drop parameter in BLAST and BLAST-like searches.
+
+   PATTERNS
+       Murasaki uses spaced seed patterns to in considering seeds. A spaced seed pattern is typically expressed as a string of 1s and 0s necessarily starting and ending with a 1. 1s indicate that this
+       base is considered part of the seed, while bases at 0 positions are not. For example with a pattern "1011" the sequence "ACGT" would match sequences "AGGT" and "ATGT" but not "ACTT". The number of
+       1s in the pattern is known as the "weight" of the pattern, and the number of 1s and 0s combined is the "length" of the pattern. Murasaki allows the use of any arbitrary pattern expressed as a
+       string of 1s and 0s, and also interprets patterns of the form "x:y" to mean a "random pattern of weight x and length y."
+
+       The choice of pattern obviously has an impact on sensitivity and specificity, but whether one pattern is "better" than another depends on the application and the input sequences under
+       consideration. Calcuating "maximally sensitive spaced seed patterns" is a computationally difficult problem and there are a number of research papers describing various methods for approximation
+       ("RELATED READING"). In general, however, "heavier" spaced seed patterns are less sensitive, but more specific, than lighter seeds. Anecdotally we find that seeds with weights approximately 60% to
+       75% (with lengths around 24 for bacteria, and 36 to 48 for mammals) are good for most applications. Extremely similar species (for example human and chimp) benefit from longer, heavier, seeds.
+
+   HASH FUNCTIONS
+       Hash functions (as well as hash parameters) are generated automatically based the system environment and input sequences. There are essentially two types of hash functions available in Murasaki:
+       adaptive and cryptoraphic hashes. The adaptive hashes are XOR combinations of various bitwise shifts of the seed designed by analyzing the spaced seed pattern to maximize the entropy of the
+       resulting hash. Cryptographic hashes are available via the CryptoPP library and use the entire spaced seed pattern to generate a hash using one of the common cryptographic hashes like MD5 or
+       SHA-1. The adaptive hash functions are almost always faster and more efficient than MD5 and SHA-1, but the cryptographic functions are available for reference and may be useful as an alternative
+       in the unlikely event you're dealing with an environment where the adaptive hasher is unsuitable (for example a sequence consisting of only A and T (leaving 1 out of every 2 bits uninitialized)).
+
+   MEMORY SCALING
+       Murasaki can take a lot of memory. Storing the location of each seed in the hash table is the most costly part of the operation, requiring approximately "ceil(log_2(N))" bits per seed where "N" is
+       the total sequence length. Locations are, by default, stored in a bitpacked format to approach theoretical minimum. The second most costly element is the hash table structure, where each bucket
+       carries a small overhead and unused are simply wasted space. More hash table buckets (i.e. a longer hash table) decreases the expected number of collisions, leading to faster execution time.
+       Therefore Murasaki tries to use as many buckets as possible by inspecting the available system memory and using as much as it can while still storing all the seed locations. If this automatic
+       scaling is ineffective, setting the hash table size directly via the --hashbits|-b options can force a specific hash table size. If the memory of one computer is insufficient to store the desired
+       hash table, PARALLELIZATION can be used to distribute the hash table across multiple computers.
+
+   PARALLELIZATION
+       Murasaki is designed to run in parallel using MPI. Consult the documentation for the specific variations of your MPI implementation, however in general the execution method looks like:
+
+        mpirun [MPI options] murasaki [murasaki options] -p[pattern] [seq1 ...]
+
+       Murasaki in parallel divides the number of processors available (NP) into two groups: hasher nodes and storage nodes. The storage nodes divide the hash table between each themselves, each being
+       responsible for a different part of the table. Hasher nodes divide the input sequence in between themselves, each hashing a separate portion of the input sequence, and passing the seed location to
+       the appropriate storage node for storage.  When all the hasher nodes are finished hashing, the storage nodes scan their portion of hash table and pass matching sets of seeds to a hasher node where
+       they are assembled into anchors and extended. Finally all the hasher nodes combine their independent anchor sets into one final set in "ceil(log_2(H))" iterations (where "H" is the number of
+       hasher nodes), with each hasher node number 2h passing its anchors to hasher number 2h-1 at each iteration.
+
+       Because almost none of the parallelization steps require communication between all nodes, and each seed and each anchor can be processed in parallel, Murasaki scales very well in parallel, running
+       approximately twice as fast when twice as many nodes are available. Furthermore, the hash table is automatically grown to take advantage of the combined memory from multiple machines.
+
+OPTIONS
+       Most options can be specified in their long form (e.g. "--directory out" or "--directory=out") or short form (e.g. "-dout"). Options marked by <S> expect a string, <D> an integer, <F> a float, and
+       <B> a boolean value ("yes/on/true/1" for true, "no/off/false/0" for false). Most booleans can omit the value, toggling the value from whatever it was to the opposite.
+
+       Murasaki has a lot of options. Here we've separated them into categories to help distinguish the scope of the various options, however in certain situations certain option choices may have
+       onforseen consequences, and of course ultimately if the specified output is huge, the required runtime will necessarily be long.  It is a mistake to think that everything outside of the "tuning
+       options" in Performance section has no bearing on performance.
+
+   Anchor parameter related options
+       These options shape what is considered an "anchor".
+
+       --pattern|-p <S>
+            specifies the seed pattern (eg. 11101001010011011). using the format
+            C<[<w>:<l>]> automatically generates a random pattern of weight <w>
+            and length <l>
+
+       --repeatmask|-r <B>
+           Skip repeat masked data (ie: lowercase atgc). Be aware that some sequence files are distributed purely in lower case.
+
+       --seedfilter|-f <D>
+           Skip seeds that occur more than N times. Exceptionally slow. See --hashfilter for a faster approximation.
+
+       --hashfilter|-m <D>
+           Like --seedfilter but works on hash keys instead of seeds. May cause some collateral damage to otherwise unique seeds, but it's faster.
+
+       --skipfwd|-F <B>
+           Don't hash/match the forward strands.
+
+       --skiprev|-R <B>
+           Don't hash/match the reverse complement strands.
+
+       --skip1to1|-1 <B>
+           Skip matches along the 1:1 line (good for comparing to self).
+
+       --hashonly|-Q <B>
+           Hash Only. No anchor output, just statistics.
+
+       --hashskip|-S <D>
+           Hashes every n bases. Default is 1 (i.e. hashing all positions). Not supplying any argument increments the skip amount by 1.
+
+       --join|-j <D>
+           Join anchors within n bases of eachother (default: 0). Specifying a negative D implies -D*patternLength.
+
+       --bitscore|-B <B>
+           toggles compututation of a bitscore for all anchors (default is on).
+
+       --seedterms|-T <B>
+           toggles retention of seed terms (defaults to off). These are necessary for computing TF-IDF scores).
+
+       --sectime|-e <B>
+           Always display times in seconds as opposed to human readable "1d 3h 45m 5s" style times.
+
+       --mergefilter|-Y <D>
+           Filter out matches which would would cause more than D many anchors to be generated from 1 seed (default -Y100).  Use -Y0 to disable.
+
+       --scorefilter <D>
+           Set a minimum ungapped score for seeds.
+
+       --rifts|-/ <D>
+           Allow anchors to skip D sequences (default 0).
+
+       --islands|-% <D>
+           Same as --rifts=S-D (where S is number of input seqs).
+
+       --fuzzyextend|-z <B>
+           Enable (default) or disable fuzzy extension (i.e. ungapped alignment) of anchors.
+
+       --fuzzyextendlosslimit|-Z <D>
+           Set the cutoff at which to stop extending fuzzy hits (ie. the BLAST X parameter).
+
+       --gappedanchors <B>
+           Use gapped (true) or ungapped (false (default)) anchors.
+
+       --scorebyminimumpair <B>
+           Do anchor scoring by minimum pair when appropriate (default). Alternative is arithmetic mean (seldom useful, but theoretically faster).  =item --rifts|-/ <D>
+
+           Allow anchors to skip D sequences (default 0).
+
+       --islands|-% <D>
+           Same as --rifts=S-D (where S is number of input seqs).
+
+       --fuzzyextend|-z <B>
+           Enable (default) or disable fuzzy extension (i.e. ungapped alignment) of anchors.
+
+       --fuzzyextendlosslimit|-Z <D>
+           Set the cutoff at which to stop extending fuzzy hits (ie. the BLAST X parameter).
+
+       --gappedanchors <B>
+           Use gapped (true) or ungapped (false (default)) anchors.
+
+       --scorebyminimumpair <B>
+           Do anchor scoring by minimum pair when appropriate (default). Alternative is arithmetic mean (seldom useful, but theoretically faster).
+
+   Output options
+       These options primarily affect what data is output where.
+
+       --directory|-d <S>
+            output directory (default: output)
+
+       --name|-n <S>
+            alignment name (default: test)
+
+       --repeatmap|-i <B>
+           Toggles keeping of a repeat map when --mergefilter is used (defaults to yes).
+
+       --histogram|-H <D>
+           Histogram computation level: (-H alone implies -H1)
+
+           0 - no histogram (default)
+           1 - basic bucketsize/bucketcount histogram data
+           2 - bucket-based scores to anchors.detils
+           3 - perbucket count data
+           4 - perbucket + perpattern count data
+
+           Any values above 2 are purely explorartory and can result in massive output files.
+
+       --tfidf|-k <B>
+           Perform accurate tfidf scoring from within murasaki (requires extra memory at anchor generation time). Default is no.
+
+   Performance/tuning options
+       These options primarily affect performance, and don't (in general) impact output.
+
+       --quickhash|-q <D>
+            specify a hashing function:
+
+           0 - adaptive with S-boxes (default when there's plenty of hash table to spare)
+           1 - don't pack bits to make hash (use first word only)
+           2 - naively use the first hashbits worth of pattern
+           3 - adaptivevely find a good hash (default)
+           **experimental CryptoPP hashes**
+           4 - MD5
+           5 - SHA1
+           6 - Whirlpool
+           7 - CRC-32
+           8 - Adler-32
+
+           Note: 3 and 0 are the only "recommended" hash functions, and the only ones automatically selected. The others are provided merely for reference. 1, 7, and 8 aren't even expected to utilize the
+           entire hash space.
+
+       --hashbits|-b <D>
+           use D bit hashes (for n's of 1 to WORDSIZE. default 26)
+
+       --hashtype|-t <S>
+           select hash table data structure to use:
+
+           OpenHash  - open sub-word packing of hashbits (default when there's plenty of hash table to spare)
+           EcoHash   - chained sub-word packing of hashbits (default)
+           ArrayHash - malloc/realloc (fast but fragmentation-prone)
+           MSetHash  - memory exorbanant, almost pointless.
+       --probing <D>
+           0 - linear, 1 - quadratic (default). Only applicable for --hashtype=OpenHash.
+
+       --hitfilter|-h <D>
+           Minimum number of hits to be outputted as an anchor (default 1). In PatternHunter this is 2.
+
+       --rseed|-s <D>
+           Random number seed for non-deterministic algorithms (ie: adative hash function generation). If you're doing any performance comparisons, it's probably imperative that you use the same seed for
+           each run of the same settings.  Default is obtained from time() (ie: seconds since 1970).
+
+       --memory|-M [<F>|<S>]
+           Set the target amount of total memory (either in gb or as % total memory).
+
+       --reverseotf|-o <B>
+           Generate  reverse  complement  on  the  fly  (defaults  to  on).  Turning  this off precomputes the all reverse complement strands and stores them in memory, which rarely provides a measurable
+           performance improvement.
+
+       --binaryseq <B>
+           Enable (default) or disable binary sequence read/write
+
+       Adaptive hash function related:
+
+       Performance options related to adaptive hash function generation.
+
+       --hasherFairEntropy <B>
+           Use more balanced entropy estimation (default: yes).
+
+       --hasherCorrelationAdjust <B>
+           Adjust entropy estimates for nearby sources assuming some correlation (default: yes).
+
+       --hasherTargetGACycles <D>
+           Adaptive hash function generation genetic algorithm cycle cutoff.
+
+       --hasherEntropyAgro <F>
+           How aggressive to be about pursuing maximum entropy hash functions (takes a real. default is 1).
+
+   MPI Specific:
+       --hashers|-A [<F>|<D>]
+           Specify the number of processes to be used as hashers (only applies to MPI. If a number between 0 and 1 it refers to a ratio of np).
+
+       --localhash|-K <B>
+           Perform hashing locally on each storage node rather than sending it over the network (helpful for slow networks).
+
+       --mpidistro|-L <B>
+           Toggles use of MPI to distribute sequence data over (if the sequence is available on local disk on each node then turning this off may potentially accerlate the initial sequence loading).
+
+       --waittoanchor|-w <B>
+           Postpone actual anchor computation until all location sets have been received (as opposed to trying to work between receiving seed packets).
+
+       --buffers|-u <D>
+           Maximum number of unfinished buffers to allow while message passing (0 means unlimited). Default is set based on the number of nodes participating. MPI can crash or perform very poorly if this
+           value is too high.
+
+       --nobuffers|-U <B>
+           Same as --buffers=1.
+
+       --bigfirst|-I <B>
+           Assign hashers to large memory nodes first.
+
+       --hostbalance|-l <B>
+           If yes (default): spread out hashers evenly among all nodes.
+           If no: ignore host name when assigning jobs.
+       --memorybalance|-a <B>
+           If yes (default): balance hash storage between nodes based on the amount of available ram.
+           If no: distribute storage evently. This more likely to achieve optimal run times, but might not utilize memory as efficiently.
+       --distmerge|-< <B>
+           if yes (default): during the merge step, storage nodes send seeds to any available hasher.
+           if no: send all seeds to one node only.
+       --distcollect|-> <B>
+           if yes (default): collect anchor data from all hashers.
+           if no: send all seeds to the final assembly node only.
+       --mpiredirectoutput <B>
+           if yes (default): each rank redirects its stdout/stderr to a separate file (murasaki-mpiout-N).
+           if no: do what comes naturally (ie: managed by mpirun (for OpenMPI see --output-filename and --tag-output in mpirun(1))).
+       --keepstdoe <B>
+           Don't erase the murasaki-mpiout files on success.
+
+       --sysvipc|-V <B>
+           Use System V IPC to negotiate shared memory regions (saves memory when one host runs multiple nodes). Default is true.
+
+   Universal options:
+       --verbose|-v
+           Increases verbosity.
+
+       --version|-V
+           Prints version information and quits.
+
+       --help|-?
+           Prints a help message and quits.
+
+FILE FORMATS
+       Murasaki has a wide array of output files, the formats of most of which are intended to be intuitive. All output files are prefixed by the value of the --name parameter. The  primary  output  file
+       formats are described here. Files are line based and tab delimited unless otherwise specified.
+
+   .seqs
+       The  .seqs shows what sequences were used as input, 1 per line. This file gets used by various programs in conjunction with the .anchors file, so it's generally important that the contents reflect
+       the correct sequence files. Moving anchor results between computers might result in a change of paths, requiring the user to update the .seqs file. As an alternative, always using  relative  paths
+       can alleviate this problem.
+
+   .anchors files
+       These  files  are  1  anchor  per  line,  with a 3-tuple per sequence. Each tuple represents the start and stop coordinates and strand of the anchored interval on each sequence. The sequence order
+       matches that of the order in the .seqs file. The coordinates are structured such that 1 refers to the first base in the sequence, 2 to the  second,  etc.  Negative  values  refer  to  the  reverse
+       complement  sequence  where -1 is the last base of the reverse complement sequence (ie: the complement first base in the forward sequence). The "strand" element is a '+' or '-' that merely matches
+       the sign of the coordinates (this is redundant information, but kept to make parsing or filtering simpler).
+
+       For examle:
+
+        1       18     +       -1      -18       -
+
+       This line describes an anchor where the first 18 bases of the first sequence match the first 18 bases of the reverse complement of the second sequence.
+
+   .anchors.details
+       This is an antiquated file format, but used by GMV to calculate statistics like TF-IDF scores, and has been kept around for  that  reason.  The  .anchors.details  file  has  the  same  format  and
+       information  as  the  .anchors file, however after the anchor tuples are two more terms: a score, and a comma (,) delimited list of term and count pairs (written "term:count"). The score and count
+       data might be varied depending on the "--histogram" option choices.
+
+   .anchors.bitscore
+       The term "bitscore" here is a misnomer, but maintained for historical reasons. In reality, this file contains the mean number of matching bases and length of each  anchor  (corresponding  line  by
+       line to the .anchors file).
+
+   .stats.tfidf
+       Contains anchor TF-IDF scores (corresponding line by line to the .anchors file).
+
+   .histogram
+       Contains a simple histogram of the hash table usage. The first field is the bucket size, and the second is the frequency. For example a .histogram file like this:
+
+        1  24
+        2  1
+
+       Would  indicate  that  there  were 24 hash buckets that stored only 1 location (i.e. 24 unique seeds), and 1 hash bucket stored 2 locations (i.e. 1 seed that matched 2 locations (or 2 non-matching
+       seeds that resulted in a hash collision)).
+
+   .options
+       Maintains a record of the options used when running Murasaki.
+
+   .repeats
+       The .repeats file stores a record of "repeats" as defined by the --mergefilter option (i.e. seeds that would have have induced more anchors than permitted). In this file,  each  repeat  record  is
+       separated by a blank line. A repeat record looks like this:
+
+        R: G.GCCTTT.T.ACT.CACAA..AT
+        0: 2145540494 -425039256 -113794380 1998323403
+        1: 2480929222 -1874514626 2543723555 -2550045172
+
+       The first line (always prefixed "R:") shows the repeating seed itself (where the . are the bases masked by the pattern). The subsequent lines show where these seeds occurred in the input sequences
+       (in the first (0) and second (1) sequences). Note that if there are no hits in a particular sequence, it doesn't include a blank line for that sequence. For example:
+
+        R: G.GCCTTT.T.ACT.CACAA..AT
+        0: 2145540494 -425039256 -113794380 1998323403
+        2: 2480929222 -1874514626 2543723555 -2550045172
+
+       is also a valid .repeats file.
+
+LICENSE
+       GNU General Public License, version 3 (GPLv3)
+
+AVAILABILITY
+       <http://murasaki.sourceforge.net>
+
+AUTHOR
+       Kris Popendorf <krisp@dna.bio.keio.ac.jp>
+
+SEE ALSO
+       mbfa(1), geneparse(1)
+
+   RELATED READING
+       M. Csuros and B. Ma, "Rapid Homology Search with Two-Stage Extension and Daughter Seeds" (2005).
+       F. P. Preparata and L. Zhang and K. W. Choi, "Quick, practical selection of effective seeds for homology search" (2005).
+       KP Choi, et. al., "Good spaced seeds for homology search" (2004).
+
+perl v5.10.1                                                                                     2010-05-31                                                                                     MURASAKI(1)

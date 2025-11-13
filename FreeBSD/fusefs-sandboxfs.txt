@@ -1,0 +1,423 @@
+SANDBOXFS(1)            FreeBSD General Commands Manual           SANDBOXFS(1)
+
+NAME
+     sandboxfs – A virtual file system for sandboxing
+
+SYNOPSIS
+     sandboxfs [--allow who] [--cpu_profile path] [--input path] [--help]
+               [--mapping type:mapping:target] [--node_cache] [--output path]
+               [--reconfig_threads count] [--ttl duration] [--version]
+               [--xattrs] mount_point
+
+DESCRIPTION
+     sandboxfs is a FUSE file system that exposes a combination of multiple
+     files and directories from the host's file system in the form of a
+     virtual tree with an arbitrary layout.  You can think of a sandbox as an
+     arbitrary view into the host's file system with different access
+     privileges per directory.
+
+     sandboxfs is designed to allow running commands with limited access to
+     the file system by using the virtual tree as their new root, and to do so
+     consistently across a variety of platforms.
+
+     The sandbox instance mounted at mount_point is initially configured with
+     the mapping specifications provided via repeated instances of --mapping.
+     Once running, the mount point can be reconfigured any number of times:
+     sandboxfs listens for reconfiguration requests on the file specified by
+     --input and reconfigures the mappings as requested, emiting a response on
+     the file specified by --output.
+
+     The following flags are recognized:
+
+     --allow who
+           Specifies who should have access to the file system.  who must be
+           one of: ‘other’ to indicate that everyone, including root, can
+           access the file system; ‘root’ to indicate that only the current
+           user and root can access the file system; and ‘self’ to indicate
+           that only the current user can access the file system.
+
+           The default value is ‘self’ because the standard FUSE configuration
+           does not allow more relaxed permissions, and it would be a pity if
+           you couldn't run sandboxfs successfully without additional
+           configuration.  To change this behavior, add ‘user_allow_other’ to
+           /etc/fuse.conf on Linux or set the
+           ‘vfs.generic.osxfuse.tunables.allow_other’ sysctl(8) tunable to 1
+           on macOS.
+
+           Note that, at least on macOS, you will need to consider granting
+           ‘other’ permissions if you intend to run signed binaries through
+           the sandbox.  This is because the amfid(8) daemon, which implements
+           the signature validation, runs as a different user and must be able
+           to access the executables.
+
+     --cpu_profile path
+           Enables CPU profiling and stores the pprof log to the given path.
+           This feature is only available if sandboxfs was built with
+           gperftools support (i.e. with the compile-time ‘profiler’ feature).
+           Passing this flag when support is not enabled results in an error.
+
+     --input path
+           Points to the file from which to read new configuration requests,
+           or ‘-’ (the default) for stdin.  See the Reconfigurations
+           subsection for details on the contents and behavior of the input
+           file.
+
+     --help
+           Prints global help details and exits.  Specifying this flag causes
+           all other valid flags and arguments to be ignored.
+
+     --mapping type:mapping:target
+           Registers a new mapping.  This flag can be given an arbitrary
+           number of times as long as the same mapping is not repeated.  See
+           the Mapping specifications subsection for details on how a mapping
+           is specified.
+
+     --node_cache
+           Enables the path-based node cache, which causes nodes to be reused
+           across reconfigurations when they map to the same underlying paths.
+           This should offer a performance boost when the same set of files
+           are mapped over and over again across different reconfiguration
+           operations.
+
+           This cache used to be enabled by default but it turned out to be
+           problematic.  For example, on macOS, OSXFUSE seems to keep track of
+           the path where a node first appeared, which causes trouble if the
+           node disappears and then reappears in a different location (for
+           example, dladdr(3) returns invalid paths).  For this reason, the
+           cache is now disabled by default but is still kept around in the
+           code for experimentation.  The cache may be removed in a future
+           release altogether if these problems cannot be worked around.
+
+     --output path
+           Points to the file to which to write confirmations of
+           reconfiguration, or ‘-’ (the default) for stdout.  See the
+           Reconfigurations subsection for details on the contents and
+           behavior of the output file.
+
+     --ttl duration
+           Specifies how long the kernel is allowed to cache file metadata
+           for.  The duration is currently specified as a number of seconds
+           followed by the ‘s’ suffix.
+
+     --reconfig_threads count
+           Sets the number of threads to use to process reconfiguration
+           requests.  Defaults to the number of logical CPUs in the system.
+
+     --version
+           Prints version information and exits.  Specifying this flag causes
+           all other valid flags and arguments to be ignored except for
+           --help, which has priority over this one.
+
+           The first line printed to stdout is machine parseable and follows
+           the following structure:
+
+                 sandboxfs MAJOR.MINOR[.ADDITIONAL OPTIONAL QUALIFIERS]
+
+           Programs automating invocations of sandboxfs can use this
+           information to determine the correct command-line syntax to use.
+
+     --xattrs
+           Enables support for extended attributes, which causes all extended
+           attribute operations to propagate to the underlying files.
+
+           When disabled (the default), the behavior of extended attribute
+           operations is platform-dependent: they may either fail as not
+           supported or they may act as no-op stubs.  The reason is that this
+           feature is disabled by telling the kernel that none of these
+           operations are implemented in sandboxfs, which then causes the
+           kernel to never contact the daemon for them.  Keeping extended
+           attributes disabled can result in a performance boost.
+
+   Mapping specifications
+     The basic concept behind a sandboxfs instance is the mapping
+     specification.  A mapping specification defines how an arbitrary location
+     within the sandbox relates to another arbitrary location on the host file
+     system.  Mapping specifications have three components: the target, which
+     is a path to a file or directory into the host file system (i.e. outside
+     of the mount point); the mapping, which is an absolute path within the
+     mount point in which the target is exposed; and the type, which specifies
+     the permissions of the mapping.
+
+     The target must exist but the mapping may not: in particular, any path
+     subcomponents of the mapping that have not been previously mapped within
+     the sandbox will be created as virtual read-only nodes.  This means that
+     the ordering of the mappings matters.
+
+     For example: consider a sandboxfs instance mounted onto /mnt that maps
+     /my/custom/bin to the /usr/bin target.  With this setup,
+     /mnt/my/custom/bin will expose the contents of the real /usr/bin
+     directory.
+
+     The following types are currently supported:
+
+     ro    A read-only mapping.  The contents of the target are exposed
+           verbatim at the mapping point and they cannot be modified through
+           the mount point.  Any write access will result in an EPERM.
+
+     rw    A read/write mapping.  The contents of the target are exposed
+           verbatim at the mapping point and they can be modified at will
+           through the mount point.  Writes through the moint point are
+           applied immediately to the underlying target directory.
+
+   Reconfigurations
+     While a mount point is live, sandboxfs listens for reconfiguration
+     requests on the file specified by --input and writes reconfiguration
+     responses to the file specified by --output.  These two files essentially
+     implement a rudimentary RPC system subject to change.
+
+     The mount point can be configured any number of times while mounted,
+     which allows for processes to efficiently change the view of the sandbox
+     at will without having to remount it.  Closing the input file causes
+     sandboxfs to freeze its configuration and not accept any more requests
+     for reconfiguration, but the file system will continue to operate
+     normally until it is either unmounted or signaled.
+
+     Reconfiguration requests can be issued at any time.  However, it is
+     impossible for sandboxfs to properly deal with ongoing file system
+     operations or with open file handles in a deterministic manner.  Due to
+     this, the behavior of ongoing file system activity while a
+     reconfiguration happens is unspecified but can be assumed to be stable
+     (i.e.  sandboxfs will not deadlock nor crash).  As a result, it is highly
+     recommended that you only send reconfiguration requests when you know
+     that the file system is quiescent.
+
+     Configuration requests are provided as a stream of JSON objects.  Each
+     request is an object with just one of the following keys:
+     ‘CreateSandbox’, which requests the creation of a new top-level directory
+     with a given set of mappings; and ‘DestroySandbox’, which requests the
+     deletion of the mappings at an existing top-level directory.
+
+     A ‘CreateSandbox’ operation contains an object with three keys: ‘id’
+     specifies the name of the top-level directory to create, ‘mappings’
+     contains an array of all mappings to apply within that directory, and
+     ‘prefixes’ contains a dictionary of all new prefixes to register for
+     prefix-encoded paths.  Each mapping entry is an object with the following
+     keys: ‘path’ and ‘underlying_path’, which define the mapping paths;
+     ‘path_prefix’ and ‘underlying_path_prefix’, which identify the prefixes
+     for the provided paths, respectively; and ‘writable’, which if set to
+     true indicates a read/write mapping.  The mapping must not yet exist in
+     the file system.  Each entry in the prefixes dictionary is keyed by the
+     numerical identifier of the prefix (supplied as a string due to JSON
+     limitations), and the value is the absolute path for that prefix.
+
+     Prefix-encoded paths serve to minimize the size of the requests but their
+     use is optional.  To specify a path in its prefix-encoded form, ‘path’
+     and/or ‘underlying_path’ must be relative and ‘path_prefix’ and/or
+     ‘underlying_path_prefix’ must indicate a positive non-zero integer.  The
+     referenced prefix must be registered in the same request or a previous
+     request, but if the prefix is repeated across requests, it must point to
+     the same location.  To avoid prefix-encoded form, paths must be given as
+     absolute and they need to reference the special prefix 0.
+
+     A ‘DestroySandbox’ operation simply contains the ‘id’ of a previously-
+     created sandbox as a string.  The whole tree hierarchy is unmapped.
+
+     Each configuration request is paired with a response, which are also
+     provided as a stream of JSON objects.  Each response is a map with an
+     optional field, which corresponds to the identifier given in the request,
+     and an optional ‘error’ field, which is empty if the request was
+     successful and contains an error message otherwise.  Responses with a
+     missing identifier indicate fatal failures during the reconfiguration
+     (e.g. due to a syntax error) and are not recoverable.
+
+     To minimize the size of the requests, all fields support aliases and
+     default values as follows:
+
+           ‘CreateSandbox’           Alias: ‘C’.
+           ‘DestroySandbox’          Alias: ‘D’.
+           ‘id’                      Alias: ‘i’.
+           ‘mappings’                Alias: ‘m’.  Default value: empty array.
+           ‘prefixes’                Alias: ‘q’.  Default value: empty object.
+           ‘path’                    Alias: ‘p’.
+           ‘path_prefix’             Alias: ‘x’.  Default value: ‘0’.
+           ‘underlying_path’         Alias: ‘u’.
+           ‘underlying_path_prefix’  Alias: ‘y’.  Default value: ‘0’.
+           ‘writable’                Alias: ‘w’.  Default value: ‘false’.
+
+EXIT STATUS
+     sandboxfs exits with 0 if the file system was both mounted and unmounted
+     cleanly; 1 on a controlled error condition encountered during the
+     execution of a command; or 2 on a usage error.
+
+     Sending a termination signal to sandboxfs will cause the file system to
+     exit in a controlled manner, ensuring that the mount point is released.
+     If the file system is busy, the signal will be queued until all open file
+     descriptors on the file system are released at which point the file
+     system will try to exit cleanly again.  Note that, due to limitations in
+     signal handling in Rust (which is the language in which sandboxfs is
+     implemented), the reception of a signal will cause sandboxfs to return 1
+     instead of terminating with a signal condition.
+
+ENVIRONMENT
+     sandboxfs recognizes the following environment variables:
+
+     RUST_LOG
+           Sets the maximum level of logging messages sent to stderr.
+           Possible values include ‘error’, ‘warn’, ‘info’ and ‘debug’, though
+           many more syntaxes are supported.  See the documentation for Rust's
+           ‘env_logger’ crate for more details.
+
+     sandboxfs may recognize other standard Rust variables like RUST_BACKTRACE
+     but the list above attempts to describe the ones a user may find most
+     useful.
+
+EXAMPLES
+   Command-line invocation
+     This example configures a sandbox that maps the whole host's file system
+     but clears /tmp to point into a sandbox-specific writable directory:
+
+           sandboxfs --mapping=ro:/:/ --mapping=rw:/tmp:/tmp/fresh-tmp /mnt
+
+   Reconfiguration request
+     This example creates a new sandbox under /first with a single mapping
+     that will appear as /first/tmp and that is mapped to /tmp/abc; then
+     deletes said sandbox, and then creates a different sandbox under /second
+     with a single mapping that will appear as /foo/bar and that is mapped to
+     /tmp/x/y:
+
+           [
+               {"CreateSandbox": {
+                   "id": "first",
+                   "mappings": [
+                       {"path": "/tmp", "underlying_path": "/tmp/abc", "writable": true}
+                   ]
+               }},
+               {"DestroySandbox": "first"}
+               {"CreateSandbox": {
+                   "id": "second",
+                   "mappings": [
+                       {"path": "/foo/bar", "underlying_path": "/tmp/x/y",
+                        "writable": false}
+                   ]
+               }}
+           ]
+
+     When sending this request, we obtain the following response:
+
+           {"id": "first", "error": null}
+           {"id": "first", "error": null}
+           {"id": "second", "error": null}
+
+   Prefix-encoded reconfiguration request
+     This example is the same as above, but this time using prefix-encoded
+     paths:
+
+           [
+               {"CreateSandbox": {
+                   "id": "first",
+                   "mappings": [
+                       {"path": "", "path_prefix": 1,
+                        "underlying_path": "abc", "underlying_path_prefix": 1,
+                        "writable": true}
+                   ],
+                   "prefixes": {
+                       "1": "/tmp"
+                   }
+               }},
+               {"DestroySandbox": "first"}
+               {"CreateSandbox": {
+                   "id": "second",
+                   "mappings": [
+                       {"path": "bar", "path_prefix": 2,
+                        "underlying_path": "x/y", "underlying_path_prefix": 1,
+                        "writable": false}
+                   ],
+                   "prefixes": {
+                       "2": "/foo"
+                   }
+               }}
+           ]
+
+   Minimized reconfiguraton request
+     This example is the same as above, but this time using field aliases and
+     default values to minimize the message:
+
+           [
+               {"C": {
+                   "i": "first",
+                   "m": [
+                       {"p": "", "x": 1, "u": "abc", "y": 1, "w": true}
+                   ],
+                   "q": {
+                       "1": "/tmp"
+                   }
+               }},
+               {"D": "first"}
+               {"C": {
+                   "i": "second",
+                   "m": [
+                       {"p": "bar", "x": 2, "u": "x/y", "y": 1}
+                   ],
+                   "q": {
+                       "2": "/foo"
+                   }
+               }}
+           ]
+
+AUTHORS
+     The sandboxfs was originally developed as a Go program by Pallav Agarwal
+     ⟨pallavag@google.com⟩ with guidance from Julio Merino ⟨jmmv@google.com⟩.
+     The program was later reimplemented in Rust by the latter.
+
+BUGS
+     The following are known limitations of sandboxfs:
+
+     •   Hard links are not supported.
+
+     •   Mapping the same external file or directory under two different
+         locations within the mount point results in undefined behavior.
+         Writes may not be reflected at both mapped locations at the same
+         time, which can lead to data corruption.  This is true even for read-
+         only mappings because each separate view within the mount point may
+         have cached different contents, returning different data than what's
+         truly on disk.  Using --node_cache may help mitigate this issue but
+         it doesn't always do.
+
+     •   The --allow root setting does not work on Linux; use --allow other as
+         the alternative.  See https://github.com/bazil/fuse/issues/144 for
+         details.
+
+     •   It is currently impossible to terminate sandboxfs cleanly while the
+         file system is busy.  Signals received while the file system is in
+         use will be queued as described in EXIT STATUS and fatal signals will
+         cause sandboxfs to leak the mount point (possibly irrecoverably
+         without a reboot because of kernel bugs).
+
+     •   Any explicitly-mapped directories and any scaffold directories (those
+         directories that appear to represent intermediate path components
+         that do not exist anywhere else in the file system) cannot be
+         removed.  Attempts to remove them will result in a “permission
+         denied” error.  While it could be possible to implement some
+         different behavior, this is what sandboxfs currently exposes.  You
+         may or may not consider this to be a bug.
+
+     •   If --node_cache is enabled, node data is cached in-memory for all
+         files accessed through a sandboxfs instance in order to offer good
+         performance across reconfigurations.  However, this cache does not
+         currently implement any expiration policy, which means that memory
+         usage can grow unboundedly if many different files are mapped and
+         accessed through the sandbox.
+
+     •   If a FIFO is used for -input, sandboxfs will block until a separate
+         process opens the FIFO for writing.  This happens even before the
+         file system starts serving, which means the file system is not usable
+         until the FIFO is opened.
+
+     •   While it is possible to reconfigure the entries of the root directory
+         of a running file system, it is not possible to reconfigure the root
+         mapping itself to point to a different location or to change its
+         writability properties.
+
+     •   Unmapping entries doesn't fully work.  The FUSE library that
+         sandboxfs currently uses does not support sending cache invalidation
+         requests to the kernel, which means unmapped entries will not vanish
+         immediately from the file system.  You may be able to mitigate this
+         by setting a low node TTL with the --ttl flag, but this doesn't work
+         on macOS either because OSXFUSE does not honor node TTLs.
+
+     •   Handling of extended attributes on open-but-deleted-files does not
+         work properly.  Those files will appear as if they didn't have any
+         extended attributes any longer, and attempts to modify them will
+         fail.
+
+FreeBSD 14.1-RELEASE            March 11, 2020            FreeBSD 14.1-RELEASE

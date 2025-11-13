@@ -1,0 +1,568 @@
+RUNIT-FASTER(7)    FreeBSD Miscellaneous Information Manual    RUNIT-FASTER(7)
+
+NAME
+     runit-faster – Getting started
+
+SETUP AS PID 1
+     This section only applies if opting into using runit-faster as PID 1.  It
+     is entirely optional and the service templates and other features can be
+     used via the runsvdir rc(8) service instead:
+
+           $ sysrc runsvdir_enable=YES
+           $ service runsvdir start
+
+     The runit-faster port by default assumes that /usr/local is located on
+     the same partition as the root filesystem.  For systems where this is not
+     the case, runit has to be compiled with the ROOT option on, to make sure
+     that runit(8) can properly bootstrap the system.  Binaries and the
+     necessary configuration files will then be installed into /etc/runit and
+     /sbin instead of in /usr/local/etc/runit and /usr/local/sbin.
+
+     To get started edit /boot/loader.conf and tell the kernel to attempt to
+     use /usr/local/sbin/runit-init as PID 1.
+
+           init_path="/usr/local/sbin/runit-init:/rescue/init"
+
+     No service is enabled by default.  Some basic ones must be enabled, at
+     the very least one getty service in the default runlevel, to get a login
+     prompt after rebooting:
+
+           $ ln -s /usr/local/etc/sv/devd \
+                   /usr/local/etc/runit/runsvdir/default
+           $ ln -s /usr/local/etc/sv/getty-ttyv0 \
+                   /usr/local/etc/runit/runsvdir/default
+           $ ln -s /usr/local/etc/sv/syslogd \
+                   /usr/local/etc/runit/runsvdir/default
+
+     For headless machines (or e.g., bhyve(8) virtual machines) with a serial
+     port make sure to enable `getty-ttyu0` instead of `getty-ttyv0`:
+
+           $ ln -s /usr/local/etc/sv/getty-ttyu0 \
+                   /usr/local/etc/runit/runsvdir/default
+
+     The runlevel can be selected via the runit.runlevel in the kernel
+     environment e.g., as specified in /boot/loader.conf.  If omitted a value
+     of default is used.
+
+     Settings from /etc/rc.conf will not be applied when using runit-faster.
+     The hostname has to be set either via runit.hostname in the kernel
+     environment or by creating /usr/local/etc/runit/hostname:
+
+           $ echo my-hostname > /usr/local/etc/runit/hostname
+
+     The keyboard layout has to be set via a core service like 12-console.sh.
+     See SYSTEM INITIALIZATION below for more information.
+
+     kld_list from /etc/rc.conf for loading kernel modules can be migrated to
+     /usr/local/etc/runit/modules.  They will be loaded as a first step when
+     the system initializes.
+
+           $ sysrc kld_list
+           kld_list: /boot/modules/i915kms.ko vboxdrv vboxnetflt vboxnetadp
+           $ cat <<EOF > /usr/local/etc/runit/modules
+           /boot/modules/i915kms.ko
+           vboxdrv
+           vboxnetflt
+           vboxnetadp
+           EOF
+
+     Enable additional service as you see fit.  Make sure to always use
+     absolute paths when symlinking new services to a runlevel.
+
+     Now reboot! If something goes wrong, try booting in single user mode or
+     temporarily revert back to init(8) and rc(8) at the loader(8) prompt:
+
+           set init_path=/rescue/init
+
+     After a successful reboot some basic system maintenance tasks must be
+     setup.  Normally these are defined in /etc/crontab and started by
+     cron(8).
+
+     As the system is now fully bootstrapped via runit-faster we can symlink
+     new services directly into /var/service, which itself is a symlink to
+     /usr/local/etc/runit/runsvdir/current which points to the currently
+     active runlevel.  runsv(8) will immediately start the services once
+     symlinked.
+
+     System maintenance tasks can be enabled via cron
+
+           $ ln -s /usr/local/etc/sv/cron /var/service
+
+     or by using the snooze(1) based replacements:
+
+           $ ln -s /usr/local/etc/sv/adjkerntz /var/service
+           $ ln -s /usr/local/etc/sv/periodic-daily /var/service
+           $ ln -s /usr/local/etc/sv/periodic-weekly /var/service
+           $ ln -s /usr/local/etc/sv/periodic-monthly /var/service
+           $ ln -s /usr/local/etc/sv/save-entropy /var/service
+
+     If the snooze(1) services are used and cron is also needed the
+     corresponding system maintenance tasks should be disabled in
+     /etc/crontab.
+
+     To mimic a default FreeBSD console setup more getty services need to be
+     enabled.  Enable all virtual terminals that are normally enabled in
+     /etc/ttys:
+
+           $ ln -s /usr/local/etc/sv/getty-ttyv1 /var/service
+           $ ln -s /usr/local/etc/sv/getty-ttyv2 /var/service
+           $ ln -s /usr/local/etc/sv/getty-ttyv3 /var/service
+           $ ln -s /usr/local/etc/sv/getty-ttyv4 /var/service
+           $ ln -s /usr/local/etc/sv/getty-ttyv5 /var/service
+           $ ln -s /usr/local/etc/sv/getty-ttyv6 /var/service
+           $ ln -s /usr/local/etc/sv/getty-ttyv7 /var/service
+
+REBOOT, SHUTDOWN, AND POWEROFF
+     reboot(8), halt(8), poweroff(8), and shutdown(8) will not work correctly
+     with runit(8) because of the way they send signals to PID 1.  Use
+     runit-init(8) instead.
+
+     Reboot the system:
+
+           $ runit-init 6
+
+     Power off the system:
+
+           $ runit-init 0
+
+     To make the shutdown dialogs in desktops that use sysutils/consolekit2
+     work, you can edit /usr/local/lib/ConsoleKit/scripts/ck-system-restart
+     for restarting to look like
+
+           #!/bin/sh
+           exec /usr/local/sbin/runit-init 6
+
+     and edit /usr/local/lib/ConsoleKit/scripts/ck-system-stop for power off
+     to look like
+
+           #!/bin/sh
+           exec /usr/local/sbin/runit-init 0
+
+SYSTEM INITIALIZATION
+     This section only applies if opting into using runit-faster as PID 1.
+     runit-faster initializes the system in two stages.  The first stage will
+     run one time system tasks, dubbed core services, located in
+     /usr/local/etc/runit/core-services:
+
+     11-devmatch.sh
+         Use devmatch(8) to load kernel modules.
+
+     11-kld.sh
+         Load kernel modules listed in /usr/local/etc/runit/modules.
+
+     11-set-defaults.sh
+         Set some system defaults.
+
+     12-console.sh
+         A user-editable service file where keyboard layout and other console
+         settings should be added to.
+
+         Use the us keyboard layout and terminus-b32 font on all virtual
+         terminals:
+
+               kbdcontrol -l us < /dev/ttyv0
+               for ttyv in /dev/ttyv*; do
+                       vidcontrol -f terminus-b32 < ${ttyv} > ${ttyv}
+               done
+
+     30-geli.sh
+         Decrypt GELI devices.
+
+     31-fsck.sh
+         Run fsck.
+
+     31-mount.sh
+         Mount all early filesystem.
+
+     31-zfs-mount.sh
+         Mount ZFS datasets.
+
+     33-init-var.sh
+         Initialize /var.
+
+     33-microcode_update.sh
+         Update CPU microcode if sysutils/devcpu-data is installed.
+
+     33-savecore.sh
+         Run savecore(8) at boot to retrieve a kernel crash device from the
+         dump device as specified in /boot/loader.conf via dumpdev.
+
+     33-set-dumpdev.sh
+         Enables the dump device as specified in /boot/loader.conf via
+         dumpdev.  The crash dump is encrypted with /etc/dumppubkey if it
+         exists and if the kernel supports encrypted crash dumps.  See
+         dumpon(8) for more information.
+
+     33-swap.sh
+         Enable swap.
+
+     41-devfs-rules.sh
+         Load devfs(8) rules from /etc/defaults/devfs.rules and
+         /etc/devfs.rules.
+
+         To set the system ruleset define runit_devfs_rules:
+
+               [runit_devfs_rules=42]
+               add include $localrules
+
+     41-entropy.sh
+         Initialize the entropy harvester.
+
+     41-hostid.sh
+         Generate a hostid.
+
+     41-hostname.sh
+         Set the hostname.
+
+     41-ldconfig.sh
+         Setup the shared library cache.
+
+     41-loopback.sh
+         Create lo0.
+
+     41-mixer.sh
+         Restore soundcard mixer values.
+
+     41-nextboot.sh
+         Prune nextboot configuration.
+
+     41-rctl.sh
+         Apply resource limits from /etc/rctl.conf.
+
+     44-bhyve-network.sh
+         Create a bhyve0 bridge for networking for simple bhyve(8) VMs.
+
+     44-jail-network.sh
+         Create a jail0 interface with an assigned network of 192.168.95.0/24
+         to ease setting up jails.
+
+     51-pf.sh
+         Enable PF and load /etc/pf.conf.
+
+     91-cleanup.sh
+         Clean /tmp.
+
+     92-nfs.sh
+         Start the NFS daemons when an /etc/exports or /etc/zfs/exports exists
+         and exports some filesystems.
+
+     93-ctld.sh
+         Start ctld(8) when /etc/ctl.conf exists.  ctld(8) has no support for
+         starting the daemon in the foreground, so it cannot easily be
+         supervised with a runsv(8) service.
+
+     95-mount-late.sh
+         Mount all late filesystems.
+
+     95-swap-late.sh
+         Enable late swap.
+
+     99-binmisc.sh
+         Register the QEMU interpreters from emulators/qemu-user-static and
+         WINE from emulators/wine with binmiscctl(8).
+
+     99-ports-env.sh
+         Caches some values that ports(7) use.  Source
+         /var/run/runit/ports-env in your shell profile to make use of it.
+         This will speed up builds.  If you update your ports checkout or
+         change something in make.conf(5) you might have to rerun this
+         service.  This service will only work if your ports tree is located
+         in /usr/ports.
+
+     99-start-jails.sh
+         Start all vanilla rc(8) jails defined in /etc/jail.conf that do not
+         use runit-faster for starting services.
+
+     The core services will be sourced in lexicographic order.  Users can
+     insert their own core services in the right places by creating a file
+     with an even number prefix.  12-console.sh, 30-geli.sh,
+     44-bhyve-network.sh, 44-jail-network.sh are pre-existing user-editable
+     files.  Odd numbered services should be treated as immutable and will be
+     overwritten when updating runit-faster.
+
+     Stage 2 will look up the runlevel in the runit.runlevel kenv and link
+     /usr/local/etc/runit/runsvdir/$runlevel to /var/service.  It will then
+     run runsvdir(8) on it which starts all defined services for the runlevel
+     and starts supervising them.
+
+     runit-faster comes with some services out of the box for the user's
+     convenience in /usr/local/etc/sv.  These can be linked to the runlevel to
+     enable them.
+
+ACCESS CONTROL
+     To give other users, besides root, the ability to check on a service's
+     status or change its state, change permissions on its control pipe.  This
+     can either be done in the service's run script or in conf which most
+     services bundled with runit-faster source in their run scripts.
+
+     The svmod(8) helper makes this straightforward.
+
+     Edit sndiod/conf to give users of the audio group the ability to control
+     and check the status of the sndiod service:
+
+           svmod :audio . ./log
+
+SERVICE TEMPLATES
+     runit-faster provides several service templates to get you started
+     quickly.
+
+     All svclone(8) commands are run in /usr/local/etc/sv to keep verbosity of
+     the examples to a minimum.
+
+   acme-client-template
+     This service provides an easy way to setup the security/acme-client Let's
+     Encrypt client.
+
+     Clone the template and name the service directory after the domain and
+     altname you want to create a certificate for:
+
+           svclone -t acme-client \
+                   local/acme-client@example.com@www.example.com
+
+     There must be one domain name and there can be many altnames separated by
+     an @:
+
+           acme-client@<domain>[@<altname>]*
+
+     acme-client(1) assumes that you have setup an HTTP server to respond to
+     /.well-known/acme-challenge requests on the domain.  By default the
+     challenge dir is set to
+     /usr/jails/http/usr/local/www/acme-client/<domain>.
+
+     This can be changed by creating conf in the service directory with
+
+           CHALLENGEDIR=/path/to/challenge/dir
+
+     Run the service manually once to register a new account and create the
+     domain keys
+
+           (cd local/acme-client@example.com@www.example.com && \
+                   ./acme-client.sh)
+
+     This will create the following files:
+     /usr/local/etc/ssl/example.com/cert.pem
+     /usr/local/etc/ssl/example.com/chain.pem
+     /usr/local/etc/ssl/example.com/fullchain.pem
+     /usr/local/etc/ssl/example.com/private/example.com.pem
+
+     Edit the finish script and find a way to inform your applications to
+     reload the renewed certificates or maybe copy them into the right places.
+
+     The service can now be enabled and will renew certificates at
+     approximately 1 am every night automatically:
+
+           ln -s /usr/local/etc/sv/local/acme-client@example.com@www.example.com \
+                   /var/service
+
+     The time can be adjusted by editing the run script.
+
+   bhyve-template
+     Service template to create simple runit-faster managed VMs.
+
+     VM parameters are determined through the service directory name:
+
+           bhyve@<name>@<memory>@<cpus>@<bridge>@<bootmethod>
+
+     Every parameter but the VM name are optional.
+
+     memory
+         Guest memory size.  Defaults to 512m.
+
+     cpus
+         Number of virtual CPUs.  Defaults to 1.
+
+     bridge
+         Assign VM to this bridge.  Defaults to bhyve0, as created by the
+         44-bhyve-network.sh core service.  For systems not using runit-faster
+         as PID 1, make sure to create a bhyve0 bridge via rc.conf(5).  Assign
+         your outgoing interface to this bridge to provide some network
+         connectivity to the VM.
+
+     bootmethod
+         How to boot the VM.  Valid values are uefi, csm, and bhyveload.
+
+         The uefi and csm methods require that sysutils/bhyve-firmware is
+         installed.
+
+         bhyveload will use bhyveload(8) to boot the VM.  It is assumed that
+         disk0 is the root device.
+
+     Additional arguments to bhyve(8) can be passed through setting OPTS in
+     conf.
+
+     To add disk images, or disk devices to the VM simply provide disk[0..15]
+     or cdrom symlinks in the service directory.
+
+     VMs get an automatically assigned tap(4) network interface which is added
+     to the configured bridge, assigned to the runit-managed interface group.
+
+     As one would expect, if the VM reboots, the service will restart the VM.
+     If it powers off, the service will be marked as down and will require
+     manual administrator intervention to restart.  Edit finish to change this
+     behavior.
+
+     Create a OpenBSD 6.3 VM with 1g of memory that boots from miniroot63.fs:
+
+           svclone -t bhyve local/bhyve@openbsd63@1g
+           ln -s /root/miniroot63.fs local/bhyve@openbsd63@1g/disk0
+           ln -s /usr/local/etc/sv/local/bhyve@openbsd63@1g /var/service
+
+     List all interfaces auto-assigned to the openbsd63 VM:
+
+           $ cat /var/service/bhyve@openbsd63@1g/supervise/network-interfaces
+           tap0
+
+   dhclient-template
+     Service to run dhclient(8) on a specific interface.
+
+     The interface needs to be part of the service name:
+
+           dhclient@<interface>
+
+     Create a new dhclient service for the em0 interface and enable it:
+
+           svclone -t dhclient local/dhclient@em0
+           ln -s /usr/local/etc/sv/local/dhclient@em0 /var/service
+
+   gitqueue-template
+     A service template for polling Git repositories and running scripts on
+     changes.  It is assumed that you leave the local checkout of the
+     repository untouched.  All local changes will be thrown away on updates.
+     An origin remote must be set in the repository and will be used to fetch
+     new changes.  The default poll interval is 5 minutes and can be
+     overridden by setting SNOOZE_ARGS in conf (see snooze(1) for more
+     details).
+
+     When there are new changes, a run of the .gitqueue.d/run script in the
+     repository is queued into an nq(1) queue under /var/db/gitqueue.
+
+           gitqueue@<path>@<branch>[@<user>:<group>[@<queuename>]]
+
+     path
+         The path to the repository.  / has to be encoded with a __.
+
+     branch
+         The remote branch to poll.
+
+     user:group
+         The user and group to run everything under.  The repository must be
+         readable and writable by the user.  Defaults to nobody:nobody if not
+         given.
+
+     queuename
+         The name of the queue determines the directory under /var/db/gitqueue
+         where the nq(1) queue is created in.  It defaults to
+         /var/db/gitqueue/$user/$unencoded_path.
+
+     Create a service that polls the Git repository's origin remote at
+     /usr/src as kate and runs /usr/src/.gitqueue.d/run on updates to the
+     local branch:
+
+           svclone -t gitqueue local/gitqueue@__usr__src@local@kate:kate
+           ln -s /usr/local/etc/sv/local/gitqueue@__usr__src@local /var/service
+
+   ifstated-template
+     A template for services that run ifstated(8) (net/ifstated).  Make sure
+     to edit ifstated.conf in the service directory with your own rules.
+
+           svclone -t ifstated local/ifstated
+           edit local/ifstated/ifstated.conf
+           ln -s /usr/local/etc/sv/local/ifstated /var/service
+
+   jail-template
+     Service template to create runit-faster managed jails.
+
+     If you are using runit-faster as PID 1 it will automatically create a
+     jail0 interface in the 192.168.95.0/24 network.  The host gets IP
+     192.168.95.1.  This can be used this to quickly setup jails.  You can
+     change the network and IP settings by editing
+     /usr/local/etc/runit/core-services/44-jail-network.sh.
+
+     For vanilla rc(8) systems this can be replicated via /etc/rc.conf:
+
+           pf_enable="YES"
+
+     Setup NAT in /etc/pf.conf:
+
+           jail_http_ip = 192.168.95.2
+
+           nat pass on $ext_if from runit-jail:network to any -> $ext_if
+           rdr pass on $ext_if proto tcp from any to $ext_if \
+                   port { https, http } -> $jail_http_ip
+
+     Clone the template on the host:
+
+           svclone -t jail local/jail@http
+
+     Modify local/jail@http/jail.conf to suite your needs
+
+           ip4.addr = "jail0|192.168.95.2/24";
+
+     By default the jail root is determined from the jail name and set to
+     /usr/jails/$name.  To change it create a root symlink pointing to the
+     jail's root directory.
+
+     By default the jail's hostname is determined from the jail name.  Edit
+     jail.conf to override it:
+
+           host.hostname = "http-runit.example.com";
+
+     Setup a basic jail with your favourite method e.g.,
+
+           bsdinstall jail /usr/jails/http
+           freebsd-update -b /usr/jails/http fetch
+           freebsd-update -b /usr/jails/http update
+
+     Install and enable nginx and runit-faster in the jail
+
+           pkg -c /usr/jails/http install nginx runit-faster
+           ln -s /usr/local/etc/sv/nginx \
+                   /usr/jails/http/usr/local/etc/runit/runsvdir/default
+
+     Edit fstab to mount filesystems when the jail starts.  %%jail%% is
+     substituted with the jail's root directory.
+
+     Finally enable the jail on the host
+
+           ln -s /usr/local/etc/sv/local/jail@http /var/service
+
+   kore-template
+
+   runsvdir-user-template
+     Create a user runsvdir(8) service to let kate run her own custom services
+     (managed via ~/service) when the system boots up:
+
+           svclone -t runsvdir-user local/runsvdir@kate
+           ln -s /usr/local/etc/sv/local/runsvdir@kate /var/service
+
+     kate can now create, enable, and manage a user-level sndiod instance by
+     herself:
+
+           mkdir ~/.sv ~/service
+           svclone -u /usr/local/etc/sv/sndiod ~/.sv/sndiod
+           ln -s ~/.sv/sndiod ~/service
+
+   webcamd-template
+     Run webcamd(8) on specific devices.
+
+     First determine the device webcamd(8) should attach to:
+
+           $ webcamd -l
+           Available device(s):
+           webcamd -N Chicony-Electronics-Co--Ltd--HD-WebCam -S unknown -M 0
+           webcamd -N vendor-0x06cb-product-0x2970 -S unknown -M 0
+           webcamd -N vendor-0x0489-product-0xe078 -S unknown -M 0
+
+     Create a service and start it:
+
+           svclone -t webcamd local/webcamd@Chicony-Electronics-Co--Ltd--HD-WebCam
+           ln -s /usr/local/etc/sv/local/webcamd@Chicony-Electronics-Co--Ltd--HD-WebCam \
+                   /var/service
+
+SEE ALSO
+     acme-client(1), snooze(1), sv(8), svclone(8)
+
+AUTHORS
+     Tobias Kortkamp <tobik@FreeBSD.org>
+
+FreeBSD 14.1-RELEASE             June 9, 2019             FreeBSD 14.1-RELEASE

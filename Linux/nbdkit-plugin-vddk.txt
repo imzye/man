@@ -1,0 +1,570 @@
+nbdkit-vddk-plugin(1)                                                                              NBDKIT                                                                             nbdkit-vddk-plugin(1)
+
+NAME
+       nbdkit-vddk-plugin - nbdkit VMware VDDK plugin
+
+SYNOPSIS
+        nbdkit vddk [file=]FILENAME
+                    [compression=none|zlib|fastlz|skipz]
+                    [config=FILENAME] [cookie=COOKIE]
+                    [create=true] [create-adapter-type=ide|scsi-buslogic|...]
+                    [create-hwversion=workstation4|workstation5|...]
+                    [create-size=...] [create-type=monolithic-sparse|...]
+                    [libdir=LIBRARY]
+                    [nfchostport=PORT] [single-link=true]
+                    [password=PASSWORD | password=- | password=+FILENAME |
+                     password=-FD]
+                    [port=PORT] [server=HOSTNAME] [snapshot=MOREF]
+                    [thumbprint=THUMBPRINT] [transports=MODE:MODE:...]
+                    [unbuffered=true] [user=USERNAME] [vm=moref=ID]
+        nbdkit vddk --dump-plugin
+
+DESCRIPTION
+       "nbdkit-vddk-plugin" is an nbdkit(1) plugin that serves disks from local VMware VMDK files, VMware ESXi servers, VMware VCenter servers, and other sources.
+
+       It requires VMware's proprietary VDDK library that you must download yourself (see "LIBRARY LOCATION" below).
+
+       For an easy-to-use wrapper around this plugin which automates setting things up to connect to a remote VMware server, see: https://gitlab.com/nbdkit/vddk-remote
+
+EXAMPLES
+   Open a local VMDK file
+        $ nbdkit vddk libdir=/opt/vmware-vix-disklib-distrib \
+                      /absolute/path/to/file.vmdk
+        $ nbdinfo --size nbd://localhost
+        10485760
+        $ nbdcopy nbd://localhost outputfile.raw
+
+       Open file.vmdk with this plugin, and use nbdinfo(1) and nbdcopy(1) to inspect and copy out the data.  When opening local files the filename must be an absolute path.
+
+       The "libdir" parameter points to the location of VDDK, see "LIBRARY LOCATION" below.  In the examples below it is omitted for brevity.
+
+   Create a new local VMDK file
+       You can use VDDK to create a VMDK file and fill it with the contents of a disk image.  Note the "create-size" parameter is the virtual size of the final VMDK disk image and must be at least as
+       large as the input disk:
+
+        nbdkit vddk \
+               /absolute/path/to/output.vmdk \
+               create=true create-size=100M \
+               --run 'qemu-img convert input.qcow2 $uri'
+
+   Open a file on a remote VMware ESXi hypervisor
+       Connect directly to a VMware ESXi hypervisor and export a particular file:
+
+        nbdkit vddk user=root password=+/tmp/rootpw \
+                    server=esxi.example.com thumbprint=xx:xx:xx:... \
+                    vm=moref=2 \
+                    "[datastore1] Fedora/Fedora.vmdk"
+
+       "user" and "password" must be specified.  Use "password=+FILENAME" to provide the password securely in a file.
+
+       "server" is the hostname of the ESXi server.
+
+       "thumbprint" is the thumb print for validating the SSL certificate.  How to find the thumb print of a server is described in "THUMBPRINTS" below.
+
+       "vm" is the Managed Object Reference ("moref") of the virtual machine.  See "MANAGED OBJECT REFERENCE" below.
+
+       The file parameter is the file you want to open, usually in the form "[datastore] vmname/vmname.vmdk".  See "FILE PARAMETER" below.
+
+   Open a file on a remote VMware vCenter server
+       Connect via VMware vCenter and export a particular file:
+
+        nbdkit vddk user=root password=vmware \
+                    server=vcenter.example.com thumbprint=xx:xx:xx:... \
+                    vm=moref=vm-16 \
+                    "[datastore1] Fedora/Fedora.vmdk"
+
+       "user" and "password" must be specified.  Use "password=+FILENAME" to provide the password securely in a file.
+
+       "server" is the hostname of the vCenter server.
+
+       "thumbprint" is the thumb print for validating the SSL certificate.  How to find the thumb print of a server is described in "THUMBPRINTS" below.
+
+       "vm" is the Managed Object Reference ("moref") of the virtual machine.  See "MANAGED OBJECT REFERENCE" below.
+
+       The file parameter is the file you want to open, usually in the form "[datastore] vmname/vmname.vmdk".  See "FILE PARAMETER" below.
+
+PARAMETERS
+       For opening a local VMDK file, the "file" parameter is required and must be an absolute path.
+
+       For opening a remote connection, "file", "server", "thumbprint", "user", "password" and "vm" are required.
+
+       All other parameters are optional.
+
+       compression=none
+       compression=zlib
+       compression=fastlz
+       compression=skipz
+           (nbdkit ≥ 1.24, vSphere ≥ 6.5)
+
+           Select the compression type used over the network between VDDK and the VMware server.  The default is "none".  See VMware document “Best Practices for NBD Transport”.
+
+       config=FILENAME
+           The name of the VDDK configuration file.
+
+           The config file controls rarely adjusted VDDK settings like log level, caching and timeouts.  See the VDDK documentation for a full list of settings.
+
+           VDDK itself looks in a few default locations for the configuration file, usually including /etc/vmware/config and $HOME/.vmware/config.  Using "config" overrides these defaults.
+
+       cookie=COOKIE
+           (vSphere ≥ 6.7)
+
+           Cookie from existing authenticated session on the host.
+
+           This  changes  the  authentication type from "VIXDISKLIB_CRED_UID" to "VIXDISKLIB_CRED_SESSIONID" which can improve performance.  The cookie can be found by connecting to a VCenter Server over
+           HTTPS and retrieving the "vmware_soap_session" cookie.
+
+       create=true
+           (nbdkit ≥ 1.30)
+
+           Create a new, local VMDK file.  Instead of opening an existing VMDK file, a new VMDK file is created and opened.  The filename is given by the "file" parameter (see below).  The file must  not
+           exist already.  It is not possible to create a remote file using nbdkit.
+
+           If this is used, the "create-size" parameter is required to specify the virtual size of the disk.  Other "create-*" parameters (see below) can be used to control the VMDK sub-format.
+
+       create-adapter-type=ide
+       create-adapter-type=scsi-buslogic
+       create-adapter-type=scsi-lsilogic
+           (nbdkit ≥ 1.30)
+
+           Specify the VMDK disk adapter type.  The default is "scsi-buslogic".
+
+       create-hwversion=workstation4
+       create-hwversion=workstation5
+       create-hwversion=workstation6
+       create-hwversion=esx30
+       create-hwversion=esx4x
+       create-hwversion=esx50
+       create-hwversion=esx51
+       create-hwversion=esx55
+       create-hwversion=esx60
+       create-hwversion=esx65
+       create-hwversion=N
+           (nbdkit ≥ 1.30)
+
+           Specify the VMDK virtual hardware version.  You can give either the named version or the equivalent 16 bit number.
+
+           The default is "workstation5" (N = 4).
+
+       create-size=SIZE
+           (nbdkit ≥ 1.30)
+
+           Specify the virtual size of the created disk.  The "SIZE" can use modifiers like "100M" etc.  It must be a multiple of 512 bytes because VMware only supports sector sizes.
+
+           If you use "create=true" then this parameter is required.
+
+       create-type=monolithic-sparse
+       create-type=monolithic-flat
+       create-type=split-sparse
+       create-type=split-flat
+       create-type=vmfs-flat
+       create-type=stream-optimized
+       create-type=vmfs-thin
+       create-type=vmfs-sparse
+           (nbdkit ≥ 1.30)
+
+           Specify the VMDK sub-format.  The default is "monolithic-sparse".
+
+           Some VMDK sub-formats use multiple files, where the "file" parameter specifies the "Disk Descriptor File" and the disk contents are stored in adjacent files.
+
+       [file=]FILENAME
+       [file=][datastore] vmname/vmname.vmdk
+           Set the name of the VMDK file to serve.
+
+           For local files you must supply an absolute path.  For remote files see "FILE PARAMETER" section below.
+
+           If a VM has multiple disks, nbdkit can only serve one at a time.  To serve more than one you must run multiple copies of nbdkit.  (See "NOTES" below).
+
+           "file=" prefix may be omitted in most cases.  See "Magic parameters" in nbdkit(1).
+
+       libdir=PATHNAME
+           This sets the path of the VMware VDDK distribution.
+
+           VDDK uses this to load its own plugins, if this path is unspecified or wrong then VDDK will work with reduced functionality.  See "LIBRARY LOCATION" below.
+
+       nfchostport=PORT
+           Port used to establish an NFC connection to ESXi.  Defaults to 902.
+
+       password=PASSWORD
+           Set the password to use when connecting to the remote server.
+
+           Note that passing this on the command line is not secure on shared machines.
+
+       password=-
+           Ask for the password (interactively) when nbdkit starts up.
+
+       password=+FILENAME
+           Read the password from the named file.  This is a secure method to supply a password, as long as you set the permissions on the file appropriately.
+
+       password=-FD
+           Read the password from file descriptor number "FD", inherited from the parent process when nbdkit starts up.  This is also a secure method to supply a password.
+
+       port=PORT
+           The port on the VCenter/ESXi host.  Defaults to 443.
+
+       server=HOSTNAME
+           The hostname or IP address of VCenter or ESXi host.
+
+       single-link=true
+           (nbdkit ≥ 1.12)
+
+           Open the current link, not the entire chain.  This corresponds to the "VIXDISKLIB_FLAG_OPEN_SINGLE_LINK" flag.
+
+       snapshot=MOREF
+           The Managed Object Reference of the snapshot.  See "MANAGED OBJECT REFERENCE" below.
+
+       thumbprint=THUMBPRINT
+           The SSL (SHA1) thumbprint for validating the SSL certificate.
+
+           The format is "xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx" (20 hex digit pairs).
+
+           See "THUMBPRINTS" below for how to get this.
+
+       transports=MODE:MODE:...
+           List  of one or more transport modes to use.  Possible values include ‘nbd’, ‘nbdssl’, ‘san’, ‘hotadd’, ‘file’ (see "DUMP-PLUGIN OUTPUT" below).  If not given, VDDK will try to choose the best
+           transport mode.
+
+       unbuffered=true
+           (nbdkit ≥ 1.12)
+
+           Disable host caching.  This corresponds to the "VIXDISKLIB_FLAG_OPEN_UNBUFFERED" flag.
+
+       user=USERNAME
+           The username to connect to the remote server as.
+
+       vm=moref=ID
+           The Managed Object Reference ("moref") of the virtual machine.  See "MANAGED OBJECT REFERENCE" below.
+
+       vimapiver=APIVER
+           This parameter is ignored for backwards compatibility.
+
+LIBRARY LOCATION
+       The VDDK library should not be placed on a system library path such as /usr/lib.  The reason is that the VDDK library ships with  recompiled  libraries  like  libcrypto.so  and  libstdc++.so  that
+       conflict with system libraries.
+
+       You have two choices:
+
+       •   Place VDDK in the default libdir which is compiled into this plugin, for example:
+
+            $ nbdkit vddk --dump-plugin | grep ^vddk_default_libdir
+            vddk_default_libdir=/usr/lib64/vmware-vix-disklib
+
+       •   But the best advice is to unpack the VDDK tarball anywhere you like and set the "libdir=/path/to/vmware-vix-disklib-distrib".  For example:
+
+            nbdkit vddk \
+                   libdir=/opt/vmware-vix-disklib-distrib \
+                   /path/to/file.vmdk
+
+   No need to set "LD_LIBRARY_PATH"
+       In nbdkit ≤ 1.16 you had to set the environment variable "LD_LIBRARY_PATH" when using this plugin.  In nbdkit ≥ 1.18 this is not recommended.
+
+SUPPORTED VERSIONS OF VDDK
+       VDDK ≥ 6.5 (released Nov 2016)
+           This is the minimum version of VDDK supported.  Older versions will not work.
+
+       VDDK 6.7 (released Apr 2018)
+           This is the first version that supported the "VixDiskLib_QueryAllocatedBlocks" API.  This is required to provide sparseness (extent) information over NBD.
+
+       VDDK 9.0.0.0 (released Jun 2025)
+           This is the latest version of VDDK that we have tested at the time of writing, but the plugin should work with future versions.
+
+       This plugin is only supported on the x86-64 architecture.
+
+FILE PARAMETER
+       The "file" parameter can either be a local file, in which case it must be the absolute path.  Or it can refer to a remote file on the VMware server in the format "[datastore] vmname/vmname.vmdk".
+
+   Finding the remote filename
+       For remote files you can find the path using virsh(1).  For ESXi:
+
+        $ virsh -c 'esx://esxi.example.com?no_verify=1' dumpxml guestname
+        ...
+         <disk type='file' device='disk'>
+           <source file='[datastore] vmname/vmname.vmdk'/>
+        ...
+
+       For vCenter the command is the same but the URI starts with "vpx://":
+
+        $ virsh -c 'vpx://vcenter.example.com/Datacenter/esxi.example.com?no_verify=1' \
+                dumpxml guestname
+
+       See also: https://libvirt.org/drvesx.html
+
+   Optional file= prefix
+       The "file=" part is optional, so these commands are equivalent:
+
+        nbdkit vddk file=/path/to/file.vmdk
+        nbdkit vddk /path/to/file.vmdk
+
+THUMBPRINTS
+       The thumbprint is a 20 byte string containing the SSL (SHA1) fingerprint of the remote VMware server and it is required when making a remote connection.  There are several ways to obtain this.
+
+   Using a web browser
+       Visit  "https://SERVER-NAME/folder"  and  log  in.   Click  the lock icon next to the URL bar and navigate to the SHA-1 fingerprint of the site’s certificate.  This 20 hex digit pair string can be
+       directly copied to the "thumbprint=" parameter.
+
+   Using openssl remotely
+       The following command will print the thumbprint of a VMware server called "SERVER-NAME":
+
+        $ openssl s_client -connect SERVER-NAME:443 </dev/null |
+          openssl x509 -in /dev/stdin -fingerprint -sha1 -noout
+
+   By logging in to the ESXi or vCenter server
+       Log in to the ESXi hypervisor shell and run this command:
+
+        # openssl x509 -in /etc/vmware/ssl/rui.crt -fingerprint -sha1 -noout
+
+       For VMware vCenter servers the thumbprint is printed on the text console of the server or is available by logging in to the server and using this command:
+
+        # openssl x509 -in /etc/vmware-vpx/ssl/rui.crt -fingerprint -sha1 -noout
+
+   Trick: Get VDDK to tell you the thumbprint
+       Another way to get the thumbprint of a server is to connect to the server using a bogus thumbprint with debugging enabled:
+
+        nbdkit -fv vddk server=esxi.example.com [...] thumbprint=12 \
+               --run 'qemu-img info "$uri"'
+
+       The nbdkit process will try to connect (and fail because the thumbprint is wrong).  However in the debug output will be a message such as this:
+
+        nbdkit: debug: VixDiskLibVim: Failed to verify SSL certificate: actual thumbprint=B2:31:BD:DE:9F:DB:9D:E0:78:EF:30:42:8A:41:B0:28:92:93:C8:DD expected=12
+
+       This gives you the server’s real thumbprint.  Of course this method is not secure since it allows a Man-in-the-Middle (MITM) attack.
+
+MANAGED OBJECT REFERENCE
+       Some use cases require you to pass in the Managed Object Reference ("moref") of an object on the VMware server.
+
+       For VMware ESXi hypervisors, the "vm" moref is a number (eg. "vm=moref=2").  For VMware VCenter it is a string beginning with "vm-") (eg. "vm=moref=vm-16").  Across ESXi and  vCenter  the  numbers
+       are different even for the same virtual machine.
+
+       If you have libvirt ≥ 3.7, the moref is available in the virsh(1) "dumpxml" output:
+
+        $ virsh -c 'esx://esxi.example.com?no_verify=1' dumpxml guestname
+        ...
+        <vmware:moref>2</vmware:moref>
+        ...
+
+       or:
+
+        $ virsh -c 'vpx://vcenter.example.com/Datacenter/esxi.example.com?no_verify=1' \
+              dumpxml guestname
+        ...
+        <vmware:moref>vm-16</vmware:moref>
+        ...
+
+       An  alternative  way  to  find  the  moref  of  a VM is using the "moRefFinder.pl" script written by William Lam (http://www.virtuallyghetto.com/2011/11/vsphere-moref-managed-object-reference.html
+       https://blogs.vmware.com/vsphere/2012/02/uniquely-identifying-virtual-machines-in-vsphere-and-vcloud-part-2-technical.html).
+
+DUMP-PLUGIN OUTPUT
+       To query more information about the plugin (and whether it is working), use:
+
+        nbdkit vddk --dump-plugin
+
+       or:
+
+        nbdkit vddk --dump-plugin libdir=/opt/vmware-vix-disklib-distrib
+
+       (see "LIBRARY LOCATION" above).
+
+       If the plugin is not present or not working you will get an error.
+
+       If it works the output will include:
+
+       "vddk_default_libdir=..."
+           The compiled-in library path.  Use "libdir=PATHNAME" to override this at runtime.
+
+       "vddk_has_nfchostport=1"
+           If this is printed then the "nfchostport=PORT" parameter is supported by this build.
+
+       "vddk_library_version=..."
+           The VDDK major library version: 6, 7, 8, ...  If this is omitted it means the library could not be loaded.
+
+       "vddk_dll=..."
+           Prints the full path to the VDDK shared library.  Since this requires a glibc extension it may not be available in all builds of the plugin.
+
+       "vddk_transport_modes=..."
+           Print the list of transport modes supported by VDDK.  This is a colon-separated list such as "file:san:hotadd:nbdssl:nbd"
+
+           This is the default set of transport modes that are tried in turn, unless you override the list using the "transports=..." parameter.
+
+       "VixDiskLib_...=1"
+           For each VDDK API that the plugin uses and which is present in the VDDK library that was loaded, we print the name of the API (eg. "VixDiskLib_Open=1").  This lets you see which optional  APIs
+           are available, such as "VixDiskLib_Flush" and "VixDiskLib_QueryAllocatedBlocks".  If the library could not be loaded then these lines are not printed.
+
+NOTES
+   Sector size limitation
+       The  VDDK  plugin  can  only  answer  read/write  requests  on whole 512 byte sector boundaries.  This is because the VDDK Read and Write APIs only take sector numbers.  If your client needs finer
+       granularity, you can use nbdkit-blocksize-filter(1):
+
+        nbdkit vddk ... --filter=blocksize minblock=512
+
+   FileLockCreateEntryDirectory errors
+       When opening a local VMDK file, VDDK needs to create a lock file in the same directory.  The directory must be writable otherwise you will see errors like:
+
+        nbdkit: vddk[1]: error: FILE: FileLockCreateEntryDirectory creation
+        failure on '/absolute/path/to/file.vmdk.lck': Permission denied
+
+       The solution is to either make the directory / filesystem writable; or open the file read-only by adding the nbdkit -r option:
+
+        nbdkit -r vddk /absolute/path/to/file.vmdk
+
+   Out of memory errors
+       In the verbose log you may see errors like:
+
+        nbdkit: vddk[3]: error: [NFC ERROR] NfcFssrvrProcessErrorMsg:
+        received NFC error 5 from server: Failed to allocate the
+        requested 2097176 bytes
+
+       This seems especially common when there are multiple parallel connections open to the VMware server with large NBD reads and writes.
+
+       Increase resource limits on the server
+
+       The error above can be caused by resource limits set on the VMware server.  You can increase the limit for the NFC service by editing /etc/vmware/hostd/config.xml and adjusting  the  "<maxMemory>"
+       setting:
+
+        <nfcsvc>
+          <path>libnfcsvc.so</path>
+          <enabled>true</enabled>
+          <maxMemory>50331648</maxMemory>
+          <maxStreamMemory>10485760</maxStreamMemory>
+        </nfcsvc>
+
+       and restarting the "hostd" service:
+
+        # /etc/init.d/hostd restart
+
+       For more information see https://bugzilla.redhat.com/1614276.
+
+       Limit request sizes
+
+       In  addition,  or as an alternative to adjusting the server configuration, you can use nbdkit-blocksize-filter(1) to limit the maximum request size.  By default this plugin translates NBD requests
+       directly into VDDK requests, and it appears that very large VDDK requests can cause the error seen above.
+
+       Using:
+
+        nbdkit vddk ... --filter=blocksize minblock=512 maxdata=2M
+
+       will cause nbdkit to automatically split and combine requests so that VDDK sees only sizes in the range "[512..2M]".
+
+   Error 1 (Unknown error) when opening a disk
+       Opening a disk fails with an error like:
+
+        nbdkit: vddk[1]: debug: VixDiskLib: VixDiskLib_OpenEx:
+        Cannot open disk <name>. Error 1 (Unknown error) at <line>.
+
+       This common and totally useless error message can be printed by VDDK for lots of reasons.  Make sure debugging is enabled and look at any debug messages printed before this to  find  out  what  is
+       really going on.  Common reasons are listed below.
+
+       The thumbprint parameter is wrong
+
+       Verify whether the "thumbprint" parameter matches the SHA1 fingerprint of the remote VMware server.  See "THUMBPRINTS" above for how to set this correctly.
+
+       The guest is using an "Independent" mode disk
+
+       In debugging output you will see messages including:
+
+        GetFileName: Cannot create disk spec for disk <name>.
+        Error occurred when obtaining the file name for <name>.
+
+       If  the  Disk  Mode  is  "Independent-Persistent" or "Independent-Nonpersistent", then VDDK ≥ 7 has a bug where it cannot open these disks.  The only known workarounds are to use VDDK ≤ 6.7, or to
+       change the Disk Mode to a regular dependent disk.
+
+   Troubleshooting performance problems
+       VDDK has very uneven performance with some operations being very slow.  This plugin has options to allow you to debug performance issues.  If your application has a debug  or  diagnostic  setting,
+       add the following nbdkit command line options:
+
+        -v -D nbdkit.backend.datapath=0 -D vddk.datapath=0 -D vddk.stats=1
+
+       "-v" enables verbose messages and the two datapath options disable the very verbose per-read/-write messages.  "-D vddk.stats=1" enables a summary when nbdkit exits of the cumulative time taken in
+       each  VDDK  function,  the  number  of  times  each  function  was  called,  and  (for read and write) the number of bytes transferred.  An example of what those stats look like can be found here:
+       https://gitlab.com/nbdkit/nbdkit/-/commit/5c80f0d290db45a679d55baf37ff39bacb8ce7ec
+
+       You can interpret the stats as follows:
+
+       "Read"
+           The cumulative time spent waiting for VDDK to return from "VixDiskLib_Read" calls, the number of times this function was called, and the total bytes read.  You can use this  to  determine  the
+           read bandwidth to the VMware server.
+
+       "Write"
+       "Flush"
+           Same as above, but for writing and flushing writes.
+
+       "ReadAsync"
+       "WriteAsync"
+           Same as above, but for asynchronous read and write calls introduced in nbdkit 1.30.  Unfortunately at the moment the amount of time spent in these calls is not accounted for correctly.
+
+       "QueryAllocatedBlocks"
+           This call is used to query information about the sparseness of the remote disk.  It is only available in VDDK ≥ 6.7.  The call is notably very slow in all versions of VMware we have tested.
+
+       "Open"
+       "Close"
+       "ConnectEx"
+       "Disconnect"
+       "InitEx"
+       "Exit"
+           The cumulative time spent connecting and disconnecting from the VMware server, which can also be very slow.
+
+   Failure to load libssl.so.3 on RHEL 8
+       With VDDK ≥ 8.0.2 on Red Hat Enterprise Linux 8:
+
+        nbdkit: error: libssl.so.3: cannot open shared object file:
+        No such file or directory
+
+       This is a bug in VDDK.  The workaround is to use VDDK 8.0.1.  See also: https://issues.redhat.com/browse/RHEL-28533
+
+   Extents information may not be reliable for local VMDK files
+       The  underlying  "QueryAllocatedBlocks"  call  which  we use to return extents information does not seem to work reliably for local VMDK files, often returning wildly incorrect information such as
+       showing allocated files to be completely sparse.  This can affect sparseness-aware tools like nbdcopy(1).  If you see this you can ignore sparseness information by adding --filter=noextents on the
+       nbdkit command line (see nbdkit-noextents-filter(1)).
+
+DEBUG FLAGS
+       Debugging messages can be very helpful if you have problems connecting to VMware servers, or to find the list of available transport modes, or to diagnose SAN problems:
+
+        nbdkit -f -v vddk file=FILENAME [...]
+
+       Additional debug flags are available:
+
+       -D vddk.diskinfo=1
+           Debug disk information returned by "GetInfo".
+
+       -D vddk.extents=1
+           Debug extents returned by "QueryAllocatedBlocks".
+
+       -D vddk.datapath=0
+           Suppress debugging of datapath calls ("Read", "ReadAsync", "Write" and "WriteAsync").
+
+       -D vddk.stats=1
+           When the plugin exits print some statistics about each VDDK call.
+
+FILES
+       $plugindir/nbdkit-vddk-plugin.so
+           The plugin.
+
+           Use "nbdkit --dump-config" to find the location of $plugindir.
+
+VERSION
+       "nbdkit-vddk-plugin" first appeared in nbdkit 1.2.
+
+SEE ALSO
+       nbdkit(1), nbdkit-plugin(3), nbdkit-blocksize-filter(1), nbdkit-noextents-filter(1), nbdkit-readahead-filter(1), nbdkit-retry-filter(1), nbdkit-scan-filter(1),  nbdcopy(1),  nbdinfo(1),  virsh(1),
+       https://gitlab.com/nbdkit/vddk-remote, https://libvirt.org/drvesx.html, https://www.vmware.com/support/developer/vddk/, VMware document “Best Practices for NBD Transport”.
+
+AUTHORS
+       Richard W.M. Jones
+
+COPYRIGHT
+       Copyright Red Hat
+
+LICENSE
+       Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+       •   Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+       •   Redistributions  in  binary  form  must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the
+           distribution.
+
+       •   Neither the name of Red Hat nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+       THIS SOFTWARE IS PROVIDED BY RED HAT AND CONTRIBUTORS ''AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND  FITNESS  FOR  A
+       PARTICULAR  PURPOSE  ARE  DISCLAIMED.  IN  NO  EVENT  SHALL RED HAT OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+       LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON  ANY  THEORY  OF  LIABILITY,  WHETHER  IN  CONTRACT,  STRICT
+       LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+nbdkit-1.42.6                                                                                    2025-07-29                                                                           nbdkit-vddk-plugin(1)

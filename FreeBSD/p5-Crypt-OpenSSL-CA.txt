@@ -1,0 +1,708 @@
+Crypt::OpenSSL::CA(3)                      User Contributed Perl Documentation
+
+
+NAME
+       Crypt::OpenSSL::CA - The crypto parts of an X509v3 Certification
+       Authority
+
+SYNOPSIS
+           use Crypt::OpenSSL::CA;
+
+           my $dn = Crypt::OpenSSL::CA::X509_NAME->new
+                   (C => "fr", CN => "test");
+
+           my $privkey = Crypt::OpenSSL::CA::PrivateKey
+                ->parse($pem_private_key, -password => "secret");
+           my $pubkey = $privkey->get_public_key;
+
+           my $x509 = Crypt::OpenSSL::CA::X509->new($pubkey);
+           $x509->set_serial("0xdeadbeef");
+           $x509->set_subject_DN($dn);
+           $x509->set_issuer_DN($dn);
+           $x509->set_extension("basicConstraints", "CA:TRUE",
+                                -critical => 1);
+           $x509->set_extension("subjectKeyIdentifier",
+                                $pubkey->get_openssl_keyid);
+           $x509->set_extension("authorityKeyIdentifier",
+                                { keyid => $pubkey->get_openssl_keyid });
+           my $pem = $x509->sign($privkey, "sha1");
+
+DESCRIPTION
+       This module performs the cryptographic operations necessary to issue
+       X509 certificates and certificate revocation lists (CRLs).  It is
+       implemented as a Perl wrapper around the popular OpenSSL library.
+
+       Crypt::OpenSSL::CA is an essential building block to create an X509v3
+       Certification Authority or CA, a crucial part of an X509 Public Key
+       Infrastructure (PKI). A CA is defined by RFC4210 and friends (see
+       Crypt::OpenSSL::CA::Resources) as a piece of software that can (among
+       other things) issue and revoke X509v3 certificates.  To perform the
+       necessary cryptographic operations, it needs a private key that is kept
+       secret (currently only RSA is supported).
+
+       Despite the name and unlike the "openssl ca" command-line tool,
+       Crypt::OpenSSL::CA is not designed as a full-fledged X509v3
+       Certification Authority (CA) in and of itself: some key features are
+       missing, most notably persistence (e.g. to remember issued and revoked
+       certificates between two CRL issuances) and security-policy based
+       screening of certificate requests.  Crypt::OpenSSL::CA mostly does
+       ``just the crypto'', and this is deliberate: OpenSSL's features such as
+       configuration file parsing, that are best implemented in Perl, have
+       been left out for maximum flexibility.
+
+   API Overview
+       The crypto in Crypt::OpenSSL::CA is implemented using the OpenSSL
+       cryptographic library, which is lifted to Perl thanks to a bunch of
+       glue code in C and a lot of magic in Inline::C and
+       Crypt::OpenSSL::CA::Inline::C.
+
+       Most of said glue code is accessible as class and instance methods in
+       the ancillary classes such as "Crypt::OpenSSL::CA::X509" and
+       "Crypt::OpenSSL::CA::X509_CRL"; the parent namespace Crypt::OpenSSL::CA
+       is basically empty.  Each of these ancillary classes wrap around
+       OpenSSL's ``object class'' with the same name (e.g.
+       "Crypt::OpenSSL::CA::X509_NAME" corresponds to the "X509_NAME_foo"
+       functions in "libcrypto.so").  OpenSSL concepts are therefore made
+       available in an elegant object-oriented API; moreover, they are
+       subjugated to Perl's automatic garbage collection, which allows the
+       programmer to stop worrying about that.  Additionally,
+       Crypt::OpenSSL::CA provides some glue in Perl too, which is mostly
+       syntactic sugar to get a more Perlish API out of the C in OpenSSL.
+
+       Note that the OpenSSL-wrapping classes don't strive for completeness of
+       the exposed API; rather, they seek to export enough features to make
+       them simultaneously testable and useful for the purpose of issuing X509
+       certificates and CRLs.  In particular, Crypt::OpenSSL::CA is currently
+       not so good at parsing already-existing cryptographic artifacts
+       (However, "PATCHES WELCOME", plus there are other modules on the CPAN
+       that already do that.)
+
+   Error Management
+       All functions and methods in this module, including XS code, throw
+       exceptions as if by "die" in perlfunc if anything goes wrong.  The
+       resulting exception is either a plain string (in case of memory
+       exhaustion problems, incorrect arguments, and so on) or an exception
+       blessed in class Crypt::OpenSSL::CA::Error with the following
+       structure:
+
+         {
+           -message => $message,
+           -openssl => [
+                         $openssl_error_1,
+                         $openssl_error_2,
+                         ...
+                       ]
+         }
+
+       where $message is a message by Crypt::OpenSSL::CA and the "-openssl"
+       list is the contents of OpenSSL's error stack at the time when the
+       exception was raised.
+
+Crypt::OpenSSL::CA::ASN1_INTEGER
+       This Perl class wraps an integer of arbitrary size to be handled by
+       OpenSSL. It is used for serial numbers of certificates and CRLs (see
+       "Crypt::OpenSSL::CA::X509" and "Crypt::OpenSSL::CA::X509_CRL").
+
+   parse ($that)
+       Parses $that, which can be either a Perl integer, an object with a
+       "to_hex" method (such as instance of Math::BigInt), or a hexadecimal
+       string that starts with "0x". Returns an instance of
+       "Crypt::OpenSSL::CA::ASN1_INTEGER".
+
+   parse_hex ($hexserial)
+       Parses $hexserial, a lowercase, hexadecimal string that starts with
+       either "0x" or "-0x"; and returns it as an instance of
+       "Crypt::OpenSSL::CA::ASN1_INTEGER". Raises an exception in case of
+       failure.
+
+   serialize ()
+       Returns this "Crypt::OpenSSL::CA::ASN1_INTEGER" as a lowercase
+       hexadecimal string starting with 0x. This is also the method that
+       implements stringification overload.
+
+Crypt::OpenSSL::CA::ASN1_TIME
+       This Perl class wraps a timestamp to be handled by OpenSSL. It is used
+       for NotBefore and NotAfter fields in certificates, and validity and
+       revocation dates (*not* compromise times) in CRLs.
+
+   parse ($datetime)
+       Parses $datetime, a date in "Zulu" format (that is, yyyymmddhhmmssZ,
+       with a literal Z at the end), and returns a newly-allocated
+       "Crypt::OpenSSL::CA::ASN1_TIME" object.
+
+       The internal encoding is "utcTime" for dates in the year 2049 or before
+       and "generalizedTime" for dates in 2050 and after. RFC3280 dictates
+       that this convention should apply to most date-related fields in X509
+       certificates and CRLs (as per sections 4.1.2.5 for certificate validity
+       periods, and 5.1.2.4 through 5.1.2.6 for CRL validity periods and
+       certificate revocation times). By contrast, the "invalidityDate" CRL
+       revocation reason extension is always in "generalizedTime" and this
+       function should not be used there.
+
+   serialize ()
+       Return the date contained in this "Crypt::OpenSSL::CA::ASN1_TIME"
+       object in human-readable form (English, 3-letter month first, GMT).
+
+   zulu ()
+       Returns the date as a string in the GMT timezone, with the format
+       yyyymmddhhmmssZ (it's a literal Z at the end, meaning "Zulu" in case
+       you care).
+
+Crypt::OpenSSL::CA::X509_NAME
+       This Perl class wraps around the X509_NAME_* functions of OpenSSL, that
+       deal with X500 DNs.  Unlike OpenSSL's X509_NAME,
+       Crypt::OpenSSL::CA::X509_NAME objects are immutable: only the
+       constructor can alter them.
+
+   new ($dnkey1, $dnval1, ...)
+       Constructs and returns a new Crypt::OpenSSL::CA::X509_NAME object;
+       implemented in terms of X509_NAME_add_entry_by_txt(3).  The RDN
+       elements are to be passed in the same order as they will appear in the
+       "RDNSequence" ASN.1 object that will be constructed, that is, the most-
+       significant parts of the DN (e.g. "C") must come first.  Be warned that
+       this is order is the reverse of RFC4514-compliant DNs such as those
+       that appear in LDAP, as per section 2.1 of said RFC4514.
+
+       Keys can be given either as uppercase short names (e.g. "OU" - "ou" is
+       not allowed), long names with the proper case
+       ("organizationalUnitName") or dotted-integer OIDs ("2.5.4.11").  Values
+       are interpreted as strings.  Certain keys (especially "countryName")
+       limit the range of acceptable values.
+
+       All DN values will be converted to UTF-8 if needed, and the returned DN
+       string encodes all its RDN components as "UTF8String"s regardless of
+       their value, as mandated by RFC3280 section 4.1.2.4.
+
+       new_utf8 does not support multiple AVAs in a single RDN.  If you don't
+       understand this sentence, consider yourself a lucky programmer.
+
+       See also "get_subject_DN" and "get_issuer_DN" for an alternative way of
+       constructing instances of this class.
+
+   new_utf8 ($dnkey1, $dnval1, ...)
+       Backward-compatible alias for "new".
+
+   to_string ()
+       Returns a string representation of this DN object. Uses
+       X509_NAME_oneline(3).  The return value does not conform to any
+       standard; in particular it does not comply with RFC4514, and embedded
+       Unicode characters will not be dealt with elegantly.  to_string() is
+       therefore intended only for debugging.
+
+   to_asn1 ()
+       Returns an ASN.1 DER representation of this DN object, as a string of
+       bytes.
+
+Crypt::OpenSSL::CA::PublicKey
+       This Perl class wraps around the public key abstraction of OpenSSL.
+       Crypt::OpenSSL::CA::PublicKey objects are immutable.
+
+   parse_RSA ($pemstring)
+       Parses an RSA public key from $pemstring and returns an
+       Crypt::OpenSSL::CA::PublicKey instance.  See also "get_public_key" for
+       an alternative way of creating instances of this class.
+
+   validate_SPKAC ($spkacstring)
+   validate_PKCS10 ($pkcs10string)
+       Validates a "CSR" in Crypt::OpenSSL::CA::AlphabetSoup of the respective
+       type and returns the public key as an object of class
+       Crypt::OpenSSL::CA::PublicKey if the signature is correct.  Throws an
+       error if the signature is invalid.  validate_SPKAC($spkacstring) wants
+       the ``naked'' Base64 string, without a leading "SPKAC=" marker, URI
+       escapes, newlines or any such thing.
+
+       Note that those methods are in Crypt::OpenSSL::CA only by virtue of
+       them requiring cryptographic operations, best implemented using
+       OpenSSL.  We definitely do not want to emulate the request validity
+       checking features of "openssl ca", which are extremely inflexible and
+       that a full-fledged PKI built on top of Crypt::OpenSSL::CA would have
+       to reimplement anyway.  If one wants to parse other details of the
+       SPKAC or PKCS#10 messages (including the challenge password if
+       present), one should use other means such as Convert::ASN1; ditto if
+       one just wants to extract the public key and doesn't care about the
+       signature.
+
+   to_PEM
+       Returns the contents of the public key as a PEM string.
+
+   get_modulus ()
+       Returns the modulus of this Crypt::OpenSSL::CA::PublicKey instance,
+       assuming that it is an RSA or DSA key.  This is similar to the output
+       of "openssl x509 -modulus", except that the leading "Modulus="
+       identifier is trimmed and the returned string is not newline-
+       terminated.
+
+   get_openssl_keyid ()
+       Returns a cryptographic hash over this public key, as OpenSSL's
+       "subjectKeyIdentifier=hash" configuration directive to "openssl ca"
+       would compute it for a certificate that contains this key.  The return
+       value is a string of colon-separated pairs of uppercase hex digits,
+       adequate e.g. for passing as the $value parameter to "set_extension".
+
+Crypt::OpenSSL::CA::PrivateKey
+       This Perl class wraps around the private key abstraction of OpenSSL.
+       Crypt::OpenSSL::CA::PrivateKey objects are immutable.
+
+   parse ($pemkey, %named_options)
+       Parses a private key $pemkey and returns an instance of
+       Crypt::OpenSSL::CA::PrivateKey.  Available named options are:
+
+       -password => $password
+           Tells that $pemkey is a software key encrypted with password
+           $password.
+
+       Only software keys are supported for now (see "TODO" about engine
+       support).
+
+   get_public_key ()
+       Returns the public key associated with this
+       Crypt::OpenSSL::CA::PrivateKey instance, as an
+       "Crypt::OpenSSL::CA::PublicKey" object.
+
+Crypt::OpenSSL::CA::X509
+       This Perl class wraps around the X509 certificate creation routines of
+       OpenSSL.  Crypt::OpenSSL::CA::X509 objects are mutable; they typically
+       get constructed piecemeal, and signed once at the end with "sign".
+
+       There is also limited support in this class for parsing certificates
+       using "parse" and various read accessors, but only insofar as it helps
+       Crypt::OpenSSL::CA be feature-compatible with OpenSSL's command-line
+       CA.  Namely, Crypt::OpenSSL::CA::X509 is currently only able to extract
+       the information that customarily gets copied over from the CA's own
+       certificate to the certificates it issues: the DN (with
+       "get_subject_DN" on the CA's certificate), the serial number (with
+       "get_serial") and the public key identifier (with "get_subject_keyid").
+       Patches are of course welcome, but TIMTOWTDI: please consider using a
+       dedicated ASN.1 parser such as Convert::ASN1 or Crypt::X509 instead.
+
+   Support for OpenSSL-style extensions
+       "set_extension" and "add_extension" work with OpenSSL's
+       X509V3_EXT_METHOD mechanism, which is summarily described in
+       "openssl.txt" in Crypt::OpenSSL::CA::Resources.  This means that most
+       X509v3 extensions that can be set through OpenSSL's configuration file
+       can be passed to this module as Perl strings in exactly the same way;
+       see "set_extension" for details.
+
+   Constructors and Methods
+       new ($pubkey)
+
+       Create an empty certificate shell waiting to be signed for public key
+       $pubkey, an instance of "Crypt::OpenSSL::CA::PublicKey".  All mandatory
+       values in an X509 certificate are set to a dummy default value, which
+       the caller will probably want to alter using the various set_* methods
+       in this class. Returns an instance of the class
+       Crypt::OpenSSL::CA::X509, wrapping around an OpenSSL "X509 *" handle.
+
+       parse ($pemcert)
+
+       Parses a PEM-encoded X509 certificate and returns an instance of
+       Crypt::OpenSSL::CA::X509 that already has a number of fields set.
+       Despite this, the returned object can be "sign"ed anew if one wants.
+
+       verify ($pubkey)
+
+       Verifies that this certificate is validly signed by $pubkey, an
+       instance of "Crypt::OpenSSL::CA::PublicKey", and throws an exception if
+       not.
+
+       get_public_key ()
+
+       Returns an instance of "Crypt::OpenSSL::CA::PublicKey" that corresponds
+       to the RSA or DSA public key in this certificate.  Memory-management
+       wise, this performs a copy of the underlying "EVP_PKEY *" structure;
+       therefore it is safe to destroy this certificate object afterwards and
+       keep only the returned public key.
+
+       get_subject_DN ()
+
+       get_issuer_DN ()
+
+       Returns the subject DN (resp. issuer DN) of this
+       Crypt::OpenSSL::CA::X509 instance, as an
+       "Crypt::OpenSSL::CA::X509_NAME" instance.  Memory-management wise, this
+       performs a copy of the underlying "X509_NAME *" structure; therefore it
+       is safe to destroy this certificate object afterwards and keep only the
+       returned DN.
+
+       set_subject_DN ($dn_object)
+
+       set_issuer_DN ($dn_object)
+
+       Sets the subject and issuer DNs from "Crypt::OpenSSL::CA::X509_NAME"
+       objects.
+
+       get_subject_keyid ()
+
+       Returns the contents of the "subjectKeyIdentifier" field, if present,
+       as a string of colon-separated pairs of uppercase hex digits.  If no
+       such extension is available, returns undef.  Depending on the whims of
+       the particular CA that signed this certificate, this may or may not be
+       the same as "$self->get_public_key->get_openssl_keyid".
+
+       get_serial ()
+
+       Returns the serial number as an instance of
+       "Crypt::OpenSSL::CA::ASN1_INTEGER".
+
+       set_serial ($serial)
+
+       Sets the serial number to $serial, which must be an instance of
+       "Crypt::OpenSSL::CA::ASN1_INTEGER" (or something that can be
+       "->parse()"d into one).
+
+       get_notBefore ()
+
+       set_notBefore ($startdate)
+
+       get_notAfter ()
+
+       set_notAfter ($enddate)
+
+       Gets or sets the validity period of the certificate. The setter
+       parameter must be an instance of "Crypt::OpenSSL::CA::ASN1_TIME" (or
+       something that can be "->parse()"d into one). The getter return value
+       is in "Zulu" format (see "zulu").
+
+       extension_by_name ($extname)
+
+       Returns true if and only if $extname is a valid X509v3 certificate
+       extension, susceptible of being passed to "set_extension" and friends.
+
+       set_extension ($extname, $value, %options, %more_openssl_config)
+
+       Sets X509 extension $extname to the value $value in the certificate,
+       erasing any extension previously set for $extname in this certificate.
+       To make a long story short, $extname and $value may be almost any
+       explicit legit key-value pair in the OpenSSL configuration file's
+       section that is pointed to by the "x509_extensions" parameter (see the
+       details in the x509v3_config(5ssl) manpage provided with OpenSSL).  For
+       example, OpenSSL's
+
+          subjectKeyIdentifier=00:DE:AD:BE:EF
+
+       becomes
+
+          $cert->set_extension( subjectKeyIdentifier => "00:DE:AD:BE:EF");
+
+       However, implicit extension values (ie, deducted from the CA
+       certificate or the subject DN) are not supported:
+
+         $cert->set_extension("authorityKeyIdentifier",
+                              "keyid:always,issuer:always");  # WRONG!
+
+         $cert->set_extension(subjectAltName  => 'email:copy');  # WRONG!
+
+       The reason is that we don't want the API to insist on the CA
+       certificate when setting these extensions.  You can do this instead:
+
+         $cert->set_extension(authorityKeyIdentifier =>
+                              { keyid  => $ca->get_subject_keyid(),
+                                issuer => $ca->get_issuer_dn(),
+                                serial => $ca->get_serial() });
+
+         $cert->set_extension(subjectAltName  => 'foo@example.com');
+
+       where $ca is the CA's "Crypt::OpenSSL::CA::X509" object, constructed
+       for instance with "parse".
+
+       (Note in passing, that using the "issuer" and "serial" elements for an
+       authorityKeyIdentifier, while discussed in RFC3280 section 4.2.1.1, is
+       frowned upon in "X509 Style Guide" in Crypt::OpenSSL::CA::Resources).
+
+       The arguments to set_extension after the first two are interpreted as a
+       list of key-value pairs.  Those that start with a hyphen are the named
+       options; they are interpreted like so:
+
+       -critical => 1
+           Sets the extension as critical.  You may alternatively use the
+           OpenSSL trick of prepending "critical," to $value, but that's ugly.
+
+       -critical => 0
+           Do not set the extension as critical.  If "critical" is present in
+           $value, an exception will be raised.
+
+       The extra key-value key arguments that do not start with a hyphen are
+       passed to OpenSSL as sections in its configuration file object; the
+       corresponding values must therefore be references to hash tables.  For
+       example, here is how to transcribe the "certificatePolicies" example
+       from "openssl.txt" in Crypt::OpenSSL::CA::Resources into Perl:
+
+           $cert->set_extension(certificatePolicies =>
+                                 'ia5org,1.2.3.4,1.5.6.7.8,@polsect',
+                                -critical => 0,
+                                polsect => {
+                                   policyIdentifier => '1.3.5.8',
+                                   "CPS.1"        => 'http://my.host.name/',
+                                   "CPS.2"        => 'http://my.your.name/',
+                                   "userNotice.1" => '@notice',
+                                },
+                                notice => {
+                                   explicitText  => "Explicit Text Here",
+                                   organization  => "Organisation Name",
+                                   noticeNumbers => '1,2,3,4',
+                                });
+
+       add_extension ($extname, $value, %options, %more_openssl_config)
+
+       Just like "set_extension", except that if there is already a value for
+       this extension, it will not be removed; instead there will be a
+       duplicate extension in the certificate.  Note that this is explicitly
+       forbiden by RFC3280 section 4.2, third paragraph, so maybe you
+       shouldn't do that.
+
+       remove_extension ($extname)
+
+       Removes any and all extensions named $extname in this certificate.
+
+       dump ()
+
+       Returns a textual representation of all the fields inside the
+       (unfinished) certificate.  This is done using OpenSSL's X509_print().
+
+       sign ($privkey, $digestname)
+
+       Signs the certificate (TADA!!).  $privkey is an instance of
+       "Crypt::OpenSSL::CA::PrivateKey"; $digestname is the name of one of
+       cryptographic digests supported by OpenSSL, e.g. "sha1" or "sha256"
+       (notice that using "md5" is strongly discouraged due to security
+       considerations; see
+       <http://www.win.tue.nl/~bdeweger/CollidingCertificates/>).  Returns the
+       PEM-encoded certificate as a string.
+
+   supported_digests()
+       This is a class method (invoking it as an instance method also works
+       though).  Returns the list of all supported digest names for the second
+       argument of "sign".  The contents of this list depends on the OpenSSL
+       version and the details of how it was compiled.
+
+Crypt::OpenSSL::CA::X509_CRL
+       This Perl class wraps around OpenSSL's CRL creation features.
+
+   new ()
+   new ($version)
+       Creates and returns an empty Crypt::OpenSSL::CA::X509_CRL object.
+       $version is the CRL version, e.g. 1 or 2 or "CRLv1" or "CRLv2" for
+       idiomatics.  The default is CRLv2, as per RFC3280.  Setting the version
+       to 1 will cause add_extension() and "add_entry" with extensions to
+       throw an exception instead of working.
+
+   parse ($pem_crl)
+       Creates and returns Crypt::OpenSSL::CA::X509_CRL object parsed from
+       $pem_crl.
+
+       get_entries ()
+
+       Get information on the revoked certificates in the CRL.
+
+       In scalar context, return the number of revoked certificates. In list
+       context, return a list of hash references with keys "revocation_date"
+       and "serial".
+
+   is_crlv2 ()
+       Returns true iff this CRL object was set to CRLv2 at "new" time.
+
+   get_issuer_DN ()
+   set_issuer_DN ($dn_object)
+       Gets / sets the CRL's issuer name as / from an
+       "Crypt::OpenSSL::CA::X509_NAME" object.
+
+   get_lastUpdate ()
+   get_nextUpdate ()
+       Gets the validity period of the CRL. Returns an instance of
+       "Crypt::OpenSSL::CA::ASN1_TIME".
+
+   set_lastUpdate ($lastUpdate)
+   set_nextUpdate ($nextUpdate)
+       Sets the validity period of the CRL.  The parameter must be an instance
+       of "Crypt::OpenSSL::CA::ASN1_TIME" (or something that can be
+       "->parse()"d into one).
+
+   set_extension ($extname, $value, %options, %more_openssl_config)
+   add_extension ($extname, $value, %options, %more_openssl_config)
+   remove_extension ($extname)
+       Manage CRL extensions as per RFC3280 section 5.2. These methods work
+       like their respective counterparts in Crypt::OpenSSL::CA::X509.
+       Recognized CRL extensions are:
+
+       authorityKeyIdentifier
+           Works the same as in "Crypt::OpenSSL::CA::X509". Implements RFC3280
+           section 5.2.1.
+
+       crlNumber
+           An extension (described in RFC3280 section 5.2.3, and made
+           mandatory by section 5.1.2.1) to identify the CRL by a
+           monotonically increasing sequence number.  The value of this
+           extension must be a serial number, with the same syntax as the
+           first argument to "set_serial".
+
+       freshestCRL
+           An optional RFC3280 extension that indicates support for delta-
+           CRLs, as described by RFC3280 section 5.2.6.  The expected $value
+           and %more_openssl_config are the same as for
+           "cRLDistributionPoints" in an extension for certificates (see
+           "Crypt::OpenSSL::CA::X509").
+
+       deltaCRLIndicator
+           An optional RFC3280 extension that indicates that this CRL is as a
+           delta-CRL, pursuant to RFC3280 section 5.2.4.  For this extension,
+           $value must be a serial number, with the same syntax as the first
+           argument to "set_serial".
+
+       Note that CRL extensions are not implemented by OpenSSL as of version
+       0.9.8c, but rather by C glue code directly in Crypt::OpenSSL::CA.
+
+   add_entry ($serial, $revocation_date, %named_options)
+       Adds an entry to the CRL. $serial is an instance of
+       "Crypt::OpenSSL::CA::ASN1_INTEGER" (or something that can be
+       "->parse()"d into one). $revocation_date is an instance of
+       "Crypt::OpenSSL::CA::ASN1_TIME" (or something that can be "->parse()"d
+       into one).
+
+       The following named options provide access to CRLv2 extensions as
+       defined in RFC3280 section 5.3:
+
+       -reason => $reason
+           Sets the revocation reason to $reason, a plain string.  Available
+           reasons are "unspecified" (which is not the same thing as not
+           setting a revocation reason at all), "keyCompromise",
+           "CACompromise", "affiliationChanged", "superseded",
+           "cessationOfOperation", "certificateHold" and "removeFromCRL".
+
+       -compromise_time => $time
+           The time at which the compromise is suspected to have taken place,
+           which may be earlier than the $revocation_date.  The syntax for
+           $time is the same as that for $revocation_date.  Note that this CRL
+           extension only makes sense if -reason is either keyCompromise or
+           CACompromise.
+
+       -hold_instruction => $oid
+       -hold_instruction => $string
+           Sets the hold instruction token to $oid (which is a string
+           containing a dot-separated sequence of decimal integers), or
+           $string (one of the predefined string constants "none",
+           "callIssuer", "reject" and "pickupToken", case-insensitive).  This
+           option only makes sense if the revocation reason is
+           "certificateHold".  See also
+           "Crypt::OpenSSL::CA::X509_CRL::holdInstructionNone",
+           "Crypt::OpenSSL::CA::X509_CRL::holdInstructionCallIssuer",
+           "Crypt::OpenSSL::CA::X509_CRL::holdInstructionReject" and
+           "Crypt::OpenSSL::CA::X509_CRL::holdInstructionPickupToken".
+
+       All the above options should be specified at most once.  If they are
+       specified several times, only the last occurence in the parameter list
+       will be taken into account.
+
+       The criticality is set according to the recommendations of RFC3280
+       section 5.3; practically speaking, all certificate entry extensions are
+       noncritical, given that 5.3.4-style "certificateIssuer" is
+       UNIMPLEMENTED.  Support for critical certificate entry extensions may
+       be added in a future release of Crypt::OpenSSL::CA.
+
+   sign ($privkey, $digestname)
+       Signs the CRL.  $privkey is an instance of
+       "Crypt::OpenSSL::CA::PrivateKey"; $digestname is the name of one of
+       cryptographic digests supported by OpenSSL, e.g. "sha1" or "sha256"
+       (notice that using "md5" is strongly discouraged due to security
+       considerations; see
+       <http://www.win.tue.nl/~bdeweger/CollidingCertificates/>).  Returns the
+       PEM-encoded CRL as a string.
+
+   supported_digests()
+       This is a class method (invoking it as an instance method also works
+       though).  Returns the list of all supported digest names for the second
+       argument of "sign".  The contents of this list depends on the OpenSSL
+       version and the details of how it was compiled.
+
+   dump ()
+       Returns a textual representation of all the fields inside the
+       (unfinished) CRL.  This is done using OpenSSL's X509_CRL_print().
+
+   Crypt::OpenSSL::CA::X509_CRL::holdInstructionNone
+   Crypt::OpenSSL::CA::X509_CRL::holdInstructionCallIssuer
+   Crypt::OpenSSL::CA::X509_CRL::holdInstructionReject
+   Crypt::OpenSSL::CA::X509_CRL::holdInstructionPickupToken
+       OID constants for the respective hold instructions (see the
+       -hold_instruction named option in "add_entry").  All these functions
+       return a string containing a dot-separated sequence of decimal
+       integers.
+
+TODO
+       Add centralized key generation.
+
+       Add some comfort features such as the ability to transfer certification
+       information automatically from the CA certificate to the issued
+       certificates and CRLs, RFC3280 compliance checks (especially as regards
+       the criticality of X509v3 certificate extensions) and so on.
+
+       OpenSSL engines are only a few hours of work away, but aren't done yet.
+
+       Key formats other than RSA are not (fully) supported, and at any rate,
+       not unit-tested.
+
+       Only the subset of the CRL extensions required to support delta-CRLs is
+       working, as documented in Crypt::OpenSSL::CA::X509_CRL; RFC3280
+       sections 5.2.2 ("issuerAltName"), 5.2.5 ("issuingDistributionPoint")
+       and 5.3.4 ("certificateIssuer" entry extension) are UNIMPLEMENTED.  I
+       am quite unlikely to implement these arcane parts of the specification
+       myself; "PATCHES WELCOME".
+
+SEE ALSO
+       Crypt::OpenSSL::CA::Resources, Crypt::OpenSSL::CA::Inline::C.
+
+AUTHOR
+       Dominique QUATRAVAUX, "<domq at cpan.org>"
+
+PATCHES WELCOME
+       If you feel that a key feature is missing in Crypt::OpenSSL::CA, please
+       feel free to send me patches; I'll gladly apply them and re-release the
+       whole module within a short time.  The only thing I require is that the
+       patch cover all three of documentation, unit tests and code; and that
+       tests pass successfully afterwards, of course, at least on your own
+       machine.  In particular, this means that patches that only add code
+       will be declined, no matter how desirable the new features are.
+
+BUGS
+       Please report any bugs or feature requests to "bug-crypt-openssl-ca at
+       rt.cpan.org", or through the web interface at
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Crypt-OpenSSL-CA>.  I
+       will be notified, and then you'll automatically be notified of progress
+       on your bug as I make changes.
+
+SUPPORT
+       You can find documentation for this module with the perldoc command.
+
+           perldoc Crypt::OpenSSL::CA
+
+       You can also look for information at:
+
+       •   AnnoCPAN: Annotated CPAN documentation
+
+           <http://annocpan.org/dist/Crypt-OpenSSL-CA>
+
+       •   CPAN Ratings
+
+           <http://cpanratings.perl.org/d/Crypt-OpenSSL-CA>
+
+       •   RT: CPAN's request tracker
+
+           <http://rt.cpan.org/NoAuth/Bugs.html?Dist=Crypt-OpenSSL-CA>
+
+       •   Search CPAN
+
+           <http://search.cpan.org/dist/Crypt-OpenSSL-CA>
+
+ACKNOWLEDGEMENTS
+       IDEALX (<http://www.idealx.com/>) is the company that put food on my
+       family's table for 5 years while I was busy coding IDX-PKI.  I owe them
+       pretty much everything I know about PKIX, and a great deal of my
+       todays' Perl-fu.  However, the implementation of this module is
+       original and does not re-use any code in IDX-PKI.
+
+COPYRIGHT & LICENSE
+       Copyright (C) 2007 Siemens Business Services France SAS, all rights
+       reserved.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2025-08-09             Crypt::OpenSSL::CA(3)

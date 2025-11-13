@@ -1,0 +1,660 @@
+DBIx::Connector(3)    User Contributed Perl Documentation   DBIx::Connector(3)
+
+
+NAME
+       DBIx::Connector - Fast, safe DBI connection and transaction management
+
+SYNOPSIS
+         use DBIx::Connector;
+
+         # Create a connection.
+         my $conn = DBIx::Connector->new($dsn, $username, $password, {
+             RaiseError => 1,
+             AutoCommit => 1,
+         });
+
+         # Get the database handle and do something with it.
+         my $dbh  = $conn->dbh;
+         $dbh->do('INSERT INTO foo (name) VALUES (?)', undef, 'Fred' );
+
+         # Do something with the handle more efficiently.
+         $conn->run(fixup => sub {
+             $_->do('INSERT INTO foo (name) VALUES (?)', undef, 'Fred' );
+         });
+
+DESCRIPTION
+       DBIx::Connector provides a simple interface for fast and safe DBI
+       connection and transaction management. Connecting to a database can be
+       expensive; you don't want your application to re-connect every time you
+       need to run a query.  The efficient thing to do is to hang on to a
+       database handle to maintain a connection to the database in order to
+       minimize that overhead. DBIx::Connector lets you do that without having
+       to worry about dropped or corrupted connections.
+
+       You might be familiar with Apache::DBI and with the DBI's
+       connect_cached() constructor. DBIx::Connector serves a similar need,
+       but does a much better job. How is it different? I'm glad you asked!
+
+       •   Fork Safety
+
+           Like Apache::DBI, but unlike connect_cached(), DBIx::Connector
+           create a new database connection if a new process has been
+           "fork"ed. This happens all the time under mod_perl, in POE
+           applications, and elsewhere. Works best with DBI 1.614 and higher.
+
+       •   Thread Safety
+
+           Unlike Apache::DBI or connect_cached(), DBIx::Connector will create
+           a new database connection if a new thread has been spawned. As with
+           "fork"ing, spawning a new thread can break database connections.
+
+       •   Works Anywhere
+
+           Unlike Apache::DBI, DBIx::Connector runs anywhere -- inside of
+           mod_perl or not. Why limit yourself?
+
+       •   Explicit Interface
+
+           DBIx::Connector has an explicit interface. There is none of the
+           magical action-at-a-distance crap that Apache::DBI is guilty of,
+           and no global caching. I've personally diagnosed a few issues with
+           Apache::DBI's magic, and killed it off in two different projects in
+           favor of connect_cached(), only to be tripped up by other gotchas.
+           No more.
+
+       •   Optimistic Execution
+
+           If you use run() and txn(), the database handle will be passed
+           without first pinging the server. For the 99% or more of the time
+           when the database is just there, you'll save a ton of overhead
+           without the ping.
+
+       DBIx::Connector's other feature is transaction management. Borrowing an
+       interface from DBIx::Class, DBIx::Connector offers an API that
+       efficiently handles the scoping of database transactions so that you
+       needn't worry about managing the transaction yourself. Even better, it
+       offers an API for savepoints if your database supports them. Within a
+       transaction, you can scope savepoints to behave like subtransactions,
+       so that you can save some of your work in a transaction even if part of
+       it fails. See txn() and svp() for the goods.
+
+USAGE
+       Unlike Apache::DBI and connect_cached(), DBIx::Connector doesn't cache
+       database handles. Rather, for a given connection, it makes sure that
+       the connection is just there whenever you want it, to the extent
+       possible. The upshot is that it's safe to create a connection and then
+       keep it around for as long as you need it, like so:
+
+         my $conn = DBIx::Connector->new(@args);
+
+       You can store the connection somewhere in your app where you can easily
+       access it, and for as long as it remains in scope, it will try its
+       hardest to maintain a database connection. Even across "fork"s
+       (especially with DBI 1.614 and higher) and new threads, and even calls
+       to "$conn->dbh->disconnect". When you don't need it anymore, let it go
+       out of scope and the database connection will be closed.
+
+       The upshot is that your code is responsible for hanging onto a
+       connection for as long as it needs it. There is no magical connection
+       caching like in Apache::DBI and connect_cached().
+
+   Execution Methods
+       The real utility of DBIx::Connector comes from the use of the execution
+       methods, run(), txn(), or svp().  Instead of this:
+
+         $conn->dbh->do($query);
+
+       Try this:
+
+         $conn->run(sub { $_->do($query) }); # returns retval from the sub {...}
+
+       The difference is that the run() optimistically assumes that an
+       existing database handle is connected and executes the code reference
+       without pinging the database. The vast majority of the time, the
+       connection will of course still be open. You therefore save the
+       overhead of a ping query every time you use run() (or txn()).
+
+       Of course, if a block passed to run() dies because the DBI isn't
+       actually connected to the database you'd need to catch that failure and
+       try again.  DBIx::Connector provides a way to overcome this issue:
+       connection modes.
+
+       Connection Modes
+
+       When calling run(), txn(), or svp(), each executes within the context
+       of a "connection mode." The supported modes are:
+
+       •   "ping"
+
+       •   "fixup"
+
+       •   "no_ping"
+
+       Use them via an optional first argument, like so:
+
+         $conn->run(ping => sub { $_->do($query) });
+
+       Or set up a default mode via the mode() accessor:
+
+         $conn->mode('fixup');
+         $conn->run(sub { $_->do($query) });
+
+       The return value of the block will be returned from the method call in
+       scalar or array context as appropriate, and the block can use
+       "wantarray" to determine the context. Returning the value makes them
+       handy for things like constructing a statement handle:
+
+         my $sth = $conn->run(fixup => sub {
+             my $sth = $_->prepare('SELECT isbn, title, rating FROM books');
+             $sth->execute;
+             $sth;
+         });
+
+       In "ping" mode, run() will ping the database before running the block.
+       This is similar to what Apache::DBI and the DBI's connect_cached()
+       method do to check the database connection, and is the safest way to do
+       so. If the ping fails, DBIx::Connector will attempt to reconnect to the
+       database before executing the block. However, "ping" mode does impose
+       the overhead of the "ping" every time you use it.
+
+       In "fixup" mode, DBIx::Connector executes the block without pinging the
+       database. But in the event the block throws an exception, if
+       DBIx::Connector finds that the database handle is no longer connected,
+       it will reconnect to the database and re-execute the block. Therefore,
+       the code reference should have no side-effects outside of the database,
+       as double-execution in the event of a stale database connection could
+       break something:
+
+         my $count;
+         $conn->run(fixup => sub { $count++ });
+         say $count; # may be 1 or 2
+
+       "fixup" is the most efficient connection mode. If you're confident that
+       the block will have no deleterious side-effects if run twice, this is
+       the best option to choose. If you decide that your block is likely to
+       have too many side-effects to execute more than once, you can simply
+       switch to "ping" mode.
+
+       The default is "no_ping", but you likely won't ever use it directly,
+       and isn't recommended in any event.
+
+       Simple, huh? Better still, go for the transaction management in txn()
+       and the savepoint management in svp(). You won't be sorry, I promise.
+
+       Rollback Exceptions
+
+       In the event of a rollback in txn() or svp(), if the rollback itself
+       fails, a DBIx::Connector::TxnRollbackError or
+       DBIx::Connector::SvpRollbackError exception will be thrown, as
+       appropriate.  These classes, which inherit from
+       DBIx::Connector::RollbackError, stringify to display both the rollback
+       error and the transaction or savepoint error that led to the rollback,
+       something like this:
+
+           Transaction aborted: No such table "foo" at foo.pl line 206.
+           Transaction rollback failed: Invalid transaction ID at foo.pl line 203.
+
+       For finer-grained exception handling, you can access the individual
+       errors via accessors:
+
+       "error"
+           The transaction or savepoint error.
+
+       "rollback_error"
+           The rollback error.
+
+       For example:
+
+         use Try::Tiny;
+         try {
+             $conn->txn(sub {
+                 # ...
+             });
+         } catch {
+             if (eval { $_->isa('DBIx::Connector::RollbackError') }) {
+                 say STDERR 'Transaction aborted: ', $_->error;
+                 say STDERR 'Rollback failed too: ', $_->rollback_error;
+             } else {
+                 warn "Caught exception: $_";
+             }
+         };
+
+       If a svp() rollback fails and its surrounding txn() rollback also
+       fails, the thrown DBIx::Connetor::TxnRollbackError exception object
+       will have the savepoint rollback exception, which will be an
+       DBIx::Connetor::SvpRollbackError exception object in its "error"
+       attribute:
+
+         use Try::Tiny;
+         $conn->txn(sub {
+             try {
+                 $conn->svp(sub { # ... });
+             } catch {
+                 if (eval { $_->isa('DBIx::Connector::RollbackError') }) {
+                     if (eval { $_->error->isa('DBIx::Connector::SvpRollbackError') }) {
+                         say STDERR 'Savepoint aborted: ', $_->error->error;
+                         say STDERR 'Its rollback failed too: ', $_->error->rollback_error;
+                     } else {
+                         say STDERR 'Transaction aborted: ', $_->error;
+                     }
+                     say STDERR 'Transaction rollback failed too: ', $_->rollback_error;
+                 } else {
+                     warn "Caught exception: $_";
+                 }
+             };
+         });
+
+       But most of the time, you should be fine with the stringified form of
+       the exception, which will look something like this:
+
+           Transaction aborted: Savepoint aborted: No such table "bar" at foo.pl line 190.
+           Savepoint rollback failed: Invalid savepoint name at foo.pl line 161.
+           Transaction rollback failed: Invalid transaction identifier at fool.pl line 184.
+
+       This allows you to see you original SQL error, as well as the errors
+       for the savepoint rollback and transaction rollback failures.
+
+INTERFACE
+       And now for the nitty-gritty.
+
+   Constructor
+       "new"
+
+         my $conn = DBIx::Connector->new($dsn, $username, $password, {
+             RaiseError => 1,
+             AutoCommit => 1,
+         });
+
+       Constructs and returns a DBIx::Connector object. The supported
+       arguments are exactly the same as those supported by the DBI. Default
+       values for those parameters vary from the DBI as follows:
+
+       "RaiseError"
+           Defaults to true if unspecified, and if "HandleError" is
+           unspecified. Use of the "RaiseError" attribute, or a "HandleError"
+           attribute that always throws exceptions (such as that provided by
+           Exception::Class::DBI), is required for the exception-handling
+           functionality of run(), txn(), and svp() to work properly. Their
+           explicit use is therefor recommended if for proper error handling
+           with these execution methods.
+
+       "AutoInactiveDestroy"
+           Added in DBI 1.613. Defaults to true if unspecified. This is
+           important for safe disconnects across forking processes.
+
+       In addition, explicitly setting "AutoCommit" to true is strongly
+       recommended if you plan to use txn() or svp(), as otherwise you won't
+       get the transactional scoping behavior of those two methods.
+
+       If you would like to execute custom logic each time a new connection to
+       the database is made you can pass a sub as the "connected" key to the
+       "Callbacks" parameter. See "Callbacks" in DBI for usage and other
+       available callbacks.
+
+       Other attributes may be modified by individual drivers. See the
+       documentation for the drivers for details:
+
+       DBIx::Connector::Driver::MSSQL
+       DBIx::Connector::Driver::Oracle
+       DBIx::Connector::Driver::Pg
+       DBIx::Connector::Driver::SQLite
+       DBIx::Connector::Driver::mysql
+       DBIx::Connector::Driver::Firebird
+
+   Class Method
+       "connect"
+
+         my $dbh = DBIx::Connector->connect($dsn, $username, $password, \%attr);
+
+       Syntactic sugar for:
+
+         my $dbh = DBIx::Connector->new(@args)->dbh;
+
+       Though there's probably not much point in that, as you'll generally
+       want to hold on to the DBIx::Connector object. Otherwise you'd just use
+       the DBI, no?
+
+   Instance Methods
+       "dbh"
+
+         my $dbh = $conn->dbh;
+
+       Returns the connection's database handle. It will use a an existing
+       handle if there is one, if the process has not been "fork"ed or a new
+       thread spawned, and if the database is pingable. Otherwise, it will
+       instantiate, cache, and return a new handle.
+
+       When called from blocks passed to run(), txn(), and svp(), dbh()
+       assumes that the pingability of the database is handled by those
+       methods and skips the ping(). Otherwise, it performs all the same
+       validity checks. The upshot is that it's safe to call dbh() inside
+       those blocks without the overhead of multiple "ping"s. Indeed, it's
+       preferable to do so if you're doing lots of non-database processing in
+       those blocks.
+
+       "run"
+
+         $conn->run(ping => sub { $_->do($query) });
+
+       Simply executes the block, locally setting $_ to and passing in the
+       database handle. Returns the value returned by the block in scalar or
+       array context as appropriate (and the block can use "wantarray" to
+       decide what to do).
+
+       An optional first argument sets the connection mode, overriding that
+       set in the mode() accessor, and may be one of "ping", "fixup", or
+       "no_ping" (the default). See "Connection Modes" for further
+       explication.
+
+       For convenience, you can nest calls to run() (or txn() or svp()),
+       although the connection mode will be invoked to check the connection
+       (or not) only in the outer-most block method call.
+
+         $conn->txn(fixup => sub {
+             my $dbh = shift;
+             $dbh->do($_) for @queries;
+             $conn->run(sub {
+                 $_->do($expensive_query);
+                 $conn->txn(sub {
+                     $_->do($another_expensive_query);
+                 });
+             });
+         });
+
+       All code executed inside the top-level call to txn() will be executed
+       in a single transaction. If you'd like subtransactions, nest svp()
+       calls.
+
+       It's preferable to use dbh() to fetch the database handle from within
+       the block if your code is doing lots of non-database stuff (shame on
+       you!):
+
+         $conn->run(ping => sub {
+             parse_gigabytes_of_xml(); # Get this out of the transaction!
+             $conn->dbh->do($query);
+         });
+
+       This is because dbh() will better ensure that the database handle is
+       active and "fork"- and thread-safe, although it will never ping() the
+       database when called from inside a run(), txn() or svp() block.
+
+       "txn"
+
+         my $sth = $conn->txn(fixup => sub { $_->do($query) });
+
+       Starts a transaction, executes the block, locally setting $_ to and
+       passing in the database handle, and commits the transaction. If the
+       block throws an exception, the transaction will be rolled back and the
+       exception re-thrown.  Returns the value returned by the block in scalar
+       or array context as appropriate (and the block can use "wantarray" to
+       decide what to do).
+
+       An optional first argument sets the connection mode, overriding that
+       set in the mode() accessor, and may be one of "ping", "fixup", or
+       "no_ping" (the default). In the case of "fixup" mode, this means that
+       the transaction block will be re-executed for a new connection if the
+       database handle is no longer connected. In such a case, a second
+       exception from the code block will cause the transaction to be rolled
+       back and the exception re-thrown. See "Connection Modes" for further
+       explication.
+
+       As with run(), calls to txn() can be nested, although the connection
+       mode will be invoked to check the connection (or not) only in the
+       outer-most block method call. It's preferable to use dbh() to fetch the
+       database handle from within the block if your code is doing lots of
+       non-database processing.
+
+       "svp"
+
+       Executes a code block within the scope of a database savepoint if your
+       database supports them. Returns the value returned by the block in
+       scalar or array context as appropriate (and the block can use
+       "wantarray" to decide what to do).
+
+       You can think of savepoints as a kind of subtransaction. What this
+       means is that you can nest your savepoints and recover from failures
+       deeper in the nest without throwing out all changes higher up in the
+       nest. For example:
+
+         $conn->txn(fixup => sub {
+             my $dbh = shift;
+             $dbh->do('INSERT INTO table1 VALUES (1)');
+             eval {
+                 $conn->svp(sub {
+                     shift->do('INSERT INTO table1 VALUES (2)');
+                     die 'OMGWTF?';
+                 });
+             };
+             warn "Savepoint failed\n" if $@;
+             $dbh->do('INSERT INTO table1 VALUES (3)');
+         });
+
+       This transaction will insert the values 1 and 3, but not 2.
+
+         $conn->svp(fixup => sub {
+             my $dbh = shift;
+             $dbh->do('INSERT INTO table1 VALUES (4)');
+             $conn->svp(sub {
+                 shift->do('INSERT INTO table1 VALUES (5)');
+             });
+         });
+
+       This transaction will insert both 4 and 5.
+
+       Superficially, svp() resembles run() and txn(), including its support
+       for the optional connection mode argument, but in fact savepoints can
+       only be used within the scope of a transaction. Thus svp() will start a
+       transaction for you if it's called without a transaction in-progress.
+       It simply redispatches to txn() with the appropriate connection mode.
+       Thus, this call from outside of a transaction:
+
+         $conn->svp(ping => sub {
+             $conn->svp( sub { ... } );
+         });
+
+       Is equivalent to:
+
+         $conn->txn(ping => sub {
+             $conn->svp( sub { ... } );
+         })
+
+       Savepoints are supported by the following RDBMSs:
+
+       •   PostgreSQL 8.0
+
+       •   SQLite 3.6.8
+
+       •   MySQL 5.0.3 (InnoDB)
+
+       •   Oracle
+
+       •   Microsoft SQL Server
+
+       •   Firebird 1.5
+
+       For all other RDBMSs, svp() works just like txn(): savepoints will be
+       ignored and the outer-most transaction will be the only transaction.
+       This tends to degrade well for non-savepoint-supporting databases,
+       doing the right thing in most cases.
+
+       "mode"
+
+         my $mode = $conn->mode;
+         $conn->mode('fixup');
+         $conn->txn(sub { ... }); # uses fixup mode.
+         $conn->mode($mode);
+
+       Gets and sets the connection mode attribute, which is used by run(),
+       txn(), and svp() if no mode is passed to them.  Defaults to "no_ping".
+       Note that inside a block passed to run(), txn(), or svp(), the mode
+       attribute will be set to the optional first parameter:
+
+         $conn->mode('ping');
+         $conn->txn(fixup => sub {
+             say $conn->mode; # Outputs "fixup"
+         });
+         say $conn->mode; # Outputs "ping"
+
+       In this way, you can reliably tell in what mode the code block is
+       executing.
+
+       "connected"
+
+         if ( $conn->connected ) {
+             $conn->dbh->do($query);
+         }
+
+       Returns true if currently connected to the database and false if it's
+       not. You probably won't need to bother with this method;
+       DBIx::Connector uses it internally to determine whether or not to
+       create a new connection to the database before returning a handle from
+       dbh().
+
+       "in_txn"
+
+         if ( $conn->in_txn ) {
+            say 'Transacting!';
+         }
+
+       Returns true if the connection is in a transaction. For example, inside
+       a txn() block it would return true. It will also work if you use the
+       DBI API to manage transactions (i.e., begin_work() or "AutoCommit".
+
+       Essentially, this is just sugar for:
+
+         $con->run( no_ping => sub { !$_->{AutoCommit} } );
+
+       But without the overhead of the code reference or connection checking.
+
+       "disconnect_on_destroy"
+
+         $conn->disconnect_on_destroy(0);
+
+       By default, DBIx::Connector calls "$dbh->disconnect" when it goes out
+       of scope and is garbage-collected by the system (that is, in its
+       DESTROY() method). Usually this is what you want, but in some cases it
+       might not be. For example, you might have a module that uses
+       DBIx::Connector internally, but then makes the database handle
+       available to callers, even after the DBIx::Connector object goes out of
+       scope. In such a case, you don't want the database handle to be
+       disconnected when the DBIx::Connector goes out of scope.  So pass a
+       false value to "disconnect_on_destroy" to prevent the disconnect.  An
+       example:
+
+         sub database_handle {
+              my $conn = DBIx::Connector->new(@_);
+              $conn->run(sub {
+                  # Do stuff here.
+              });
+              $conn->disconnect_on_destroy(0);
+              return $conn->dbh;
+         }
+
+       Of course, if you don't need to do any work with the database handle
+       before returning it to your caller, you can just use connect():
+
+         sub database_handle {
+             DBIx::Connector->connect(@_);
+         }
+
+       "disconnect"
+
+         $conn->disconnect;
+
+       Disconnects from the database. Unless disconnect_on_destroy() has been
+       passed a false value, DBIx::Connector uses this method internally in
+       its "DESTROY" method to make sure that things are kept tidy.
+
+       "driver"
+
+         $conn->driver->begin_work( $conn->dbh );
+
+       In order to support all database features in a database-neutral way,
+       DBIx::Connector provides a number of different database drivers,
+       subclasses of DBIx::Connector::Driver, that offer methods to handle
+       database communications. Although the DBI provides a standard
+       interface, for better or for worse, not all of the drivers implement
+       them, and some have bugs. To avoid those issues, all database
+       communications are handled by these driver objects.
+
+       This can be useful if you want more fine-grained control of your
+       transactionality. For example, to create your own savepoint within a
+       transaction, you might do something like this:
+
+         use Try::Tiny;
+         my $driver = $conn->driver;
+         $conn->txn(sub {
+             my $dbh = shift;
+             try {
+                 $driver->savepoint($dbh, 'mysavepoint');
+                 # do stuff ...
+                 $driver->release('mysavepoint');
+             } catch {
+                 $driver->rollback_to($dbh, 'mysavepoint');
+             };
+         });
+
+       Most often you should be able to get what you need out of txn() and
+       svp(), but sometimes you just need the finer control. In those cases,
+       take advantage of the driver object to keep your use of the API
+       universal across database back-ends.
+
+       "driver_name"
+
+         my $driver_name = $conn->driver_name;
+
+       Returns the name of the DBI driver (to be) used to connect to the
+       database.
+
+       "dsn"
+
+         my $dsn = $conn->dsn;
+
+       Returns the DBI Data Source Name originally passed to new() as the
+       first argument.
+
+SEE ALSO
+       •   DBIx::Connector::Driver
+
+       •   DBI
+
+       •   DBIx::Class
+
+       •   Catalyst::Model::DBI
+
+AUTHORS
+       This module was written by:
+
+       •   David E. Wheeler <david@kineticode.com>
+
+       It is based on documentation, ideas, kibbitzing, and code from:
+
+       •   Tim Bunce <http://tim.bunce.name>
+
+       •   Brandon L. Black <blblack@gmail.com>
+
+       •   Matt S. Trout <mst@shadowcat.co.uk>
+
+       •   Peter Rabbitson <ribasushi@cpan.org>
+
+       •   Ash Berlin <ash@cpan.org>
+
+       •   Rob Kinyon <rkinyon@cpan.org>
+
+       •   Cory G Watson <gphat@cpan.org>
+
+       •   Anders Nor Berle <berle@cpan.org>
+
+       •   John Siracusa <siracusa@gmail.com>
+
+       •   Alex Pavlovic <alex.pavlovic@taskforce-1.com>
+
+       •   Many other DBIx::Class contributors
+
+COPYRIGHT AND LICENSE
+       Copyright (c) 2009-2013 David E. Wheeler. Some Rights Reserved.
+
+       This module is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2024-10-20                DBIx::Connector(3)

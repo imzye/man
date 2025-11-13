@@ -1,0 +1,160 @@
+PCBGROUP(9)            FreeBSD Kernel Developer's Manual           PCBGROUP(9)
+
+NAME
+     PCBGROUP – Distributed Protocol Control Block Groups
+
+SYNOPSIS
+     options PCBGROUP
+
+     #include <sys/param.h>
+     #include <netinet/in.h>
+     #include <netinet/in_pcb.h>
+
+     void
+     in_pcbgroup_init(struct inpcbinfo *pcbinfo, u_int hashfields,
+         int hash_nelements);
+
+     void
+     in_pcbgroup_destroy(struct inpcbinfo *pcbinfo);
+
+     struct inpcbgroup *
+     in_pcbgroup_byhash(struct inpcbinfo *pcbinfo, u_int hashtype,
+         uint32_t hash);
+
+     struct inpcbgroup *
+     in_pcbgroup_byinpcb(struct inpcb *inp);
+
+     void
+     in_pcbgroup_update(struct inpcb *inp);
+
+     void
+     in_pcbgroup_update_mbuf(struct inpcb *inp, struct mbuf *m);
+
+     void
+     in_pcbgroup_remove(struct inpcb *inp);
+
+     int
+     in_pcbgroup_enabled(struct inpcbinfo *pcbinfo);
+
+     #include <netinet6/in6_pcb.h>
+
+     struct inpcbgroup *
+     in6_pcbgroup_byhash(struct inpcbinfo *pcbinfo, u_int hashtype,
+         uint32_t hash);
+
+DESCRIPTION
+     This implementation introduces notions of affinity for connections and
+     distribute work so as to reduce lock contention, with hardware work
+     distribution strategies such as RSS.  In this construction, connection
+     groups supplement, rather than replace, existing reservation tables for
+     protocol 4-tuples, offering CPU-affine lookup tables with minimal cache
+     line migration and lock contention during steady state operation.
+
+     Internet protocols like UDP and TCP register to use connection groups by
+     providing an ipi_hashfields value other than IPI_HASHFIELDS_NONE.  This
+     indicates to the connection group code whether a 2-tuple or 4-tuple is
+     used as an argument to hashes that assign a connection to a particular
+     group.  This must be aligned with any hardware-offloaded distribution
+     model, such as RSS or similar approaches taken in embedded network
+     boards.  Wildcard sockets require special handling, as in Willmann 2006,
+     and are shared between connection groups while being protected by group-
+     local locks.  Connection establishment and teardown can be signficantly
+     more expensive than without connection groups, but that steady-state
+     processing can be significantly faster.
+
+     Enabling PCBGROUP in the kernel only provides the infrastructure required
+     to create and manage multiple PCB groups.  An implementation needs to
+     fill in a few functions to provide PCB group hash information in order
+     for PCBs to be placed in a PCB group.
+
+   Operation
+     By default, each PCB info block (struct pcbinfo) has a single hash for
+     all PCB entries for the given protocol with a single lock protecting it.
+     This can be a significant source of lock contention on SMP hardware.
+     When a PCBGROUP is created, an array of separate hash tables are created,
+     each with its own lock.  A separate table for wildcard PCBs is provided.
+     By default, a PCBGROUP table is created for each available CPU.  The
+     PCBGROUP code attempts to calculate a hash value from the given PCB or
+     mbuf when looking up a PCBGROUP.  While processing a received frame,
+     in_pcbgroup_byhash() can be used in conjunction with either a hardware-
+     provided hash value (eg the RSS(9) calculated hash value provided by some
+     NICs) or a software-provided hash value in order to choose a PCBGROUP
+     table to query.  A single table lock is held while performing a wildcard
+     match.  However, all of the table locks are acquired before modifying the
+     wildcard table.  The PCBGROUP tables operate in conjunction with the
+     normal single PCB list in a PCB info block.  Thus, inserting and removing
+     a PCB will still incur the same costs as without PCBGROUP.  A protocol
+     which uses PCBGROUP should fall back to the normal PCB list lookup if a
+     call to the PCBGROUP layer does not yield a lookup hit.
+
+   Usage
+     Initialize a PCBGROUP in a PCB info block (struct pcbinfo) by calling
+     in_pcbgroup_init().
+
+     Add a connection to a PCBGROUP with in_pcbgroup_update().  Connections
+     are removed by with in_pcbgroup_remove().  These in turn will determine
+     which PCBGROUP bucket the given PCB is placed into and calculate the hash
+     value appropriately.
+
+     Wildcard PCBs are hashed differently and placed in a single wildcard PCB
+     list.  If RSS(9) is enabled and in use, RSS-aware wildcard PCBs are
+     placed in a single PCBGROUP based on RSS information.  Protocols may look
+     up the PCB entry in a PCBGROUP by using the lookup functions
+     in_pcbgroup_byhash() and in_pcbgroup_byinpcb().
+
+IMPLEMENTATION NOTES
+     The PCB code in sys/netinet and sys/netinet6 is aware of PCBGROUP and
+     will call into the PCBGROUP code to do PCBGROUP assignment and lookup,
+     preferring a PCBGROUP lookup to the default global PCB info table.
+
+     An implementor wishing to experiment or modify the PCBGROUP assignment
+     should modify this set of functions:
+
+           in_pcbgroup_getbucket() and in6_pcbgroup_getbucket()
+                     Map a given 32 bit hash value to a PCBGROUP.  By default
+                     this is hash % number_of_pcbgroups.  However, this
+                     distribution may not align with NIC receive queues or the
+                     netisr(9) configuration.
+
+           in_pcbgroup_byhash() and in6_pcbgroup_byhash()
+                     Map a 32 bit hash value and a hash type identifier to a
+                     PCBGROUP.  By default, this simply returns NULL.  This
+                     function is used by the mbuf(9) receive path in
+                     sys/netinet/in_pcb.c to map an mbuf to a PCBGROUP.
+
+           in_pcbgroup_bytuple() and in6_pcbgroup_bytuple()
+                     Map the source and destination address and port details
+                     to a PCBGROUP.  By default, this does a very simple XOR
+                     hash.  This function is used by both the PCB lookup code
+                     and as a fallback in the mbuf(9) receive path in
+                     sys/netinet/in_pcb.c.
+
+SEE ALSO
+     mbuf(9), netisr(9), RSS(9)
+
+     Paul Willmann, Scott Rixner, and Alan L. Cox, “An Evaluation of Network
+     Stack Parallelization Strategies in Modern Operating Systems”, 2006
+     USENIX Annual Technical Conference,
+     http://www.ece.rice.edu/~willmann/pubs/paranet_usenix.pdf, 2006.
+
+HISTORY
+     PCBGROUP first appeared in FreeBSD 9.0.
+
+AUTHORS
+     The PCBGROUP implementation was written by Robert N. M. Watson
+     <rwatson@FreeBSD.org> under contract to Juniper Networks, Inc.
+
+     This manual page written by Adrian Chadd <adrian@FreeBSD.org>.
+
+NOTES
+     The RSS(9) implementation currently uses #ifdef blocks to tie into
+     PCBGROUP.  This is a sign that a more abstract programming API is needed.
+
+     There is currently no support for re-balancing the PCBGROUP assignment,
+     nor is there any support for overriding which PCBGROUP a socket/PCB
+     should be in.
+
+     No statistics are kept to indicate how often PCBGROUP lookups succeed or
+     fail.
+
+FreeBSD 13.1-RELEASE-p2          July 23, 2014         FreeBSD 13.1-RELEASE-p2

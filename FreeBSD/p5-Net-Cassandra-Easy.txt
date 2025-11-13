@@ -1,0 +1,157 @@
+Net::Cassandra::Easy(3)                    User Contributed Perl Documentation
+
+
+NAME
+       Net::Cassandra::Easy - Perlish interface to the Cassandra database
+
+SYNOPSIS
+         use Net::Cassandra::Easy;
+         my $server = 'myserver';
+         my $port = 'any port but default is 9160';
+
+         $Net::Cassandra::Easy::DEBUG = 1; # to see the Thrift structures and other fun stuff
+
+         # this will login() with no credentials so only AllowAllAuthenticator will work
+         # the default Keyspace1 column families are used in these examples
+         my $c = Net::Cassandra::Easy->new(server => $server, port => $port, keyspace => 'Standard1', credentials => { none => 1 });
+         $c->connect();
+
+         my $key = 'processes';
+
+         my $result;
+
+         # see test.pl for more examples, including insertions and deletions (with the mutate() call)
+
+         $result = $c->get([$key], family => 'Super3', byoffset => { count => -1 }); # last supercolumn, e.g. "latest" in LongType with timestamps
+
+         $result = $c->get([$key], family => 'Super3', byoffset => { count => 1 }); # first supercolumn, e.g. "earliest" in LongType with timestamps
+
+         $result = $c->get([$key], family => 'Super3', byoffset => { start => 'abcdefgh', count => 1 }); # first supercolumn after the 8 bytes 'abcdefgh'
+
+         $result = $c->get([$key], family => 'Super3', byoffset => { startlong => '100', finishlong => '101', count => 1 }); # first supercolumn after the Long (8 bytes) 100 and before the 8-byte Long 101, both Longs in a string so they will work in 32-bit Perl
+
+         $result = $c->get([$key], family => 'Super3', byname => [qw/one two/ ]); # get two supercolumns by name
+
+         $result = $c->get([$key], family => 'Super3', bylong => [0, 1, '10231024'); # get three supercolumns by name as an 8-byte Long (note the last one is a quoted string so it will work in 32-bit Perl)
+
+         $result = $c->mutate([$key], family => 'Super3', insertions => { 'hello!!!' => { testing => 123 } } ]) # insert SuperColumn named 'hello!!!' with one Column
+
+         $result = $c->mutate([$key], family => 'Super3', insertions => { Net::Cassandra::Easy::pack_decimal(0) => { testing => 123 } } ]) # insert SuperColumn named 0 (as a long with 8 bytes) with one Column
+
+         $result = $c->mutate([$key], family => 'Super3', deletions => { byname => ['hello!!!'] } ]) # delete SuperColumn named 'hello!!!'
+
+         $result = $c->mutate([$key], family => 'Super3', deletions => { bylong => [123] } ]) # delete SuperColumn named 123
+
+         $result = $c->mutate([$key], family => 'Standard1', deletions => { standard => 1, byname => ['one', 'two'] } ]) # delete columns from a row in a non-super column family
+
+         $result = $c->mutate([$key], family => 'Standard1', insertions => { testing => 123 } ]) # insert Columns into a non-super column family
+
+         $result = $c->describe(, # describe the keyspace families
+
+         $result = $c->keys(['Super3'], range => { start_key => 'z', end_key => 'a', count => 100} ]) # list keys from 'a' to 'z', max 100
+
+         $result = $c->keys(['Super3'], range => { start_token => 0, end_token => 1, count => 100} ]) # list keys from token 0 to token 1, max 100
+
+         # EXPERIMENTAL schema reconfiguration support, see test.pl for how it's used
+
+         my $keyspace = 'Keyspace2';
+         my $family = 'Super3';                        # this is a LongType super CF
+         my $std_family = 'Standard1';         # this is a non-super CF (the STD family, yes, I get it, thank you)
+
+         # this is used for the pre-test setup
+         my $families = {
+                         $std_family =>
+                         {
+                          column_type => 'Standard',
+                          comparator_type => 'BytesType',
+                          comment => 'none',
+                          row_cache_size => 0,
+                          key_cache_size => 200000,
+                         },
+                         $family =>
+                         {
+                          column_type => 'Super',
+                          comparator_type => 'LongType',
+                          subcomparator_type => 'BytesType',
+                          comment => 'none',
+                          row_cache_size => 0,
+                          key_cache_size => 200000,
+                         }
+                        };
+
+         eval
+         {
+           print "configuring a new keyspace $keyspace, but this may fail\n";
+           my $c = Net::Cassandra::Easy->new(server => $server, port => $port, keyspace => $keyspace, credentials => { none => 1 });
+           $c->connect();
+           $c->configure(
+                         insertions =>
+                         {
+                          $keyspace =>
+                          {
+                           strategy_class => 'org.apache.cassandra.locator.RackUnawareStrategy',
+                           replication_factor => 1,
+                           snitch_class => 'org.apache.cassandra.locator.EndPointSnitch',
+                           families => $families,
+                          }
+                         }
+                        );
+         };
+
+         eval
+         {
+           print "configuring just CFs @{[ join ',', sort keys %$families ]} in $keyspace, but this may also fail\n";
+           my $c = Net::Cassandra::Easy->new(server => $server, port => $port, keyspace => $keyspace, credentials => { none => 1 });
+           $c->connect();
+           $c->configure(
+                         insertions =>
+                         {
+                          $keyspace =>
+                          {
+                           families => $families,
+                          }
+                         }
+                        );
+         };
+
+         print Dumper $result; # enjoy
+
+DESCRIPTION
+       Net::Cassandra::Easy WILL NOT WORK WITH 0.6.x RELEASES OF Cassandra.
+
+       Net::Cassandra::Easy aims to simplify the basic interactions with the
+       Cassandra database.
+
+       Under the covers it translates every request to the Thrift API.  It
+       will stay current with that API as much as possible; I participate in
+       the Cassandra project and watch the mailing lists so any changes should
+       be in Net::Cassandra::Easy quickly.
+
+       How is it better than Net::Cassandra?
+
+       Net::Cassandra::Easy tries to stay away from Thrift.  Thus it's easier
+       to use in my opinion, and when and if Cassandra starts using another
+       API, e.g. Avro, Net::Cassandra::Easy will not change much.
+
+       How do the timestamps work?
+
+       Net::Cassandra::Easy uses microsecond-resolution timestamps (whatever
+       Time::HiRes gives us, basically).  You can override the timestamps with
+       the "timestamp" initialization parameter, which takes a subroutine
+       reference.
+
+   EXPORT
+       Nothing, it's all methods on the client object.
+
+AUTHOR
+       Teodor Zlatanov <tzz@lifelogs.com>
+
+THANKS
+       Mike Gallamore <mike.e.gallamore@googlemail.com>
+
+SEE ALSO
+       perl(1).
+
+       perldoc Net::Cassandra
+
+perl v5.40.2                      2025-08-10           Net::Cassandra::Easy(3)

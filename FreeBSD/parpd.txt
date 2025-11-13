@@ -1,0 +1,365 @@
+parpd(8)                FreeBSD System Manager's Manual               parpd(8)
+
+NAME
+     parpd – Proxy-ARP daemon
+
+SYNOPSIS
+     parpd configfile
+
+DESCRIPTION
+     The parpd utility provide the missing ARP packets in non-broadcast
+     multiple-access networks with overly strict first-hop security filters.
+
+   Problem
+     Large layer 2 networks are hard to maintain.  Therefore, several security
+     measurements should be implemented at the satellite locations with few
+     clients.  Especially DSLAMs are prone to broken first-hop security
+     implementation, which effectively requires to disable those filters or to
+     drop support of non-standard clients.
+
+     Often first hop security filters do sniff the communication for DHCP and
+     adjust the filters accordingly.  Clients with static IPs do not need to
+     use DHCP (and often have and static configuration instead), which causes
+     the filters to fail to learn the used IP address.  Other clients do
+     negotiate more than one IP address, or have full ranges of statically
+     assigned IP addresses.  In all such cases, the DLSAM filters are too
+     simple to cover with the required setup.
+
+     A common first hop security filter simply drops all broadcast traffic not
+     intended to the learned IP address.  The rationale behind this type of
+     filter is, that clients, which already know the MAC of the destination
+     are allowed to reach this device.  The canonical way to learn about the
+     destination MAC is to broadcast an ARP packet for desired IP address.  So
+     if the filter blocks the distribution of those ARP broadcasts to
+     different clients, only valid communication can be established.
+
+     Large networks come with large numbers of visible MAC addresses.  Several
+     devices (i.e. DSLAMs) behave strangely in such situations, therefore
+     network operators try hard to prevent leakage of frames into other areas.
+     Blocking traffic from a satellite location to a different satellite
+     location is typically called split-horizon.  Clients in different parts
+     of the network are unable to communicate with each other.
+
+     Combining DHCP sniffing, broadcast filters, and split-horizon creates a
+     typical xDSL network, where each client can only communicate with the
+     central router(s).  Advanced clients cannot communicate at all.
+
+   Simple Solution
+     If only a single router is attached to such a network, enabling local-
+     proxy-arp on this device solves large parts of problem:  For every ARP
+     request from a client, the router responds with its own MAC address.  So
+     client-client communication is hair pinned at the router interface.
+
+     Because a router learns the client MAC from the ARP request for the
+     default gateway, it may not need to ask for the client itself. Several
+     routers refresh expiring ARP entries by sending unicast requests, hence
+     the broadcast filter may not cause notifiable trouble.
+
+     If there are more than one router or server in the network, the situation
+     becomes complicated.  Local-proxy-arp can't be used anymore, because each
+     of the routers will quickly learn each other's MAC address for the client
+     IPs, causing loops.
+
+     On the other hand some services, like DHCP, try to verify, that free IP
+     addresses are unused, by arping for that IP.  Any generic local-proxy-arp
+     response would cause trouble to such applications.
+
+     All these issues exist for ARP using broadcast as well as for IPv6 ND
+     using multicast. Beside the wording, both cases are quite similar.
+
+
+   parpd Approach
+     In order to keep the network running, parpd provides the necessary ARP/ND
+     replies.  Depending on configuration rules, the utility respond to ARP/ND
+     requests with the real MAC address of the device or the MAC address of a
+     router (redirect).
+
+     It does learn the real MAC-IP pairs by listening to broadcast ARP
+     queries, gratuitous ARP requests, and ICMPv6 ND solicit messages.  Of
+     course, it does not learn from ARP/ND probes or replies not originated by
+     the device owning the IP.  parpd does refresh it's cache using unicast
+     requests.  In order to obtain MAC addresses for a redirect response, the
+     request may be broadcasted or multicasted.
+
+     It's possible to respond with a static MAC if there is no host responding
+     to ARP for a given IP.  Heavy Traffic (especially dDoS) can stop a host
+     from working.  But the incoming traffic may not stop, so the router is
+     unable to forward the traffic due to missing ARP information.  This can
+     cause a high CPU load on the router itself.  I.e. Cisco report such cases
+     as "L3 Glean" events.  In order to protect the router, the parpd can hand
+     out a fixed MAC after it unsucessfully tried to obtain the MAC for the IP
+     itself using broadcast ARP.  It's strongly recommended to ensure that all
+     traffic to this MAC is dropped as soon as possible, otherwise all the
+     traffic is broadcasted to every host in the layer 2 domain in order to
+     reach the unknown destination.
+
+     Responses can be delayed, which effectively ignores the first set of
+     requests over a (short) period.  This way, special services can probe for
+     the non-existence of an IP, while obtaining necessary answers for real
+     communication.
+
+     Part of the bootstrap process of IPv6 is sending router advertisements to
+     the all nodes using a link-local multicast. If this is filtered, parpd
+     can resend such router advertisements to the unicast MACs collected by
+     ARP sniffing.
+
+     The customizable set of rules allows adapting the behaviour to complex
+     scenarios.
+
+
+CONFIGURATION FILE
+     parpd reads its configuration from the file given as the first argument.
+     Comments starts with a '#' and reach up to the end of the line.  There is
+     no quoting, so the directory or file names cannot contain spaces.
+
+     The configuration contains outmost options as well as a cache and an
+     interface section. On the outer level, the following options are defined:
+
+     workdir directory
+           Change the working directory.  All pathnames are relative to this
+           directory, even the configuration file from the command line.  If
+           the option is not specified, the working directory is not changed
+           at all.  The workdir can't be changed during configuration reload.
+
+     logfile filename
+           Any output after the start-up is appended to this file.  If the
+           option is missing, all output goes to stdout.  The file is closed
+           and reopened quickly, so logfile rotation does not need to signal
+           anything.  On the other hand, the logfile is updated in near real
+           time to ease debugging.  This option can be changed by reloading
+           the config.
+
+     pidfile filename
+           Without this option, the program stays in foreground and does not
+           close the standard file descriptors.  However, if the option is
+           specified, the software prevents duplicate startup by checking the
+           pid in the file, daemonizes itself, and create/updates the pid in
+           the file.  The pidfile can't be changed during configuration
+           reload.  The file is removed during a clear shutdown: see SIGNALS.
+
+     The cache section starts with the cache or the cache6 keyword and
+     terminates with the end keyword.  In this section, the following options
+     are allowed:
+
+     tablesize number
+           Sets the size of the hash table.  The value should be a prime
+           number between 10% and 50% of the expected number of cache entries.
+           Defaults to 251.  If this option is changed by a config reload, the
+           hash table is recalculated.
+
+     timeout number
+           Defines the number of seconds, an learned entry is considered
+           valid.  Default value is 300 (5 minutes).  If this option is
+           changed by a config reload, the timeouts for all cached entries are
+           recalculated.
+
+     refresh m*t
+           Defines the refresh policy for expired cache entries.  An unicast
+           request is send to the cached MAC for the cached IP address at most
+           m-times, while waiting t seconds for each response.  Defaults to
+           3*10, three requests with ten seconds timeout per request.  Cache
+           entries in this refresh phase are still used.  This option can be
+           changed by reloading the config.
+
+     delay m*t
+           Defines the delay policy.  A delayed request from a specific MAC
+           for a specific IP is ignored until it occurs at least m times
+           during a t seconds interval.  Defaults to 2*10, responding to the
+           second query within ten seconds.  A typical Linux system asks three
+           queries with a single second timeout before considering an IP
+           unreachable.  FreeBSD defaults to five queries and three seconds
+           timeout per query to come to the same result.  This option can be
+           changed by reloading the config.
+
+     holddown number
+           Defines the number of seconds a freshly updates cache entry is
+           protected from changes.  Erroneous devices may send their own MAC
+           in response to any request (i.e. local-proxy-arp).  Some of them
+           may broadcast this erroneous response, too.  In order to overcome
+           such quick, erroneous changes, the fresh entries are not updated
+           too quickly.  Default value is 10.
+
+     The interface section starts with the interface keyword followed by the
+     interface name and terminates with the end keyword.  In this section, the
+     following options are allowed:
+
+     timeout float
+           Sets the number of seconds (as a floating-point number) to wait for
+           ARP packets and signals before processing them.  Defaults to 1.0
+           seconds.  If a large amount of ARP packets is received, processing
+           may start earlier depending on the kernel buffers.  Can be changed
+           by configuration reload.
+
+     rule src dst op
+           Customising the behaviour of the progam.  If the source IP of ARP
+           request matches the CIDR value for src and the queried IP in this
+           ARP request matches the CIDR value for dst, then the actions
+           defined by op are performed.  Rules are processed first match.  If
+           no match was found, the packet is ignored.
+
+     rule6 src dst op
+           Customising the behaviour of the progam.  If the source IP of ND
+           request matches the CIDR value for src and the queried IP in this
+           ND request matches the CIDR value for dst, then the actions defined
+           by op are performed.  Rules are processed first match.  If no match
+           was found, the packet is ignored.
+
+           If the op ends with the keyword eui, a ND response will be
+           syntesized from the querie EUI-64 IPv6 address.  If the queried
+           IPv6 address is not in the correct form, no response will be sent.
+
+     rad src dst op
+           Customising the behaviour of the progam.  If the source IP of
+           router advertisement matches the CIDR value for src, then for all
+           IPs in the ARP cache matching the CIDR value for dst the action
+           defined by op is performed.  Rules are processed first match for
+           each ARP cache entry.  If no match was found, the ARP cache entry
+           is ignored.
+
+           If any rule contains the keyword verbose, a summary of packet
+           processing is logged, even if the rule itself does not match
+           anything.
+
+     If the op contains the keyword verbose, details of processing the packet
+     is logged.  If the op contains the keyword delay, the request is only
+     processed, if the delay parameters from the cache section are matched.
+     If the op ends with the keyword ignore, no response will be sent.  If the
+     op ends with an IP address, a reply containing the cached MAC of this
+     specified IP will be send. If the op ends with an MAC address, a reply
+     with this MAC will be send.  If the op ends with the keyword tell, a
+     reply containing the cached MAC for the queries IP will be sent.  The op
+     tell may be followed by or and a MAC address, which is used in the case
+     that IP is not online.
+
+     In order to keep the cache small, only packets matching the CIDR dst of a
+     tell rule will be learned.
+
+     In complex situation the CIDR format can be replaced by a.b.c.d/e.f.g.h,
+     where a.b.c.d is an network address and e.f.g.h is an arbitary netmask.
+     Such non-continuous netmask may ease the ruleset considerably.  This is
+     not available for IPv6.
+
+
+EXIT CODE
+     The parpd utility exits 0 on success, and >0 if an error occurs.  If the
+     mandatory argument is missing, -1 is returned.  If the config file can't
+     be parsed, the exit code becomes 1.  An exit code of 2 is set, if the
+     specified interface can't be used.  The returned value of 3 means, that
+     program failed to daemonize itself.
+
+
+SIGNALS
+     The utility catch and respond to the following signals:
+
+     TERM  Terminate the process.  Final clean-up includes a last statistics
+           output as well as removal of the pidfile.
+
+     HUP   Reload the configuration.  If the new configuration cannot be
+           parsed, an error message is written (to the logfile) and the change
+           is ignored.
+
+     INFO  Print usage statistics.  The counters are purged atomically after
+           each report.  In order to enable statistics the time between two
+           reports is also mentioned.
+
+     USR1  Print delayed queries.  The report contains the querying MAC, the
+           queried IP address, as well as the number of received queries, and
+           the age of the entry.  See BUGS.
+
+     USR2  Print the current cache content.  The table contains the hash slot,
+           the IP and the MAC address, the remaining lifetime, and the number
+           of unanswered retries to refresh the entry.  If too many entries
+           per hash slot exists, please increase the size of hash table.
+
+
+EXAMPLES
+      # configration file
+
+      logfile /var/log/parpd.log
+      pidfile /var/run/parpd.pid
+      workdir /var/tmp
+
+      cache
+       timeout       302     # seconds
+       tablesize     3499     # expecting about 10000 entries
+       refresh       3*5     # 3 retries a 5 seconds each
+       delay         4*3     # respond at 4th retry in 3 seconds
+      end
+
+      interface em0
+       timeout       1.011
+       # do not respond for queries to our own infrastructure
+       rule          0.0.0.0/0        198.51.100.0/29    ignore
+       # delay queries from the DHCP server
+       rule          198.51.100.4/32  198.51.100.0/24    delay tell
+       # help the routers/servers to reach the clients
+       # or hand out a special MAC for unreachable IPs
+       rule          198.51.100.0/29  198.51.100.0/24    tell or
+     02:04:06:08:0a:0c
+       # interclient communication through hairpinning at the default gateway
+       rule          198.51.100.0/24  198.51.100.0/24    198.51.100.1
+       # help erroneous clients arping for everything
+       rule          198.51.100.0/24  0.0.0.0/0          verbose 198.51.100.1
+       # multihomed server with weak host model
+       rule          192.0.2.0/24     198.51.100.0/24    tell
+       # show missing entries
+       rule          0.0.0.0/0        0.0.0.0/0          verbose ignore
+       # fake responses for EUI-64 link-local addresses for the router
+       rule6         fe80::1234/128   fe80::/64          eui
+       # respond to link-local queries
+       rule6         fe80::/64        fe80::/64          tell
+       # show missing entries
+       rule6         ::/0             ::/0   verbose ignore
+       # resend router advertisements from the router as unicasts
+       rad           fe80::1234/128   198.51.100.0/24    tell
+       # silently ignore other router advertisements
+       rad           ::/0             0.0.0.0/0          ignore
+       # enable summary logging for router advertisements
+       rad           ::/0             0.0.0.0/0          ignore verbose
+     verbose ignore end
+
+      end
+
+
+STANDARDS
+     David C. Plummer, An Ethernet Address Resolution Protocol, IETF,
+     Standards Track, RFC 826, November 1982.
+
+     Smoot Carl-Mitchell and John S. Quarterman, Using ARP to Implement
+     Transparent Subnet Gateways, IETF, RFC 1027, October 1987.
+
+     V. Fuller and T. Li, Classless Inter-domain Routing (CIDR), IETF, Best
+     Current Practice, RFC 4632, August 2006.
+
+     S. Cheshire, IPv4 Address Conflict Detection, IETF, Standards Track, RFC
+     5227, July 2008.
+
+     T. Narten, et al, Neighbor Discovery for IP version 6 (IPv6), IETF,
+     Standards Track, RFC 4861, September 2007.
+
+
+AUTHORS
+     Lutz Donnerhacke <lutz@donnerhacke.de>
+
+
+BUGS
+     Only a few hosts and a short time frame are assumed for delaying
+     responses.  If too many entries need to be examined, the program eats
+     CPUs for breakfast.
+
+     Resending router advertisements does not have a rate limiter.
+
+
+SECURITY CONSIDERATIONS
+     Please keep in mind, that erroneous ARP/ND replies can cause serious
+     problems to a network.  Define your timeouts carefully, to react in time
+     to changes.  Develop your rules defensively, respond only if there is a
+     real reason to do so.  Use logging to track down and fix erroneous
+     configuration instead of covering the errors with fake ARP/ND replies.
+
+     Resending multicasts as explicit unicasts can generate a lot of traffic.
+
+SEE ALSO
+     arp(8), rarpd(8)
+
+FreeBSD                         January 7, 2020                        FreeBSD

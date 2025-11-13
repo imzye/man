@@ -1,0 +1,246 @@
+Log::Dispatch::FileRotate(3pm)                                                      User Contributed Perl Documentation                                                      Log::Dispatch::FileRotate(3pm)
+
+NAME
+       Log::Dispatch::FileRotate - Log to Files that Archive/Rotate Themselves
+
+VERSION
+       version 1.38
+
+SYNOPSIS
+         use Log::Dispatch::FileRotate;
+
+         my $logger = Log::Dispatch::FileRotate->new(
+             name      => 'file1',
+             min_level => 'info',
+             filename  => 'Somefile.log',
+             mode      => 'append' ,
+             size      => 10*1024*1024,
+             max       => 6);
+
+         # or for a time based rotation
+
+         my $logger = Log::Dispatch::FileRotate->new(
+             name      => 'file1',
+             min_level => 'info',
+             filename  => 'Somefile.log',
+             mode      => 'append' ,
+             TZ        => 'AEDT',
+             DatePattern => 'yyyy-dd-HH');
+
+         # and attach to Log::Dispatch
+         my $dispatcher = Log::Dispatch->new;
+         $dispatcher->add($logger);
+
+         $dispatcher->log( level => 'info', message => "your comment\n" );
+
+DESCRIPTION
+       This module extends the base class Log::Dispatch::Output to provides a simple object for logging to files under the Log::Dispatch::* system, and automatically rotating them according to different
+       constraints. This is basically a Log::Dispatch::File wrapper with additions.
+
+   Rotation
+       There are three different constraints which decide when a file must be rotated.
+
+       The first is by size: when the log file grows more than a specified size, then it's rotated.
+
+       The second constraint is with occurrences. If a "DatePattern" is defined, a file rotation ignores size constraint (unless "check_both") and uses the defined date pattern constraints. When using
+       "DatePattern" make sure TZ is defined correctly and that the TZ you use is understood by Date::Manip. We use Date::Manip to generate our recurrences. Bad TZ equals bad recurrences equals
+       surprises! Read the Date::Manip man page for more details on TZ. "DatePattern" will default to a daily rotate if your entered pattern is incorrect. You will also get a warning message.
+
+       You can also check both constraints together by using the "check_both" parameter.
+
+       The latter constraint is a user callback. This function is called outside the restricted area (see "Concurrency") and, if it returns a true value, a rotation will happen unconditionally.
+
+       All check are made before logging. The "rotate" method leaves us check these constraints without logging anything.
+
+       To let more power at the user, a "post_rotate" callback it'll call after every rotation.
+
+   Concurrency
+       Multiple writers are allowed by this module. There is a restricted area where only one writer can be inside. This is done by using an external lock file, which name is "".filename.LCK"" (never
+       deleted).
+
+       The user constraint and the "DatePattern" constraint are checked outside this restricted area. So, when you write a callback, don't rely on the logging file because it can disappear under your
+       feet.
+
+       Within this restricted area we:
+
+       •   check the size constraint
+
+       •   eventually rotate the log file
+
+       •   if it's defined, call the "post_rotate" function
+
+       •   write the log message
+
+METHODS
+   new(%p)
+       The constructor takes the following parameters in addition to parameters documented in Log::Dispatch::File:
+
+       max ($)
+           The maximum number of log files to create. Default 1.
+
+       size ($)
+           The maximum (or close to) size the log file can grow too. Default 10M.
+
+       DatePattern ($)
+           The "DatePattern" as defined above.
+
+       TZ ($)
+           The TimeZone time based calculations should be done in. This should match Date::Manip's concept of timezones and of course your machines timezone.
+
+       check_both ($)
+           1 for checking "DatePattern" and size concurrently, 0 otherwise.  Default 0.
+
+       user_constraint (\&)
+           If this callback is defined and returns true, a rotation will happen unconditionally.
+
+       post_rotate (\&)
+           This callback is called after that all files were rotated. Will be called one time for every rotated file (in reverse order) with this arguments:
+
+           "filename"
+               the path of the rotated file
+
+           "index"
+               the index of the rotated file from "max"-1 to 0, in the latter case "filename" is the new, empty, log file
+
+           "fileRotate"
+               a object reference to this instance
+
+           With this, you can have infinite files renaming each time the rotated file log. E.g:
+
+             my $file = Log::Dispatch::FileRotate
+             ->new(
+                   ...
+                   post_rotate => sub {
+                     my ($filename, $idx, $fileRotate) = @_;
+                     if ($idx == 1) {
+                       use POSIX qw(strftime);
+                       my $basename = $fileRotate->filename();
+                       my $newfilename =
+                         $basename . '.' . strftime('%Y%m%d%H%M%S', localtime());
+                       $fileRotate->debug("moving $filename to $newfilename");
+                       rename($filename, $newfilename);
+                     }
+                   },
+                  );
+
+           Note:  this  is  called  within  the  restricted  area (see "Concurrency"). This means that any other concurrent process is locked in the meanwhile. For the same reason, don't use the log() or
+           log_message() methods because you will get a deadlock!
+
+       DEBUG ($)
+           Turn on lots of warning messages to STDERR about what this module is doing if set to 1. Really only useful to me.
+
+   filename()
+       Returns the log filename.
+
+   setDatePattern( $ or [ $, $, ... ] )
+       Set a new suite of recurrances for file rotation. You can pass in a single string or a reference to an array of strings. Multiple  recurrences  can  also  be  define  within  a  single  string  by
+       seperating them with a semi-colon (;)
+
+       See the discussion above regarding the setDatePattern paramater for more details.
+
+   log_message( message => $ )
+       Sends a message to the appropriate output.  Generally this shouldn't be called directly but should be called through the log() method (in Log::Dispatch::Output).
+
+   rotate()
+       Rotates the file, if it has to be done. You can call this method if you want to check, and eventually do, a rotation without logging anything.
+
+       Returns 1 if a rotation was done, 0 otherwise. "undef" on error.
+
+   debug($)
+       If "DEBUG" is true, prints a standard warning message.
+
+Tip
+       If  you have multiple writers that were started at different times you will find each writer will try to rotate the log file at a recurrence calculated from its start time. To sync all the writers
+       just use a config file and update it after starting your last writer. This will cause new() to be called by each of the writers close to the same time, and if your  recurrences  aren't  too  close
+       together all should sync up just nicely.
+
+       I  initially  assumed  a  long  running process but it seems people are using this module as part of short running CGI programs. So, now we look at the last modified time stamp of the log file and
+       compare it to a previous occurance of a "DatePattern", on startup only. If the file stat shows the mtime to be earlier than the previous recurrance then I rotate the log file.
+
+DatePattern
+       As I said earlier we use Date::Manip for generating our recurrence events. This means we can understand  Date::Manip's  recurrence  patterns  and  the  normal  log4j  DatePatterns.  We  don't  use
+       DatePattern to define the extension of the log file though.
+
+       DatePattern can therefore take forms like:
+
+             Date::Manip style
+                   0:0:0:0:5:30:0       every 5 hours and 30 minutes
+                   0:0:0:2*12:30:0      every 2 days at 12:30 (each day)
+                   3*1:0:2:12:0:0       every 3 years on Jan 2 at noon
+
+             DailyRollingFileAppender log4j style
+                   yyyy-MM              every month
+                   yyyy-ww              every week
+                   yyyy-MM-dd           every day
+                   yyyy-MM-dd-a         every day at noon
+                   yyyy-MM-dd-HH        every hour
+                   yyyy-MM-dd-HH-MM     every minute
+
+       To specify multiple recurrences in a single string separate them with a semicolon:
+               yyyy-MM-dd; 0:0:0:2*12:30:0
+
+       This says we want to rotate every day AND every 2 days at 12:30. Put in as many as you like.
+
+       A complete description of Date::Manip recurrences is beyond us here except to quote (from the man page):
+
+                  A recur description is a string of the format
+                  Y:M:W:D:H:MN:S .  Exactly one of the colons may
+                  optionally be replaced by an asterisk, or an asterisk
+                  may be prepended to the string.
+
+                  Any value "N" to the left of the asterisk refers to
+                  the "Nth" one.  Any value to the right of the asterisk
+                  refers to a value as it appears on a calendar/clock.
+                  Values to the right can be listed a single values,
+                  ranges (2 numbers separated by a dash "-"), or a comma
+                  separated list of values or ranges.  In a few cases,
+                  negative values are appropriate.
+
+                  This is best illustrated by example.
+
+                    0:0:2:1:0:0:0        every 2 weeks and 1 day
+                    0:0:0:0:5:30:0       every 5 hours and 30 minutes
+                    0:0:0:2*12:30:0      every 2 days at 12:30 (each day)
+                    3*1:0:2:12:0:0       every 3 years on Jan 2 at noon
+                    0:1*0:2:12,14:0:0    2nd of every month at 12:00 and 14:00
+                    1:0:0*45:0:0:0       45th day of every year
+                    0:1*4:2:0:0:0        4th tuesday (day 2) of every month
+                    0:1*-1:2:0:0:0       last tuesday of every month
+                    0:1:0*-2:0:0:0       2nd to last day of every month
+
+TODO
+       compression, signal based rotates, proper test suite
+
+       Could possibly use Logfile::Rotate as well/instead.
+
+SEE ALSO
+       •   Log::Dispatch::File::Stamped
+
+           Log directly to timestamped files.
+
+HISTORY
+       Originally written by Mark Pfeiffer, <markpf at mlp-consulting dot com dot au> inspired by Dave Rolsky's, <autarch at urth dot org>, code :-)
+
+       Kevin Goess <cpan at goess dot org> suggested multiple writers should be supported. He also conned me into doing the time based stuff.  Thanks Kevin!  :-)
+
+       Thanks also to Dan Waldheim for helping with some of the locking issues in a forked environment.
+
+       And thanks to Stephen Gordon for his more portable code on lockfile naming.
+
+SOURCE
+       The development version is on github at <https://https://github.com/mschout/perl-log-dispatch-filerotate> and may be cloned from <git://https://github.com/mschout/perl-log-dispatch-filerotate.git>
+
+BUGS
+       Please report any bugs or feature requests on the bugtracker website <https://github.com/mschout/perl-log-dispatch-filerotate/issues>
+
+       When submitting a bug or request, please include a test-file or a patch to an existing test-file that illustrates the bug or desired feature.
+
+AUTHOR
+       Michael Schout <mschout@cpan.org>
+
+COPYRIGHT AND LICENSE
+       This software is copyright (c) 2005 by Mark Pfeiffer.
+
+       This is free software; you can redistribute it and/or modify it under the same terms as the Perl 5 programming language system itself.
+
+perl v5.40.1                                                                                     2025-09-20                                                                  Log::Dispatch::FileRotate(3pm)

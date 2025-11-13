@@ -1,0 +1,322 @@
+Net::OpenID::JanRain::Consumer(3)          User Contributed Perl Documentation
+
+
+OVERVIEW
+       The OpenID identity verification process most commonly uses the
+       following steps, as visible to the user of this library:
+
+       1.  The user enters their OpenID into a field on the consumer's site,
+           and hits a login button.
+
+       2.  The consumer site discovers the user's OpenID server using the
+           YADIS protocol.
+
+       3.  The consumer site sends the browser a redirect to the identity
+           server.  This is the authentication request as described in the
+           OpenID specification.
+
+       4.  The identity server's site sends the browser a redirect back to the
+           consumer site.  This redirect contains the server's response to the
+           authentication request.
+
+       The most important part of the flow to note is the consumer's site must
+       handle two separate HTTP requests in order to perform the full identity
+       check.
+
+   LIBRARY DESIGN
+       This consumer library is designed with that flow in mind.  The goal is
+       to make it as easy as possible to perform the above steps securely.
+
+       At a high level, there are two important parts in the consumer library.
+       The first important part is this module, which contains the interface
+       to actually use this library.  The second is the
+       Net::OpenID::JanRain::Stores module, which describes the interface to
+       use if you need to create a custom method for storing the state this
+       library needs to maintain between requests.
+
+       In general, the second part is less important for users of the library
+       to know about, as several implementations are provided which cover a
+       wide variety of situations in which consumers may use the library.
+
+       This module contains a class, "Net::OpenID::JanRain::Consumer", with
+       methods corresponding to the actions necessary in each of steps 2, 3,
+       and 4 described in the overview.  Use of this library should be as easy
+       as creating a Consumer instance and calling the methods appropriate for
+       the action the site wants to take.
+
+   STORES AND DUMB MODE
+       OpenID is a protocol that works best when the consumer site is able to
+       store some state.  This is the normal mode of operation for the
+       protocol, and is sometimes referred to as smart mode.  There is also a
+       fallback mode, known as dumb mode, which is available when the consumer
+       site is not able to store state.  This mode should be avoided when
+       possible, as it leaves the implementation more vulnerable to replay
+       attacks.
+
+       The mode the library works in for normal operation is determined by the
+       store that it is given.  The store is an abstraction that handles the
+       data that the consumer needs to manage between http requests in order
+       to operate efficiently and securely.
+
+       Several store implementation are provided, and the interface is fully
+       documented so that custom stores can be used as well.  See
+       Net::OpenID::JanRain::Stores for more information on the interface for
+       stores.  The implementations that are provided allow the consumer site
+       to store the necessary data in several different ways, including
+       several SQL databases and normal files on disk.
+
+       There is an additional concrete store provided that puts the system in
+       dumb mode.  This is not recommended, as it removes the library's
+       ability to stop replay attacks reliably.  It still uses time-based
+       checking to make replay attacks only possible within a small window,
+       but they remain possible within that window.  This store should only be
+       used if the consumer site has no way to retain data between requests at
+       all.
+
+   IMMEDIATE MODE
+       In the flow described above, the user may need to confirm to the
+       identity server that it's ok to authorize his or her identity.  The
+       server may draw pages asking for information from the user before it
+       redirects the browser back to the consumer's site.  This is generally
+       transparent to the consumer site, so it is typically ignored as an
+       implementation detail.
+
+       There can be times, however, where the consumer site wants to get a
+       response immediately.  When this is the case, the consumer can put the
+       library in immediate mode.  In immediate mode, there is an extra
+       response possible from the server, which is essentially the server
+       reporting that it doesn't have enough information to answer the
+       question yet.  In addition to saying that, the identity server provides
+       a URL to which the user can be sent to provide the needed information
+       and let the server finish handling the original request.
+
+   USING THIS LIBRARY
+       Integrating this library into an application is usually a relatively
+       straightforward process.  The process should basically follow this
+       plan:
+
+       Add an OpenID login field somewhere on your site.  When an OpenID is
+       entered in that field and the form is submitted, it should make a
+       request to the your site which includes that OpenID URL.
+
+       First, the application should instantiate the
+       "Net::OpenID::JanRain::Consumer" class using the store of choice.  You
+       may also pass a CGI::Session object to the constructor, which will
+       store user transaction data.
+
+       Next, the application should call the 'begin' method on the "Consumer"
+       instance.  This method takes the OpenID URL.  The "begin" method
+       returns an "Net::OpenID::JanRain::Consumer::AuthRequest" object.
+
+       Next, the application should call the "redirectURL" method on the
+       "Net::OpenID::JanRain::Consumer::AuthRequest" object.  The parameter
+       "return_to" is the URL that the OpenID server will send the user back
+       to after attempting to verify his or her identity.  The "trust_root"
+       parameter is the URL (or URL pattern) that identifies your web site to
+       the user when he or she is authorizing it.  Send a redirect to the
+       resulting URL to the user's browser.
+
+       That's the first half of the authentication process.  The second half
+       of the process is done after the user's ID server sends the user's
+       browser a redirect back to your site to complete their login.
+
+       When that happens, the user will contact your site at the URL given as
+       the "return_to" URL to the "redirectURL" call made above.  The request
+       will have several query parameters added to the URL by the identity
+       server as the information necessary to finish the request.
+
+       Get an "Consumer" instance, and call its "complete" method, passing in
+       all the received query arguments.
+
+       If that call is successful, the user is authenticated.
+
+Methods of Net::OpenID::JanRain::Consumer
+   new
+        $consumer = Net::OpenID::JanRain::Consumer->new($session, $store);
+
+       arguments
+
+       session
+           Must be an instance of CGI::Session.  Used to store user-specific
+           transaction data, including a list of openid services found in the
+           user's Yadis file, allowing fallback if the primary service is
+           down.  Currently required, but may be made optional.
+
+       store
+           Must be an instance of Net::OpenID::JanRain::Stores, and is used to
+           store association and nonce data.
+
+   begin
+       Argument
+
+       user_url
+           The url entered by a user, as on a web form.  This url will be
+           canonicalized, prepending "http://" if it is not present.
+
+       Returns
+
+       Returns an instance of either
+       "Net::OpenID::JanRain::Consumer::FailureResponse" (upon failure) or
+       "Net::OpenID::JanRain::Consumer::AuthRequest" if the initial steps of
+       the protocol succeeded.
+
+   complete
+       Argument
+
+       query
+           Pass this method the query on the return_to url as a hash ref.
+           Common ways to get this are "CGI::Vars" and
+           "URI::QueryParam::query_form_hash"
+
+       Returns
+
+       An instance of one of the following objects.  They all support the
+       'status' method.
+
+       "Net::OpenID::JanRain::Consumer::SuccessResponse"
+       "Net::OpenID::JanRain::Consumer::FailureResponse"
+       "Net::OpenID::JanRain::Consumer::CancelResponse"
+       "Net::OpenID::JanRain::Consumer::SetupNeededResponse"
+
+Net::OpenID::JanRain::Consumer::AuthRequest
+       An instance of this class is returned by the "begin" method of the
+       "Net::OpenID::JanRain::Consumer" object when fetching the identity URL
+       succeeded.
+
+   Methods
+       status
+
+       returns 'in_progress'
+
+       addExtensionArg
+
+        $auth_req->addExtensionArg($namespace, $key, $value);
+
+       Add an extension argument to the openid request.
+
+       Arguments
+
+       namespace
+           A namespace string, for example 'sreg'.
+
+       key The name of the argument.
+
+       value
+           The contents of the argument.
+
+   redirectURL
+        $url = $auth_req->redirectURL($trust_root, $return_to, $immediate);
+
+       This method returns a URL on the user's OpenID server to redirect the
+       user agent to.
+
+       Arguments
+
+       trust_root
+           Provide the trust root for your site.  The return_to URL must
+           descend from this trust root.
+
+       return_to
+           This is the URL that the server will redirect the user back to
+           after authenticating.
+
+       immediate
+           This is an optional flag to use immediate mode, which indicates to
+           the server that if the authentication is not possible without user
+           interaction, the user agent should be redirected back immediately
+           instead of displaying a page to do the required login or approval.
+           Use this flag if you are performing this request behind the scenes,
+           as in a hidden IFRAME.
+
+Net::OpenID::JanRain::Consumer::SuccessResponse
+       This object is returned by the "complete" method of
+       "Net::OpenID::JanRain::Consumer" when the authentication was
+       successful.
+
+   Methods
+       extensionResponse
+
+       Pass this method an extension prefix, and it will return a hash ref
+       with the parameters recieved for that extension.  For example, if the
+       server sent the following response:
+
+        openid.mode=id_res
+        openid.identity=http://bobdobbs.com/
+        openid.signed=[whatever]
+        openid.sig=[whatever]
+        openid.assoc_handle=[whatever]
+        openid.return_to=[whatever]
+        openid.sreg.fullname=Bob Dobbs
+        openid.sreg.language=AQ
+
+       Then once we had the success response we could do:
+
+        $response->extensionResponse('sreg');
+        --> {'fullname' => "Bob Dobbs", 'language' => 'AQ'}
+
+       identity_url
+
+       Returns the identity URL verified.
+
+       return_to
+
+       Returns the signed openid.return_to argument.
+
+       status
+
+       Returns 'success'.
+
+Net::OpenID::JanRain::Consumer::FailureResponse
+       An instance of this class may be returned by the "begin" or "complete"
+       methods of the "Net::OpenID::JanRain::Consumer".  It indicates protocol
+       failure.
+
+   Methods
+       status
+
+       returns 'failure'
+
+       identity_url
+
+       returns the identity url in question.
+
+       message
+
+       returns a message describing the failure.
+
+Net::OpenID::JanRain::Consumer::CancelResponse
+       This object is returned by the "complete" method of
+       "Net::OpenID::JanRain::Consumer" when a cancel response was recieved
+       from the server, indicating that the user did not complete the
+       authentication process.
+
+   Methods
+       status
+
+       returns 'cancel'
+
+       identity_url
+
+       returns the identity url of the request, if available.
+
+Net::OpenID::JanRain::Consumer::SetupNeededResponse
+       An instance of this class is returned by the "complete" method of
+       "Net::OpenID::JanRain::Consumer" when an immediate mode request was not
+       successful.  You must instead use non-immediate mode.  A URL to send
+       the user to is provided.
+
+   Methods
+       status
+
+       returns 'setup_needed'
+
+       setup_url
+
+       returns the setup url, where you may redirect the user to complete
+       authentication.
+
+       identity_url
+
+       returns the identity url in question.
+
+perl v5.40.2                      2006-06-27 Net::OpenID::JanRain::Consumer(3)

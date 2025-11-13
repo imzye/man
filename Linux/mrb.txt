@@ -1,0 +1,227 @@
+GITKEEPER(8)                                                                        User Contributed Perl Documentation                                                                        GITKEEPER(8)
+
+NAME
+       gitkeeper - Mirror files between git and an installed location.
+
+SYNOPSIS
+       gk [options] pull [host]
+
+       gk [options] push [host]
+
+       gk [options] export git-ref [host]
+
+DESCRIPTION
+       gitkeeper is a remote administration aid.  It enables configuration files to be maintained locally, with a full history of changes, and synchronised on demand with a remote target system.  This
+       allows files to still be altered directly on the running system, if and/or when that is needed, with a simple method to get that all back in sync with the archived copy again later.
+
+       It uses rsync(1) and ssh(1) for all operations on the remote hosts.  No special configuration beyond permission to use them is required.  The use of an ssh-agent for managing remote logins may be
+       an advantage though.
+
+       At its core, gitkeeper is really just a tool for managing bidirectional mirrors, of potentially sparse segments of the remote filesystem, so it's not strictly limited to being used for
+       configuration files, nor is it strictly dependent upon git(1) aside from the export option, but those are the primary uses that it was initially designed for.
+
+COMMANDS
+       pull    Pull files from the remote system into the local mirror.  This will update the local directory content to match the live system, but it will not commit any files to git or change the local
+               index state in any way.  If you wish to commit changes imported in this way, you can just do that with normal git operations.
+
+               If the host parameter is not explicitly specified, then all defined hosts with names that do not begin with an '@' will be pulled.
+
+       push    Push files from the local mirror to the remote system.  This will push the state of the current working directory, regardless of whether the repository tree is currently clean or dirty.
+
+               If the host parameter is not explicitly specified, then all defined hosts with names that do not begin with an '@' will be pushed.
+
+       export  Push files from a historical snapshot of the local mirror to the remote system.  This will do a git archive(1) export of the given git-ref to a temporary directory, and then perform a push
+               operation  on  that  tree.  It is equivalent to doing a git checkout of the desired ref, and then doing a push on that tree state, except it will respect any gitattributes you have set for
+               what will be exported, and it will not change the current working directory state.
+
+               If the host parameter is not explicitly specified, then all hosts defined in the exported configuration will be pushed.
+
+OPTIONS
+       -c, --config file
+               The file describing what should be mirrored and how.  If not specified then gk.conf will be looked for in the directory that gitkeeper is invoked in.  Usually this  should  be  a  relative
+               path under that location, but an absolute path is permitted and may be useful in some circumstances.
+
+               If  the  export  command  is used, then this file is not read until after the export from git, and relative paths are resolved to files in the exported directory.  This is usually what you
+               want since the configuration from the exported snapshot will then be used.  If you need to override that for some reason then you can use an absolute path  to  an  alternate  configuration
+               file.
+
+       -l, --list
+               Show the list of host aliases defined in the configuration file.  If this is used with the export command, then the configuration of the exported snapshot will be shown.
+
+       --init  Create a skeleton configuration file.  This is a convenience to get an initial configuration when bootstrapping a new mirror.
+
+       -C, --chdir directory
+               Change  to the given directory before running gitkeeper.  Normally you would just run it from the top level directory of the mirror, but this permits use from elsewhere in a similar way to
+               what "make -C directory" allows.
+
+       --destdir directory
+               Prefix the remote paths to an alternate file system root.  This always changes only the remote path, regardless of whether a push or pull operation is being performed.  It  acts  like  the
+               "DESTDIR" option for "make install" and allows mirroring files to and from an alternative filesystem location but with the same subdirectory structure as what they would normally have.
+
+               You can use this to export files to a chroot, or to a temporary directory somewhere, so that they can be examined without replacing the real files on the remote system.
+
+       -u, --user
+               Override  the  remote_user  option  from  the configuration file for access to the remote host.  There probably aren't many good reasons to ever use this option, it's a pretty blunt hammer
+               which will override it everywhere, but it may be useful for exporting a mirror to some machine or location where it isn't usually expected to go.
+
+       -n, --dry-run
+               Don't actually copy any files, just show what would be done if this was a live run.  If this is used with the export command, then the dry run will be performed on the requested snapshot.
+
+       -v, --verbose
+               Show more detail about what is being done.  This option may be passed multiple times to increase the level of verbosity even further.
+
+               If passed along with --help then more verbose documentation will be shown.
+
+       -?, --help
+               Show this help, again.
+
+CONFIGURATION
+       The gitkeeper configuration file is expected to contain a single JSON Object, which will be parsed by perl's JSON::XS in its relaxed mode (which allows trailing commas after the final  element  of
+       an array or object, and '#'-comments anywhere that whitespace would be permitted).
+
+   Global options
+       There is only one required member of the top level object, though other options may also be specified there to be inherited as defaults if not overridden for a host or one of its sync sets.
+
+       hosts   The  hosts member defines a JSON object in which each member is a host name alias that may be passed as the host parameter to gitkeeper.  The alias names are not used for any other purpose
+               than as the host identifier, and may be any JSON string value.  No other options may be included directly in the hosts section.
+
+               If the host name begins with an '@' then that host will not be pulled or pushed by default when no host name is explicitly specified on the command line.  Such hosts will only be used when
+               they are explicitly named.  This allows a subset of the hosts in a configuration file to be partitioned from each other, when  operating  on  some  host  is  an  expensive  but  infrequent
+               operation,  or  to  allow  the  same  set  of local configuration files to be pushed to or pulled from multiple servers.  This is useful when the same configuration is mirrored in multiple
+               locations or when it may be staged before deployment (as is the case when testing is performed on a dev server before deploying to production).
+
+        {
+           "hosts": {
+               "host1": { ... },
+               "host2": { ... }
+           }
+        }
+
+   Per-host options
+       There are two required members which must be specified directly for each host alias object.  Other options may also be specified there which will override a global default for  that  host  and  be
+       inherited as defaults for its sync sets, if not also overridden there.
+
+       address The address member is a JSON string value, that defines the hostname or IP address used when connecting to the remote system.  It must be a valid string that can be passed as the host part
+               of a remote rsync(1) path.  It should not contain a user part (that should instead be set with the remote_user option), but may contain a port specification.
+
+       sync    The  sync  member  is a JSON array of objects.  It must contain at least one object, but there is no upper bound to the number which may be included.  Each of the objects in the sync array
+               define a mapping from a remote_root to a local_root, the paths which will be mirrored under those roots, and the rsync options which will be applied when transferring them.
+
+        "host1": {
+           "address": "myhost.mydomain.org",
+           "sync":    [ { ... }, { ... } ]
+        }
+
+   Sync set options
+       Each object in the sync array has one required member that must be specified directly in it.  Other options may also be specified there which will override the global and host defaults,  and  some
+       of those options must also be defined in at least one of those places for each sync set.
+
+       paths   The  paths  member  is an array of JSON string values which specify the files and/or directories under the remote_root which will be mirrored with their full directory structure.  They may
+               contain shell wildcards, but cannot contain brace expansions if the rsync --protect-args option is used.
+
+               They must all be relative paths (ie. they must not begin with a '/').
+
+        "sync": [
+           {
+               "paths": [ "file1", "dir1", "dir2/subdir", "dir3/*.conf" ]
+           }
+        ]
+
+   Required options
+       The following options must be defined for every sync set, though they may be configured in either the top level object as global defaults, in the host alias object for per-host defaults, or in the
+       sync object itself.
+
+       local_root
+               A JSON string value that defines the local directory which remote paths will be mirrored under.  This must be a relative path, which itself is rooted to the directory under which gitkeeper
+               is invoked.
+
+               As a sanity check against accidents, this directory must already exist.
+
+       remote_root
+               A JSON string value which defines the location on the remote system that the specified paths are relative to.  This may be an absolute or relative path.  A relative path will be rooted  to
+               the home directory of the remote_user.  A value of "" may be used to specify the home directory of the remote_user.
+
+   Additional options
+       The  following  options  may be defined as global or per-host defaults, or set explicitly in each sync set.  It is not an error for them not to be set, and a higher level default may be 'unset' by
+       overriding it with an empty value.
+
+       remote_user
+               A JSON string which defines the username to use for access to the remote host.  If not set, then the ssh default for the remote system  will  be  used  (as  configured  by  .ssh/config  or
+               similar).
+
+       rsync_opts
+               A  JSON  array  of  string values containing options to be passed to all invocations of rsync, for both push and pull operations.  No word splitting or shell quote stripping is done on the
+               values used here, so each option must be its own array element.
+
+               Note that the --relative option is passed to rsync(1) by default for all invocations and does not need to be included in this set.  If you really don't want that option  for  some  reason,
+               and understand the consequences of not passing it for this use, you can disable it with --no-relative, but there's probably no good reason to ever do that here.
+
+                "rsync_opts": [ "--prune-empty-dirs",
+                                "--delete-excluded",
+                                "--filter=protect .s[a-w][a-z]"
+                ]
+
+       rsync_pull_opts
+               Similar to rsync_opts above, but options specified in this array are appended to those only for pull operations.
+
+       rsync_push_opts
+               Similar to rsync_opts above, but options specified in this array are appended to those only for push operations.
+
+       rsync_include
+               A  JSON  array  of  string  values  which  will  be  passed  to  rsync(1)  as  --include options.  This is a convenience which is equivalent to adding those to rsync_opts ie. the following
+               configurations would be identical in their operation if no other ordering constraints for the filter rules applied.
+
+                "rsync_opts":    [ "--include=.s[a-w][a-z]/" ]
+                "rsync_include": [ ".s[a-w][a-z]/" ]
+
+       rsync_exclude
+               A JSON array of string values which will be passed to rsync(1) as --exclude options.  This is the same as rsync_include above, except for excludes.
+
+       rsync_filter
+               A JSON array of string values which will be passed to rsync(1) as --filter options.  This is similar to the include and exclude options above, except it allows  the  full  range  of  rsync
+               filter rules to be used.
+
+       rsync_pull_filter
+               A JSON array of string values which will be passed to rsync(1) as --filter options (in addition to the include, exclude, and filter options above) only for pull operations.
+
+       rsync_push_filter
+               A JSON array of string values which will be passed to rsync(1) as --filter options (in addition to the include, exclude, and filter options above) only for push operations.
+
+       chown   A JSON string value which will be passed to rsync as the --chown option for push operations to set file and directory ownership on the remote host.  If this option is used, the --owner and
+               --group options will automatically added too, otherwise it would have no effect.  You must have superuser privilege on the remote host for this to work.
+
+                "chown": "root:bind"
+
+       chmod   A  JSON  string value which will be passed to rsync as the --chmod option for push operations to set file and directory permissions on the remote host.  If this option is used, the --perms
+               option will automatically added too, otherwise it would have no effect.  Valid values here are anything that the rsync option would accept.
+
+                "chmod": "D2755,F664"
+
+   Pre- and Post- command hooks
+       The following options may be used to execute arbitrary commands before and/or after a pull or push operation.  The commands are executed on the local host, in  the  directory  that  gitkeeper  was
+       invoked in, as the user which gitkeeper was invoked as.  They can be used to perform operations on the remote host by simply invoking ssh(1) or similar themselves.
+
+       pull_pre_command
+       push_pre_command
+       pull_post_command
+       push_post_command
+               A  JSON  array  of  string  values  containing the command to execute and the options to pass to it.  This will be passed as an array to the perl system() command, so if the array contains
+               multiple elements, then no word splitting or other shell interpretation will be performed.  If it is a single string, then it will instead be passed  to  the  local  shell,  with  all  the
+               caveats that accompany doing that.
+
+               If the pre-command fails, then no transfer will take place.  If the transfer fails for some reason then the post-command will not be executed.
+
+               That  might  change later if we let this get more complex and begin passing status and other variables to the commands that are invoked, but at this stage, that isn't really needed for any
+               current use we have, so I'm not going to complicate things now in anticipation of what later uses might require.
+
+FILES
+       ./gk.conf
+               The default configuration file.
+
+SEE ALSO
+       git(1), rsync(1), ssh(1), ssh-agent(1).
+
+AUTHOR
+       gitkeeper was written by Ron <ron@debian.org>.
+
+perl v5.40.1                                                                                     2025-08-06                                                                                    GITKEEPER(8)

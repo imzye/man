@@ -1,0 +1,380 @@
+Traceroute(3)         User Contributed Perl Documentation        Traceroute(3)
+
+
+NAME
+       POE::Component::Client::Traceroute - A non-blocking traceroute client
+
+SYNOPSIS
+         use POE qw(Component::Client::Traceroute);
+
+         POE::Component::Client::Traceroute->spawn(
+           Alias          => 'tracer',   # Defaults to tracer
+           FirstHop       => 1,          # Defaults to 1
+           MaxTTL         => 16,         # Defaults to 32 hops
+           Timeout        => 0,          # Defaults to never
+           QueryTimeout   => 3,          # Defaults to 3 seconds
+           Queries        => 3,          # Defaults to 3 queries per hop
+           BasePort       => 33434,      # Defaults to 33434
+           PacketLen      => 128,        # Defaults to 68
+           SourceAddress  => '0.0.0.0',  # Defaults to '0.0.0.0'
+           PerHopPostback => 0,          # Defaults to no PerHopPostback
+           Device         => 'eth0',     # Defaults to undef
+           UseICMP        => 0,          # Defaults to 0
+           Debug          => 0,          # Defaults to 0
+           DebugSocket    => 0,          # Defaults to 0
+         );
+
+         sub some_event_handler
+         {
+           $kernel->post(
+               "tracer",           # Post request to 'tracer' component
+               "traceroute",       # Ask it to traceroute to an address
+               "trace_response",   # Post answers to 'trace_response'
+               $destination,       # This is the host to traceroute to
+               [
+                 Queries   => 5,         # Override the global queries parameter
+                 MaxTTL    => 30,        # Override the global MaxTTL parameter
+                 Callback  => [ $args ], # Data to send back with postback event
+               ]
+           );
+         }
+
+         # This is the sub which is called with the responses from the
+         # Traceroute component.
+         sub trace_response
+         {
+           my ($request,$response) = @_[ARG0, ARG1];
+
+           my ($destination, $options, $callback) = @$request;
+           my ($hops, $data, $error)              = @$response;
+
+           if ($hops)
+           {
+             print "Traceroute results for $destination\n";
+
+             foreach my $hop (@$data)
+             {
+               my $hopnumber = $hop->{hop};
+               my $routerip  = $hop->{routerip};
+               my @rtts      = @{$hop->{results}};
+
+               print "$hopnumber\t$routerip\t";
+               foreach (@rtts)
+               {
+                 if ($_ eq "*") { print "* "; }
+                 else { printf "%0.3fms ", $_*1000; }
+               }
+               print "\n";
+             }
+           }
+
+           warn "Error occurred tracing to $destination: $error\n" if ($error);
+         }
+
+         or
+
+         sub another_event_handler
+         {
+           $kernel->post(
+               "tracer",           # Post request to 'tracer' component
+               "traceroute",       # Ask it to traceroute to an address
+               "trace_response",   # Post answers to 'trace_response'
+               $destination,       # This is the host to traceroute to
+               [
+                 # The trace_row event will get called after each hop
+                 PerHopPostback  => 'trace_row',
+               ]
+           );
+         }
+
+         sub trace_row
+         {
+           my ($request,$response) = @_[ARG0, ARG1];
+
+           my ($destination, $options, $callback) = @$request;
+           my ($currenthop, $data, $error)        = @$response;
+
+           # $data only contains responses for the current TTL
+           # The structure is the same as for trace_response above
+         }
+
+DESCRIPTION
+       POE::Component::Client::Traceroute is a non-blocking Traceroute client.
+       It lets several other sessions traceroute through it in parallel, and
+       it lets them continue doing other things while they wait for responses.
+
+   Starting Traceroute Client
+       Traceroute client components are not proper objects. Instead of being
+       created, as most objects are, they are "spawned" as separate sessions.
+       To avoid confusion, and to remain similar to other POE::Component
+       modules, they must be spawned with the "spawn" method, not created with
+       a "new" one.
+
+         POE::Component::Client::Traceroute->spawn(
+           Alias          => 'tracer',   # Defaults to tracer
+           Parameter      => $value,      # Additional parameters
+         );
+
+       Furthermore, there should never be more than one
+       PoCo::Client:Traceroute session spawned within an application at the
+       same time. Doing so may cause unexpected results.
+
+       PoCo::Client::Traceroute's "spawn" method takes a few named parameters,
+       all parameters can be overridden for each call to the 'traceroute'
+       event unless otherwise stated.
+
+       Alias => $session_alias
+         "Alias" sets the component's alias. It is the target of post() calls.
+         Alias defaults to 'tracer'. Alias can not be overridden.
+
+       FirstHop => $firsthop
+         "FirstHop" sets the starting TTL value for the traceroute. FirstHop
+         defaults to 1 and can not be set higher than 255 or greater than
+         "MaxTTL".
+
+       MaxTTL => $maxttl
+         "MaxTTL" sets the maximum TTL for the traceroute. Once this many hops
+         have been attempted, if the target has still not been reached, the
+         traceroute finishes and a 'MaxTTL exceeded without reaching target'
+         error is returned along with all of the data collected. MaxTTL
+         defaults to 32 and can not be set higher than 255.
+
+       Timeout => $timeout
+         "Timeout" sets the maximum time any given traceroute will run. After
+         this time the traceroute will stop in the middle of where ever it is
+         and a 'Traceroute session timeout' error is returned along with all
+         of the data collected. Timeout defaults to 0, which disables it
+         completely.
+
+       QueryTimeout => $qtimeout
+         "QueryTimeout" sets the maximum before an individual query times out.
+         If the query times out an * is set for the response time and the
+         router IP address in the results data. QueryTimeout defaults to 3
+         seconds.
+
+       Queries => $queries
+         "Queries" sets the number of queries for each hop to send. The
+         response time for each query is recorded in the results table. The
+         higher this is, the better the chance of getting a response from a
+         flaky device, but the longer a traceroute takes to run. Queries
+         defaults to 3.
+
+       BasePort => $baseport
+         "BasePort" sets the first port used for traceroute when not using
+         ICMP.  The BasePort is incremented by one for each hop, by traceroute
+         convention.  BasePort defaults to 33434 and can not be higher than
+         65279.
+
+       PacketLen => $packetlen
+         "PacketLen" sets the length of the packet to this many bytes.
+         PacketLen defaults to 68 and can not be less than 68 or greater than
+         1492.
+
+       SourceAddress => $sourceaddress
+         "SourceAddress" is the address that the socket binds to. It must be
+         an IP local to the system or the component will die. If set to
+         '0.0.0.0', the default, it picks the first IP on the device which
+         routes to the destination.
+
+       Device => $device
+         "Device" is the device to bind the socket to. It defaults to the
+         interface which routes to the destination. The component will die if
+         the device does not exist or is shut down.
+
+       PerHopPostback => $event
+         "PerHopPostback" turns on per hop postbacks within the component. The
+         postback is sent to the event specified in the caller's session. By
+         default there is no PerHopPostback.
+
+       UseICMP => $useicmp
+         "UseICMP" causes the traceroute to use ICMP Echo Requests instead of
+         UDP packets. This is advantagious in networks where ICMP Unreachables
+         are disabled, as ICMP Echo Responses are usually still allowed.
+
+       Debug => $debug
+         "Debug" enables verbose debugging output. Debug defaults to 0. Debug
+         can not be overridden.
+
+       DebugSocket => $debug_sock
+         "DebugSocket" enables verbose debugging on socket activity.
+         DebugSocket defaults to 0. DebugSocket can not be overridden.
+
+   Events
+       The PoCo::Client::Traceroute session has two public event handlers.
+
+       "traceroute"
+         The traceroute event handler is how new hosts to traceroute are added
+         to the component. Any active POE session can post to this event. The
+         component does not have any internal queuing, so care should be made
+         to not start more events than your system can handle processing at
+         one time.
+
+       "shutdown"
+         The shutdown event closes all running traceroutes, posts back current
+         data with the 'Session shutdown' error message and closes the
+         session.
+
+       traceroute event
+
+       Sessions communicate asynchronously with the Client::Traceroute
+       component.  They post traceroute requests to it, and the receive events
+       back upon completion. They optionally receive events after each hop.
+
+       Requests are posted to the components 'traceroute' handler. They
+       include the name of an event to post back, an address to traceroute to,
+       optionally, parameters to override from the default, and callback
+       arguments. The address may be a numeric dotted quad, a packed inet_aton
+       address, or a host name.
+
+         $kernel->post(
+           "tracer",           # Post request to 'tracer' component
+           "traceroute",       # Ask it to traceroute to an address
+           "trace_response",   # Post answers to 'trace_response'
+           $destination,       # The system to traceroute to
+           [
+             Parameter => $value,    # Overrides global setting for this request
+             Callback  => [ $args ], # Data to send back with postback event
+           ]
+         );
+
+       Traceroute responses come with two array references:
+
+         my ($request, $response) = @_[ ARG0, ARG1 ];
+
+       $request contains information about the request:
+
+         my ($destination, $options, $callback) = @$request;
+
+       $destination
+         This is the original request traceroute destination. It matches the
+         address posted to the 'traceroute' event.
+
+       $options
+         This is a hash reference with all the options used in the traceroute,
+         both the defaults and the overrides sent with the request.
+
+       $callback
+         This is the callback arguments passed with the original request.
+
+       $response contains information about the traceroute response. It is
+       different depending on if the the event was a postback or a
+       PerHopPostback.
+
+       Postback array:
+
+         my ($hops, $data, $error) = @$response;
+
+       PerHopPostback array:
+
+         my ($currenthop, $data, $error) = @$response;
+
+       $hops
+         This is the largest hop with a response. It may be less than MaxTTL.
+
+       $currenthop
+         This is the current hop that the data is posted for. It changes with
+         each call to the PerHopPostback event.
+
+       $data
+         This is an array of hash references. For the Postback event, it
+         contains at least one row for each TTL between FirstHop and the
+         device or MaxTTL. For PerHopPostback events it contains at least one
+         row for the current TTL hop.
+
+         A single TTL hop may have more than one row if the IP address changed
+         during polling.
+
+         The structure of the array ref is the following:
+
+           $data->{routerip} = $routerip;
+           $data->{hop}      = $currenthop;
+           $data->{results}  = \@trip_times;
+
+         "$data->{routerip}"
+           This is the router IP which responded with the TTL expired in
+           transit or destination unreachable message. If it changes, a new
+           row is generated. If all queries for this hop timed out than this
+           will be set to an empty string.
+
+         "$data->{hop}"
+           This is the current hop that the result set is for. It is
+           incremented by one for each TTL between FirstHop and reaching the
+           device or MaxTTL.
+
+         "$data->{results}"
+           This is an array ref containing the result round trip times for
+           each query in seconds, with millisecond precision depending on the
+           system. If a query packet times out the entry in the array will be
+           set to "*".
+
+       shutdown event
+
+       The PoCo::Client::Traceroute session must be shutdown in order to exit.
+       To shut down the session, post a 'shutdown' event to it. This will
+       cause all running traceroutes to postback their current results and the
+       stop the session.
+
+         $kernel->post( 'tracer' => 'shutdown' );
+
+       or
+
+         my $success = $kernel->call( 'tracer' => 'shutdown' );
+
+   Traceroute Notes
+       • Only one instance of this component should be spawned at a time.
+         Multiple instances may have indeterminant behavior.
+
+       • The component does not have any internal queue. Care should be taken
+         to only launch as many traceroutes as your system can handle at one
+         time.
+
+SEE ALSO
+       This component's Traceroute code was heavily influenced by
+       Net::Traceroute::PurePerl and Net::Ping.
+
+       See POE for documentation on how POE works.
+
+       You can learn more about POE at <http://poe.perl.org/>.
+
+       See also the test program, t/01_trace.t or the example in the examples
+       directory of the distribution
+
+DEPENDENCIES
+       POE::Component::Client::Traceroute requires the following modules:
+
+       POE Carp Socket FileHandle Time::HiRes
+
+BUGS AND LIMITATIONS
+       Please report any bugs to the author and use http://rt.cpan.org/
+
+       This module requires root or administrative privileges to run. It opens
+       a raw socket to listen for TTL exceeded messages. Take appropriate
+       precautions.
+
+       This module does not support IPv6.
+
+       This module only supports ICMP traceroutes under Windows.
+
+       This module is a little slow since it only sends one packet at a time
+       to any given destination.
+
+TODO
+       • Implement IPv6 capability.
+
+       • Implement TCP traceroute.
+
+       • Send multiple requests to the same destination in parallel for each
+         traceroute like the Linux traceroute application does. Currently
+         requests to different destinations are sent in parallel, but each
+         packet to the same destination is sent serially.
+
+AUTHOR
+       Andrew Hoying <ahoying@cpan.org>
+
+LICENSE AND COPYRIGHT
+       POE::Component::Client::Traceroute is Copyright 2006 by Andrew Hoying.
+       All rights reserved. POE::Component::Client::Traceroute is free
+       software; you may redistribute it and or modify it under the same terms
+       as Perl itself.
+
+perl v5.40.2                      2006-08-22                     Traceroute(3)

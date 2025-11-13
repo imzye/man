@@ -1,0 +1,377 @@
+AnyEvent::Tools(3pm)                                                                User Contributed Perl Documentation                                                                AnyEvent::Tools(3pm)
+
+NAME
+       AnyEvent::Tools - instrument collection for AnyEvent.
+
+SYNOPSIS
+   Objects pool
+           use AnyEvent::Tools qw(pool);
+           my $dbh1 = ...
+           my $dbh2 = ...
+
+           ...
+           my $dbhN = ...
+
+           my $pool = pool($dbh1, $dbh2, $dbh3, ..., $dbhN);
+
+           # later
+           ...
+           $pool->get(sub {
+               my ($guard, $dbh) = @_;
+               ... # Enjoy $dbh here
+
+               undef $guard;           # the other process can use the $dbh
+           });
+
+   Mutexes
+           use AnyEvent::Tools qw(mutex);
+
+           my $dbh = new AnyEvent::DBI(bla);
+           my $mutex_dbh = mutex;
+
+           sub some_callback() {
+               ...
+               $mutex_dbh->lock(sub {
+                   my ($mutex_guard) = @_;
+
+                   $dbh->exec("SELECT * FROM table", sub {
+                       my ($dbh, $rows, $rv) = @_;
+                       ...
+
+                       undef $mutex_guard; # unlock mutex
+                   });
+
+               });
+           }
+
+   Read/Write mutexes
+           # Your data
+           my @shared_data;
+
+           use AnyEvent::Tools qw(rw_mutex);
+           use AnyEvent::Tools qw(:mutex);     # mutex and rw_mutex
+           my $rw_mutex = rw_mutex;
+
+           sub some_callback() {
+               ...
+               $rw_mutex->rlock(sub {
+                   my ($mutex_guard) = @_;
+
+                   ...
+
+                   # You can read Your data here
+                   ...
+                   # later
+                   ... = sub {
+                       # done
+
+                       undef $mutex_guard;     # unlock mutex
+                   }
+
+               });
+           }
+
+           sub other_callback() {
+               ...
+               $rw_mutex->wlock(sub {
+                   my ($mutex_guard) = @_;
+                   ...
+
+                   # You can write Your data here
+                   ...
+                   # later
+                   ... = sub {
+                       # done
+
+                       undef $mutex_guard;     # unlock mutex
+                   }
+
+               });
+           }
+
+   Foreaches
+           use AnyEvent::Tools qw(:foreach);
+
+           async_repeat $count,
+               sub {
+                   my ($guard, $iteration, $first_flag, $last_flag) = @_;
+
+                   ... do something $count times
+               },
+               sub {
+                   ... # do something after all cycles
+               };
+
+           async_foreach
+                   \@array,
+                   sub {
+                       my ($guard, $element, $index, $first_flag, $last_flag) = @_;
+
+                       ... # do something with $array[$index];
+                   },
+                   sub {
+                       ... # do something after all cycles
+
+                   };
+
+           async_foreach
+                   \%hash,
+                   sub {
+                       my ($guard, $key, $value, $first_flag, $last_flag) = @_;
+
+                       ... # do something with $hash{$key};
+                   },
+                   sub {
+                       my ($guard) = @_;
+
+                       ... # do something after all cycles
+
+                   };
+
+   Buffers
+           use AnyEvent::Tools ':pool';    # pool and buffer
+           use AnyEvent::Tools qw(buffer); # buffer only
+           my $buffer = buffer;
+           $buffer->on_flush( sub { ($guard, $objects_aref) = @_; .... });
+
+           ...
+
+           $buffer->push($obj1);
+           $buffer->push($obj2);
+           $buffer->push($obj3);
+           $buffer->push($obj4);
+
+           $buffer->flush;
+
+           # autoflush after 30 second
+           $buffer->interval(30);
+
+           # autoflush if it contains more than 50 elements
+           $buffer->size(50);
+
+DESCRIPTION
+       In spite of event machine is started as one process, You may want to share one resource between a lot of subprocesses.  Sometimes You also want to do  something with a  lot of data placed in
+       hashes/arrays.
+
+FUNCTIONS
+   mutex
+       returns unlocked mutex.
+
+       This object provides the following methods:
+
+       lock(CODEREF)
+
+       You declare that You want to lock mutex. When it is possible the mutex will be locked and Your callback will be called.
+
+       If the method is called in non-void context it returns guard object which can be destroyed. So if You want You can cancel Your lockrequest.
+
+       Example:
+
+           $mutex->lock(sub {
+               my $guard = shift;
+               ... # do something
+
+               undef $guard;       # unlock mutex
+           });
+
+       The callback receives a guard (see AnyEvent::Util#guard) which unlocks the mutex. Hold the guard while You need locked resourse.
+
+       is_locked
+
+       Returns TRUE if mutex is locked now. Usually You shoudn't use the function.
+
+   rw_mutex
+       returns unlocked read-write mutex.
+
+       This object provides the following methods:
+
+       rlock(CODEREF)
+
+       You declare that You want to lock mutex for reading. When it is possible the mutex will be locked and Your callback will be called.
+
+       There may be a lot of read processes running simultaneously that catch the lock.
+
+       wlock(CODEREF).
+
+       You declare that You want to lock mutex for writing. When it is possible the mutex will be locked and Your callback will be called.
+
+       There may be only one write process that catches the lock.
+
+       Both callbacks receive a guard to hold the mutex locked.
+
+       rlock_limit(NUMBER)
+
+       Get/Set count limit for rlock. If an rlock request is come and this limit is reached the request will be queued.
+
+       is_locked
+
+       Returns TRUE if the mutex has 'read' or 'write' lock status.
+
+       is_rlocked
+
+       Returns TRUE if the mutex has 'read' lock status.
+
+       Important: this method returns FALSE if the mutex is wlocked (is_wlocked), so if You want to know if any lock is set, use the function is_locked.
+
+       is_wlocked
+
+       Returns TRUE if the mutex has 'write' lock status.
+
+       Usually You shoudn't use is_[rw]?locked functions.
+
+   async_repeat(COUNT, CALLBACK [, DONE_CALLBACK ])
+       Repeats calling Your callback(s).
+
+           async_repeat 10, sub { $count++ };
+           async_repeat 20, sub { $count++ }, sub { $done = 1 };
+
+       The function async_repeat returns the guard if it is called in non-void context. Destroy the guard if You want to cancel iterations.
+
+       Iteration callback receives the following arguments:
+
+       1. guard
+           The next iteration will not start until the guard is destroyed.
+
+       2. iteration number
+           The number of current iteration.
+
+       3. first_flag
+           TRUE on the first iteration.
+
+       4. last_flag
+           TRUE on the last iteration.
+
+   async_for(HASREF|ARRAYREF, CALLBACK [, DONE_CALLBACK ]);
+       Calls Your callbacks for each array or hash element.
+
+       The function returns the guard if it is called in non-void context. Destroy the guard if You want to cancel iterations.
+
+       If You process an array using the function, iteration callback will receive the following arguments:
+
+       1. guard
+           The next iteration will not start until the guard is destroyed.
+
+       2. element
+           Next array element.
+
+       3. index
+           Index of array element.
+
+       4. first_flag
+           The iteration is the first.
+
+       5. last_flag
+           The iteration is the last.
+
+       If You process a hash using the function, iteration callback will receive the following arguments:
+
+       1. guard
+           The next iteration will not start until the guard is destroyed.
+
+       2. key
+       3. value
+       4. first_flag
+           The iteration is the first.
+
+       5. last_flag
+           The iteration is the last.
+
+   async_rfor(HASREF|ARRAYREF, CALLBACK [, DONE_CALLBACK ]);
+       The same as async_for but has reverse sequence.
+
+   pool
+       Returns the object that incapsulates object collection. You can cacth one object of the collection using the method:
+
+       get($callback)
+
+           $pool->get(sub { my ($guard, $object) = @_; ... });
+
+       If there is a free object in the pool, Your callback will be called.  The callback receives also a guard. Hold the guard while You use the object.
+
+       There are also a few methods:
+
+       push($object);
+
+           my $id = $pool->push($dbh);
+
+       Add an object in pool. Returns the object's identifier. You can use that to delete the object from pool:
+
+       delete($id)
+
+           $pool->delete($id);
+           $pool->delete($id, sub { # on_delete });
+
+       Deletes object from pool.
+
+       Note: The function will croak if it receives an ivalid object id.
+
+   buffer
+       Returns the buffer object. Can receive a few named arguments: interval, size, on_flush. They are the same that the following functions.
+
+       It provides the following methods:
+
+       push
+
+       Push the object into buffer.
+
+           $buffer->push(123);
+           $buffer->push($obj);
+           $buffer->push(1,2,3);
+
+       unshift
+
+       Unshift the object into buffer
+
+           $buffer->unshift(123);
+           $buffer->unshift(1,2,3);
+
+       unshift_back
+
+       The  function  can  be  called  only inside on_flush handler (until its guard destroyed). It can be used to unshift non-flushed data (for example: if an error was occured) back to buffer. Receives
+       ARRAYREF (like on_flush's callback).
+
+       flush
+
+       Flush buffer (calls on_flush function)
+
+       interval
+
+       Get/Set autoflush interval (zero == periodical autoflush is disabled)
+
+       size
+
+       Get/Set buffer size (zero == buffer overflow autoflush is disabled)
+
+       unique_cb
+
+       If the callback is defined it will be called for each pushing element to determine its key value. If the key has already appeared since last flush the element  will  be  ignored.  So  buffer  will
+       contain only unique objects.
+
+       on_flush
+
+       Set flush callback. It will be called if flush function is called or buffer overflow is detected or timeout is exceeded.
+
+       The callback receives two arguments:
+
+       guard
+           If You hold the guard, and user calls flush, flushing will be delayed.
+
+       arrayref
+           Reference to object list that were accumulated.
+
+SEE ALSO
+       AnyEvent
+
+AUTHOR
+       Dmitry E. Oboukhov, <unera@debian.org>
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2011 by Dmitry E. Oboukhov
+
+       This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself, either Perl version 5.10.1 or, at your option, any later version of Perl 5 you may have
+       available.
+
+VCS
+       The project is placed in my git repo. See here: <http://git.uvw.ru/?p=anyevent-tools;a=summary>
+
+perl v5.40.1                                                                                     2025-06-17                                                                            AnyEvent::Tools(3pm)

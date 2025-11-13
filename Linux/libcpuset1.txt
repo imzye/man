@@ -1,0 +1,500 @@
+CPUSET(4)                                                             Linux Programmer's Manual                                                            CPUSET(4)
+
+NAME
+       cpuset - confine tasks to processor and memory node subsets
+
+DESCRIPTION
+       The  cpuset  file  system is a pseudo-filesystem interface to the kernel cpuset mechanism for controlling the processor and memory placement of tasks.  It is
+       commonly mounted at /dev/cpuset.
+
+       A cpuset defines a list of CPUs and memory nodes.  Cpusets are represented as directories in a hierarchical virtual file system, where the top  directory  in
+       the  hierarchy  (/dev/cpuset) represents the entire system (all online CPUs and memory nodes) and any cpuset that is the child (descendant) of another parent
+       cpuset contains a subset of that parents CPUs and memory nodes.  The directories and files representing cpusets have normal file system permissions.
+
+       Every task in the system belongs to exactly one cpuset.  A task is confined to only run on the CPUs in the cpuset it belongs to, and to allocate memory  only
+       on  the memory nodes in that cpuset.  When a task forks, the child task is placed in the same cpuset as its parent.  With sufficient privilege, a task may be
+       moved from one cpuset to another and the allowed CPUs and memory nodes of an existing cpuset may be changed.
+
+       When the system begins booting, only the top cpuset is defined and all tasks are in that cpuset.  During the boot process  or later during normal system  op‐
+       eration,  other  cpusets  may be created, as sub-directories of the top cpuset under the control of the system administrator and tasks may be placed in these
+       other cpusets.
+
+       Cpusets are integrated with the sched_setaffinity(2) scheduling affinity mechanism and the mbind(2) and set_mempolicy(2) memory placement mechanisms  in  the
+       kernel.  Neither of these mechanisms let a task make use of a CPU or memory node that is not allowed by cpusets.  If changes to a tasks cpuset placement con‐
+       flict with these other mechanisms, then cpuset placement is enforced even if it means overriding these other mechanisms.
+
+       Typically, a cpuset is used to manage the CPU and memory node confinement for the entire set of tasks in a job, and these other mechanisms are used to manage
+       the placement of individual tasks or memory regions within a job.
+
+FILES
+       Each directory below /dev/cpuset represents a cpuset and contains several files describing the state of that cpuset.
+
+       New  cpusets are created using the mkdir system call or shell command.  The properties of a cpuset, such as its flags, allowed CPUs and memory nodes, and at‐
+       tached tasks, are queried and modified by reading or writing to the appropriate file in that cpusets directory, as listed below.
+
+       The files in each cpuset directory are automatically created when the cpuset is created, as a result of the mkdir invocation.  It is not allowed  to  add  or
+       remove files from a cpuset directory.
+
+       The  files in each cpuset directory are small text files that may be read and written using traditional shell utilities such as cat(1), and echo(1), or using
+       ordinary file access routines from programmatic languages, such as open(2), read(2), write(2) and close(2) from the 'C' library.  These files  represent  in‐
+       ternal kernel state and do not have any persistent image on disk.  Each of these per-cpuset files is listed and described below.
+
+       tasks
+              List  of  the process IDs (PIDs) of the tasks in that cpuset.  The list is formatted as a series of ASCII decimal numbers, each followed by a newline.
+              A task may be added to a cpuset (removing it from the cpuset previously containing it) by writing its PID to that cpusets tasks file (with or  without
+              a trailing newline.)
+
+              Beware  that only one PID may be written to the tasks file at a time.  If a string is written that contains more than one PID, only the first one will
+              be considered.
+
+       notify_on_release
+              Flag (0 or 1).  If set (1), that cpuset will receive special handling whenever its last using task and last child cpuset goes away.  See the Notify On
+              Release section, below.
+
+       cpus
+              List of CPUs on which tasks in that cpuset are allowed to execute.  See List Format below for a description of the format of cpus.
+
+              The  CPUs  allowed to a cpuset may be changed by writing a new list to its cpus file.  Note however, such a change does not take affect until the PIDs
+              of the tasks in the cpuset are rewritten to the cpusets tasks file.  See the WARNINGS section, below.
+
+       cpu_exclusive
+              Flag (0 or 1).  If set (1), the cpuset has exclusive use of its CPUs (no sibling or cousin cpuset may overlap CPUs).  By  default  this  is  off  (0).
+              Newly created cpusets also initially default this to off (0).
+
+       mems
+              List of memory nodes on which tasks in that cpuset are allowed to allocate memory.  See List Format below for a description of the format of mems.
+
+       mem_exclusive
+              Flag  (0  or 1).  If set (1), the cpuset has exclusive use of its memory nodes (no sibling or cousin may overlap).  By default this is off (0).  Newly
+              created cpusets also initially default this to off (0).
+
+       memory_migrate
+              Flag (0 or 1).  If set (1), then memory migration is enabled.  See the Memory Migration section, below.
+
+       memory_pressure
+              A measure of how much memory pressure the tasks in this cpuset are causing.  See the Memory Pressure section, below.   Unless  memory_pressure_enabled
+              is enabled, always has value zero (0).  This file is read-only.  See the WARNINGS section, below.
+
+       memory_pressure_enabled
+              Flag  (0 or 1).  This file is only present in the root cpuset, normally /dev/cpuset.  If set (1), the memory_pressure calculations are enabled for all
+              cpusets in the system.  See the Memory Pressure section, below.
+
+       memory_spread_page
+              Flag (0 or 1).  If set (1), the kernel page cache (file system buffers) are uniformly spread across the cpuset.  See the Memory Spread section, below.
+
+       memory_spread_slab
+              Flag (0 or 1).  If set (1), the kernel slab caches for file I/O (directory and inode structures) are uniformly spread across the cpuset.  See the Mem‐
+              ory Spread section, below.
+
+       In addition to the above special files in each directory below /dev/cpuset, each task under /proc has an added file named cpuset, displaying the cpuset name,
+       as the path relative to the root of the cpuset file system.
+
+       Also the /proc/<pid>/status file for each task has two added lines, displaying the tasks cpus_allowed (on which CPUs it may be  scheduled)  and  mems_allowed
+       (on which memory nodes it may obtain memory), in the Mask Format (see below) as shown in the following example:
+
+                      Cpus_allowed:   ffffffff,ffffffff,ffffffff,ffffffff
+                      Mems_allowed:   ffffffff,ffffffff
+
+EXTENDED CAPABILITIES
+       In addition to controlling which cpus and mems a task is allowed to use, cpusets provide the following extended capabilities.
+
+   Exclusive Cpusets
+       If  a  cpuset is marked cpu_exclusive or mem_exclusive, no other cpuset, other than a direct ancestor or descendant, may share any of the same CPUs or memory
+       nodes.
+
+       A cpuset that is cpu_exclusive has a scheduler (sched) domain associated with it.  The sched domain consists of all CPUs in the current cpuset that  are  not
+       part  of any exclusive child cpusets.  This ensures that the scheduler load balancing code only balances against the CPUs that are in the sched domain as de‐
+       fined above and not all of the CPUs in the system. This removes any overhead due to load balancing code trying to pull tasks  outside  of  the  cpu_exclusive
+       cpuset only to be prevented by the tasks' cpus_allowed mask.
+
+       A  cpuset  that  is  mem_exclusive  restricts  kernel  allocations  for page, buffer and other data commonly shared by the kernel across multiple users.  All
+       cpusets, whether mem_exclusive or not, restrict allocations of memory for user space.  This enables configuring a system so that several independent jobs can
+       share  common  kernel data, such as file system pages, while isolating each jobs user allocation in its own cpuset.  To do this, construct a large mem_exclu‐
+       sive cpuset to hold all the jobs, and construct child, non-mem_exclusive cpusets for each individual job.  Only a small amount of typical kernel memory, such
+       as requests from interrupt handlers, is allowed to be taken outside even a mem_exclusive cpuset.
+
+   Notify On Release
+       If  the  notify_on_release flag is enabled (1) in a cpuset, then whenever the last task in the cpuset leaves (exits or attaches to some other cpuset) and the
+       last child cpuset of that cpuset is removed, the kernel will run the command /sbin/cpuset_release_agent, supplying the pathname (relative to the mount  point
+       of the cpuset file system) of the abandoned cpuset.  This enables automatic removal of abandoned cpusets.
+
+       The  default  value  of  notify_on_release  in the root cpuset at system boot is disabled (0).  The default value of other cpusets at creation is the current
+       value of their parents notify_on_release setting.
+
+       The command /sbin/cpuset_release_agent is invoked, with the name (/dev/cpuset relative path) of that cpuset in argv[1].  This supports automatic  cleanup  of
+       abandoned cpusets.
+
+       The usual contents of the command /sbin/cpuset_release_agent is simply the shell script:
+
+                      #!/bin/sh
+                      rmdir /dev/cpuset/$1
+
+       By default, notify_on_release is off (0).  Newly created cpusets inherit their notify_on_release setting from their parent cpuset.
+
+       As  with  other flag values below, this flag can be changed by writing an ASCII number 0 or 1 (with optional trailing newline) into the file, to clear or set
+       the flag, respectively.
+
+   Memory Pressure
+       The memory_pressure of a cpuset provides a simple per-cpuset metric of the rate that the tasks in a cpuset are attempting to free up in  use  memory  on  the
+       nodes of the cpuset to satisfy additional memory requests.
+
+       This enables batch managers monitoring jobs running in dedicated cpusets to efficiently detect what level of memory pressure that job is causing.
+
+       This  is  useful both on tightly managed systems running a wide mix of submitted jobs, which may choose to terminate or re-prioritize jobs that are trying to
+       use more memory than allowed on the nodes assigned them, and with tightly coupled, long running, massively parallel scientific computing jobs that will  dra‐
+       matically fail to meet required performance goals if they start to use more memory than allowed to them.
+
+       This  mechanism provides a very economical way for the batch manager to monitor a cpuset for signs of memory pressure.  It's up to the batch manager or other
+       user code to decide what to do about it and take action.
+
+       Unless memory pressure calculation is enabled by setting the special file /dev/cpuset/memory_pressure_enabled, it is not computed for any cpuset, and  always
+       reads a value of zero.  See the WARNINGS section, below.
+
+       Why a per-cpuset, running average:
+          Because  this  meter  is  per-cpuset rather than per-task or mm, the system load imposed by a batch scheduler monitoring this metric is sharply reduced on
+          large systems, because a scan of the tasklist can be avoided on each set of queries.
+
+          Because this meter is a running average rather than an accumulating counter, a batch scheduler can detect memory pressure with a single read,  instead  of
+          having to read and accumulate results for a period of time.
+
+          Because  this meter is per-cpuset rather than per-task or mm, the batch scheduler can obtain the key information, memory pressure in a cpuset, with a sin‐
+          gle read, rather than having to query and accumulate results over all the (dynamically changing) set of tasks in the cpuset.
+
+       A per-cpuset simple digital filter is kept within the kernel, and updated by any task attached to that cpuset, if it enters the synchronous (direct) page re‐
+       claim code.
+
+       A  per-cpuset  file  provides  an  integer  number  representing the recent (half-life of 10 seconds) rate of direct page reclaims caused by the tasks in the
+       cpuset, in units of reclaims attempted per second, times 1000.
+
+   Memory Spread
+       There are two Boolean flag files per cpuset that control where the kernel allocates pages for the file system buffers and related in kernel data  structures.
+       They are called memory_spread_page and memory_spread_slab.
+
+       If  the  per-cpuset  Boolean  flag file memory_spread_page is set, then the kernel will spread the file system buffers (page cache) evenly over all the nodes
+       that the faulting task is allowed to use, instead of preferring to put those pages on the node where the task is running.
+
+       If the per-cpuset Boolean flag file memory_spread_slab is set, then the kernel will spread some file system related slab caches, such as for inodes  and  di‐
+       rectory  entries  evenly  over all the nodes that the faulting task is allowed to use, instead of preferring to put those pages on the node where the task is
+       running.
+
+       The setting of these flags does not affect anonymous data segment or stack segment pages of a task.
+
+       By default, both kinds of memory spreading are off and the kernel prefers to allocate memory pages on the node local to where the requesting task is running.
+       If  that node is not allowed by the tasks NUMA mempolicy or cpuset configuration or if there are insufficient free memory pages on that node, then the kernel
+       looks for the nearest node that is allowed and does have sufficient free memory.
+
+       When new cpusets are created, they inherit the memory spread settings of their parent.
+
+       Setting memory spreading causes allocations for the affected page or slab caches to ignore the tasks NUMA mempolicy and be  spread  instead.     Tasks  using
+       mbind()  or  set_mempolicy() calls to set NUMA mempolicies will not notice any change in these calls as a result of their containing tasks memory spread set‐
+       tings.  If memory spreading is turned off, the currently specified NUMA mempolicy once again applies to memory page allocations.
+
+       Both memory_spread_page and memory_spread_slab are Boolean flag files.  By default they contain "0", meaning that the feature is off for that cpuset.   If  a
+       "1" is written to that file, that turns the named feature on.
+
+       This memory placement policy is also known (in other contexts) as round-robin or interleave.
+
+       This  policy can provide substantial improvements for jobs that need to place thread local data on the corresponding node, but that need to access large file
+       system data sets that need to be spread across the several nodes in the jobs cpuset in order to fit.  Without this policy, especially  for  jobs  that  might
+       have one thread reading in the data set, the memory allocation across the nodes in the jobs cpuset can become very uneven.
+
+   Memory Migration
+       Normally,  under  the  default  setting (disabled) of memory_migrate, once a page is allocated (given a physical page of main memory) then that page stays on
+       whatever node it was allocated, so long as it remains allocated, even if the cpusets memory placement policy mems subsequently changes.
+
+       When memory migration is enabled in a cpuset, if the mems setting of the cpuset is changed, then any memory page in use by any task in the cpuset that is  on
+       a memory node no longer allowed will be migrated to a memory node that is allowed.
+
+       Also  if  a  task  is moved into a cpuset with memory_migrate enabled, any memory pages it uses that were on memory nodes allowed in its previous cpuset, but
+       which are not allowed in its new cpuset, will be migrated to a memory node allowed in the new cpuset.
+
+       The relative placement of a migrated page within the cpuset is preserved during these migration operations if possible.  For example, if the page was on  the
+       second valid node of the prior cpuset, then the page will be placed on the second valid node of the new cpuset, if possible.
+
+FORMATS
+       The following formats are used to represent sets of CPUs and memory nodes.
+
+   Mask Format
+       The Mask Format is used to represent CPU and memory node bitmasks in the /proc/<pid>/status file.
+
+       It  is  hexadecimal, using ASCII characters "0" - "9" and "a" - "f". This format displays each 32-bit word in hex (zero filled) and for masks longer than one
+       word uses a comma separator between words. Words are displayed in big-endian order most significant first. And hex digits within a word are also  in  big-en‐
+       dian order.
+
+       The number of 32-bit words displayed is the minimum number needed to display all bits of the bitmask, based on the size of the bitmask.
+
+       Examples of the Mask Format:
+
+                      00000001                        # just bit 0 set
+                      80000000,00000000,00000000      # just bit 95 set
+                      00000001,00000000,00000000      # just bit 64 set
+                      000000ff,00000000               # bits 32-39 set
+                      00000000,000E3862               # 1,5,6,11-13,17-19 set
+
+       A  mask  with  bits 0, 1, 2, 4, 8, 16, 32 and 64 set displays as "00000001,00000001,00010117".  The first "1" is for bit 64, the second for bit 32, the third
+       for bit 16, the fourth for bit 8, the fifth for bit 4, and the "7" is for bits 2, 1 and 0.
+
+   List Format
+       The List Format for cpus and mems is a comma separated list of CPU or memory node numbers and ranges of numbers, in ASCII decimal.
+
+       Examples of the List Format:
+
+                      0-4,9           # bits 0, 1, 2, 3, 4 and 9 set
+                      0-2,7,12-14     # bits 0, 1, 2, 7, 12, 13 and 14 set
+
+RULES
+       The following rules apply to each cpuset:
+
+       * Its CPUs and memory nodes must be a (possibly equal) subset of its parents.
+
+       * It can only be marked cpu_exclusive if its parent is.
+
+       * It can only be marked mem_exclusive if its parent is.
+
+       * If it is cpu_exclusive, its CPUs may not overlap any sibling.
+
+       * If it is memory_exclusive, its memory nodes may not overlap any sibling.
+
+PERMISSIONS
+       The permissions of a cpuset are determined by the permissions of the  special  files  and  directories  in  the  cpuset  file  system,  normally  mounted  at
+       /dev/cpuset.
+
+       For  instance,  a task can put itself in some other cpuset (than its current one) if it can write the tasks file for that cpuset (requires execute permission
+       on the encompassing directories and write permission on that tasks file).
+
+       An additional constraint is applied to requests to place some other task in a cpuset.  One task may not attach another to a cpuset unless it would have  per‐
+       mission to send that task a signal.
+
+       A task may create a child cpuset if it can access and write the parent cpuset directory.  It can modify the CPUs or memory nodes in a cpuset if it can access
+       that cpusets directory (execute permissions on the encompassing directories) and write the corresponding cpus or mems file.
+
+       Note however that since changes to the CPUs of a cpuset don't apply to any task in that cpuset until said task is reattached to that cpuset,  it  would  nor‐
+       mally  not  be  a  good  idea to arrange the permissions on a cpuset so that some task could write the cpus file unless it could also write the tasks file to
+       reattach the tasks therein.
+
+       There is one minor difference between the manner in which these permissions are evaluated and the manner in which normal file  system  operation  permissions
+       are  evaluated.   The kernel evaluates relative pathnames starting at a tasks current working directory.  Even if one is operating on a cpuset file, relative
+       pathnames are evaluated relative to the current working directory, not relative to a tasks current cpuset.  The only ways that cpuset  paths  relative  to  a
+       tasks  current cpuset can be used are if either the tasks current working directory is its cpuset (it first did a cd or chdir to its cpuset directory beneath
+       /dev/cpuset, which is a bit unusual) or if some user code converts the relative cpuset path to a full file system path.
+
+WARNINGS
+   Updating a cpusets cpus
+       Changes to a cpusets cpus file do not take affect for any task in that cpuset until that tasks process ID (PID) is rewritten to the cpusets tasks file.  This
+       unusual  requirement  is  needed  to optimize a critical code path in the Linux kernel.  Beware that only one PID can be written at a time to a cpusets tasks
+       file.  Additional PIDs on a single write(2) system call are ignored.  One (unobvious) way to satisfy this requirement to rewrite the tasks file after  updat‐
+       ing the cpus file is to use the -u unbuffered option to the sed(1) command, as in the following scenario:
+              cd /dev/cpuset/foo              # /foo is an existing cpuset
+              /bin/echo 3 > cpus              # change /foo's cpus
+              sed -un p < tasks > tasks       # rewrite /foo's tasks file
+
+       If  one  examines  the  Cpus_allowed value in the /proc/<pid>/status file for one of the tasks in cpuset /foo in the above scenario, one will notice that the
+       value does not change when the cpus file is written (the echo command), but only later, after the tasks file is rewritten (the sed command).
+
+   Enabling memory_pressure
+       By default, the per-cpuset file memory_pressure always contains zero (0).  Unless this feature is enabled by writing "1" to the special file /dev/cpuset/mem‐
+       ory_pressure_enabled, the kernel does not compute per-cpuset memory_pressure.
+
+   Using the echo command
+       When  using  the echo command at the shell prompt to change the values of cpuset files, beware that most shell built-in echo commands to not display an error
+       message if the write(2) system call fails.  For example, if the command:
+              echo 19 > mems
+       failed because memory node 19 was not allowed (perhaps the current system does not have a memory node 19), then the above echo command would not display  any
+       error.  It is better to use the /bin/echo external command to change cpuset file settings, as this command will display write(2) errors, as in the example:
+              /bin/echo 19 > mems
+              /bin/echo: write error: No space left on device
+
+EXCEPTIONS
+       Not all allocations of system memory are constrained by cpusets, for the following reasons.
+
+       If  hot-plug functionality is used to remove all the CPUs that are currently assigned to a cpuset, then the kernel will automatically update the cpus_allowed
+       of all tasks attached to CPUs in that cpuset to allow all CPUs.  When memory hot-plug functionality for removing memory nodes is available, a similar  excep‐
+       tion  is expected to apply there as well.  In general, the kernel prefers to violate cpuset placement, over starving a task that has had all its allowed CPUs
+       or memory nodes taken offline.  User code should reconfigure cpusets to only refer to online CPUs and memory nodes when using hot-plug to add or remove  such
+       resources.
+
+       A  few  kernel critical internal memory allocation requests, marked GFP_ATOMIC, must be satisfied, immediately.  The kernel may drop some request or malfunc‐
+       tion if one of these allocations fail.  If such a request cannot be satisfied within the current tasks cpuset, then we relax the cpuset, and look for  memory
+       anywhere we can find it.  It's better to violate the cpuset than stress the kernel.
+
+       Allocations of memory requested by kernel drivers while processing an interrupt lack any relevant task context, and are not confined by cpusets.
+
+LIMITATIONS
+   Kernel limitations updating cpusets
+       In  order to minimize the impact of cpusets on critical kernel code, such as the scheduler, and due to the fact that the kernel does not support one task up‐
+       dating the memory placement of another task directly, the impact on a task of changing its cpuset CPU or memory node  placement,  or  of  changing  to  which
+       cpuset a task is attached, is subtle.
+
+       If  a  cpuset  has its memory nodes modified, then for each task attached to that cpuset, the next time that the kernel attempts to allocate a page of memory
+       for that task, the kernel will notice the change in the tasks cpuset, and update its per-task memory placement to remain within the new cpusets memory place‐
+       ment.   If  the task was using mempolicy MPOL_BIND, and the nodes to which it was bound overlap with its new cpuset, then the task will continue to use what‐
+       ever subset of MPOL_BIND nodes are still allowed in the new cpuset.  If the task was using MPOL_BIND and now none of its MPOL_BIND nodes are allowed  in  the
+       new  cpuset, then the task will be essentially treated as if it was MPOL_BIND bound to the new cpuset (even though its NUMA placement, as queried by get_mem‐
+       policy(), doesn't change).  If a task is moved from one cpuset to another, then the kernel will adjust the tasks memory placement, as above,  the  next  time
+       that the kernel attempts to allocate a page of memory for that task.
+
+       If a cpuset has its CPUs modified, each task using that cpuset does _not_ change its behavior automatically.  In order to minimize the impact on the critical
+       scheduling code in the kernel, tasks will continue to use their prior CPU placement until they are rebound to their cpuset, by rewriting  their  PID  to  the
+       'tasks'  file  of their cpuset.  If a task had been bound to some subset of its cpuset using the sched_setaffinity() call, and if any of that subset is still
+       allowed in its new cpuset settings, then the task will be restricted to the intersection of the CPUs it was allowed on before, and its new cpuset CPU  place‐
+       ment.   If,  on the other hand, there is no overlap between a tasks prior placement and its new cpuset CPU placement, then the task will be allowed to run on
+       any CPU allowed in its new cpuset.  If a task is moved from one cpuset to another, its CPU placement is updated in the same  way  as  if  the  tasks  PID  is
+       rewritten to the 'tasks' file of its current cpuset.
+
+       In  summary, the memory placement of a task whose cpuset is changed is updated by the kernel, on the next allocation of a page for that task, but the proces‐
+       sor placement is not updated, until that tasks PID is rewritten to the 'tasks' file of its cpuset.  This is done to avoid impacting the scheduler code in the
+       kernel with a check for changes in a tasks processor placement.
+
+   Rename limitations
+       You  can  use the rename(2) system call to rename cpusets.  Only simple renaming is supported, changing the name of a cpuset directory while keeping its same
+       parent.
+
+NOTES
+       Despite its name, the pid parameter is actually a thread id, and each thread in a threaded group can be attached to a different cpuset.  The  value  returned
+       from  a call to gettid(2) can be passed in the argument pid.
+
+EXAMPLES
+       The following examples demonstrate querying and setting cpuset options using shell commands.
+
+   Creating and attaching to a cpuset.
+       To create a new cpuset and attach the current command shell to it, the steps are:
+          1) mkdir /dev/cpuset (if not already done)
+          2) mount -t cpuset none /dev/cpuset (if not already done)
+          3) Create the new cpuset using mkdir(1).
+          4) Assign CPUs and memory nodes to the new cpuset.
+          5) Attach the shell to the new cpuset.
+
+       For  example,  the  following  sequence of commands will setup a cpuset named "Charlie", containing just CPUs 2 and 3, and memory node 1, and then attach the
+       current shell to that cpuset.
+
+              mkdir /dev/cpuset
+              mount -t cpuset cpuset /dev/cpuset
+              cd /dev/cpuset
+              mkdir Charlie
+              cd Charlie
+              /bin/echo 2-3 > cpus
+              /bin/echo 1 > mems
+              /bin/echo $$ > tasks
+              # The current shell is now running in cpuset Charlie
+              # The next line should display '/Charlie'
+              cat /proc/self/cpuset
+
+   Migrating a job to different memory nodes.
+       To migrate a job (the set of tasks attached to a cpuset) to different CPUs and memory nodes in the system, including moving the memory pages currently  allo‐
+       cated to that job, perform the following steps.
+          1) Lets say we want to move the job in cpuset alpha (CPUs 4-7 and memory nodes 2-3) to a new cpuset beta (CPUs 16-19 and memory nodes 8-9).
+          2) First create the new cpuset beta.
+          3) Then allow CPUs 16-19 and memory nodes 8-9 in beta.
+          4) Then enable memory_migration in beta.
+          5) Then move each task from alpha to beta.
+
+       The following sequence of commands accomplishes this.
+
+              cd /dev/cpuset
+              mkdir beta
+              cd beta
+              /bin/echo 16-19 > cpus
+              /bin/echo 8-9 > mems
+              /bin/echo 1 > memory_migrate
+              while read i; do /bin/echo $i; done < ../alpha/tasks > tasks
+
+       The above should move any tasks in alpha to beta, and any memory held by these tasks on memory nodes 2-3 to memory nodes 8-9, respectively.
+
+       Notice that the last step of the above sequence did not do:
+
+              cp ../alpha/tasks tasks
+
+       The  while  loop,  rather  than  the seemingly easier use of the cp(1) command, was necessary because only one task PID at a time may be written to the tasks
+       file.
+
+       The same affect (writing one pid at a time) as the while loop can be accomplished more efficiently, in fewer keystrokes and  in  syntax  that  works  on  any
+       shell, but alas more obscurely, by using the sed -u [unbuffered] option:
+
+              sed -un p < ../alpha/tasks > tasks
+
+ERRORS
+       The Linux kernel implementation of cpusets sets errno to specify the reason for a failed system call affecting cpusets.
+
+       The possible errno settings and their meaning when set on a failed cpuset call are as listed below.
+
+       ENOMEM Insufficient memory is available.
+
+       EBUSY  Attempted to remove a cpuset with attached tasks.
+
+       EBUSY  Attempted to remove a cpuset with child cpusets.
+
+       ENOENT Attempted to create a cpuset in a parent cpuset that doesn't exist.
+
+       ENOENT Attempted to access a non-existent file in a cpuset directory.
+
+       EEXIST Attempted to create a cpuset that already exists.
+
+       EEXIST Attempted to rename(2) a cpuset to a name that already exists.
+
+       ENOTDIR
+              Attempted to rename(2) a non-existent cpuset.
+
+       E2BIG  Attempted a write(2) system  call on a special cpuset file with a length larger than some kernel determined upper limit on the length of such writes.
+
+       ESRCH  Attempted to write the process ID (PID) of a non-existent task to a cpuset tasks file.
+
+       EACCES Attempted to write the process ID (PID) of a task to a cpuset tasks file when one lacks permission to move that task.
+
+       EACCESS
+              Attempted to write(2) a memory_pressure file.
+
+       ENOSPC Attempted to write the process ID (PID) of a task to a cpuset tasks file when the cpuset had an empty cpus or empty mems setting.
+
+       EINVAL Attempted to change a cpuset in a way that would violate a cpu_exclusive or mem_exclusive attribute of that cpuset or any of its siblings.
+
+       EINVAL Attempted to write(2) an empty cpus or mems list to the kernel.  The kernel creates new cpusets (via mkdir(2)) with empty cpus and mems.  But the ker‐
+              nel will not allow an empty list to be written to the special cpus or mems files of a cpuset.
+
+       EIO    Attempted to write(2) a string to a cpuset tasks file that does not begin with an ASCII decimal integer.
+
+       EIO    Attempted to rename(2) a cpuset outside of its current directory.
+
+       ENOSPC Attempted to write(2) a list to a cpus file that did not include any online CPUs.
+
+       ENOSPC Attempted to write(2) a list to a mems file that did not include any online memory nodes.
+
+       ENODEV The cpuset was removed by another task at the same time as a write(2) was attempted on one of the special files in the cpuset directory.
+
+       EACCES Attempted to add a CPU or memory node to a cpuset that is not already in its parent.
+
+       EACCES Attempted to set cpu_exclusive or mem_exclusive on a cpuset whose parent lacks the same setting.
+
+       EBUSY  Attempted to remove a CPU or memory node from a cpuset that is also in a child of that cpuset.
+
+       EFAULT Attempted to read(2) or write(2) a cpuset file using a buffer that is outside your accessible address space.
+
+       ENAMETOOLONG
+              Attempted to read a /proc/<pid>/cpuset file for a cpuset path that is longer than the kernel page size.
+
+       ENAMETOOLONG
+              Attempted to create a cpuset whose base directory name is longer than 255 characters.
+
+       ENAMETOOLONG
+              Attempted to create a cpuset whose full pathname including the "/dev/cpuset/" prefix is longer than 4095 characters.
+
+       EINVAL Specified a cpus or mems list to the kernel which included a range with the second number smaller than the first number.
+
+       EINVAL Specified a cpus or mems list to the kernel which included an invalid character in the string.
+
+       ERANGE Specified a cpus or mems list to the kernel which included a number too large for the kernel to set in its bitmasks.
+
+SEE ALSO
+       cat(1), echo(1), ls(1), mkdir(1), rmdir(1), sed(1), taskset(1), close(2), get_mempolicy(2), mbind(2), mkdir(2), open(2),  read(2)  rmdir(2),  sched_getaffin‐
+       ity(2), sched_setaffinity(2), set_mempolicy(2), sched_setscheduler(2), taskset(2), write(2), libbitmask(3), proc(5), migratepages(8), numactl(8).
+
+HISTORY
+       Cpusets appeared in version 2.6.13 of the Linux kernel.
+
+BUGS
+       memory_pressure cpuset files can be opened for writing, creation or truncation, but then the write(2) fails with errno == EACCESS, and the creation and trun‐
+       cation options on open(2) have no affect.
+
+AUTHOR
+       This man page was written by Paul Jackson.
+
+Linux 2.6                                                                    2006-05-25                                                                    CPUSET(4)

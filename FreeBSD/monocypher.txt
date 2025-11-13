@@ -1,0 +1,318 @@
+CRYPTO_LOCK(3MONOCYPHER)          3MONOCYPHER         CRYPTO_LOCK(3MONOCYPHER)
+
+NAME
+     crypto_aead_lock, crypto_aead_unlock, crypto_aead_init_x,
+     crypto_aead_init_djb, crypto_aead_init_ietf, crypto_aead_write,
+     crypto_aead_read – authenticated encryption with additional data
+
+SYNOPSIS
+     #include <monocypher.h>
+
+     void
+     crypto_aead_lock(uint8_t *cipher_text, uint8_t mac[16],
+         const uint8_t key[32], const uint8_t nonce[24], const uint8_t *ad,
+         size_t ad_size, const uint8_t *plain_text, size_t text_size);
+
+     int
+     crypto_aead_unlock(uint8_t *plain_text, const uint8_t mac[16],
+         const uint8_t key[32], const uint8_t nonce[24], const uint8_t *ad,
+         size_t ad_size, const uint8_t *cipher_text, size_t text_size);
+
+     void
+     crypto_aead_init_x(crypto_aead_ctx *ctx, const uint8_t key[32],
+         const uint8_t nonce[24]);
+
+     void
+     crypto_aead_init_djb(crypto_aead_ctx *ctx, const uint8_t key[32],
+         const uint8_t nonce[8]);
+
+     void
+     crypto_aead_init_ietf(crypto_aead_ctx *ctx, const uint8_t key[32],
+         const uint8_t nonce[12]);
+
+     void
+     crypto_aead_write(crypto_aead_ctx *ctx, uint8_t *cipher_text,
+         uint8_t mac[16], const uint8_t *ad, size_t ad_size,
+         const uint8_t *plain_text, size_t text_size);
+
+     int
+     crypto_aead_read(crypto_aead_ctx *ctx, uint8_t *plain_text,
+         const uint8_t mac[16], const uint8_t *ad, size_t ad_size,
+         const uint8_t *cipher_text, size_t text_size);
+
+DESCRIPTION
+     crypto_aead_lock() encrypts and authenticates a plaintext.  It can be
+     decrypted by crypto_aead_unlock().  The arguments are:
+
+     key     A 32-byte session key shared between the sender and the
+             recipient.  It must be secret and random.  Different methods can
+             be used to produce and exchange this key, such as Diffie-Hellman
+             key exchange, password-based key derivation (the password must be
+             communicated on a secure channel), or even meeting physically.
+             See crypto_x25519(3monocypher) for a building block for a key
+             exchange protocol and crypto_argon2(3monocypher) for password-
+             based key derivation.
+
+     nonce   A 24-byte number, used only once with any given session key.  It
+             does not need to be secret or random, but it does have to be
+             unique.  Never use the same nonce twice with the same key.  This
+             would basically reveal the affected messages and leave you
+             vulnerable to forgeries.  The easiest (and recommended) way to
+             generate this nonce is to select it at random.  See
+             intro(3monocypher) about random number generation (use your
+             operating system's random number generator).
+
+             Note: crypto_aead_init_djb() and crypto_aead_init_ietf() use
+             shorter nonces (8 and 12 bytes respectively), which cannot be
+             selected at random without risking a catastrophic reuse.  For
+             those shorter nonces, use a counter instead.
+
+     mac     A 16-byte message authentication code (MAC) that can only be
+             produced by someone who knows the session key.  This guarantee
+             cannot be upheld if a nonce has been reused with the session key
+             because doing so allows the attacker to learn the authentication
+             key associated with that nonce.  The MAC is intended to be sent
+             along with the ciphertext.
+
+     ad      Additional data to authenticate.  It will not be encrypted.  This
+             is used to authenticate relevant data that cannot be encrypted.
+             May be NULL if ad_size is zero.
+
+     ad_size
+             Length of the additional data, in bytes.
+
+     plain_text
+             The secret message.  Its contents will be kept hidden from
+             attackers.  Its length, however, will not.  Be careful when
+             combining encryption with compression.  See intro(3monocypher)
+             for details.
+
+     cipher_text
+             The encrypted message.
+
+     text_size
+             Length of both plain_text and cipher_text, in bytes.
+
+     The cipher_text and plain_text arguments may point to the same buffer for
+     in-place encryption.  Otherwise, the buffers they point to must not
+     overlap.
+
+     crypto_aead_unlock() first checks the integrity of an encrypted message.
+     If it has been corrupted, crypto_aead_unlock() does nothing and returns
+     -1 immediately.  Otherwise it decrypts the message then returns zero.
+     Always check the return value.
+
+   Incremental interface
+     For long messages that may not fit in memory, first initialise a context
+     with crypto_aead_init_x(), then encrypt each chunk with
+     crypto_aead_write().  The receiving end will initialise its own context
+     with crypto_aead_init_x(), then decrypt each chunk with
+     crypto_aead_read().
+
+     Just like crypto_aead_unlock(), crypto_aead_read() first checks the
+     integrity of the encrypted chunk, then returns -1 immediately if it has
+     been corrupted.  Otherwise it decrypts the chunk then returns zero.
+     Always check the return value.
+
+     The encryption key is changed between each chunk, providing a symmetric
+     ratchet that enforces the order of the messages.  Attackers cannot
+     reorder chunks without crypto_aead_read() noticing.  Truncation however
+     is not detected.  You must detect the last chunk manually.  Possible
+     methods include using ad to mark the last chunk differently, prefixing
+     all plaintext messages with a marking byte (and use a different marking
+     byte for the last chunk), or sending the total message size up front and
+     encode the remaining size in ad.  Once the last chunk is sent or
+     received, wipe the context with crypto_wipe(3monocypher).
+
+     crypto_aead_init_djb() and crypto_aead_init_ietf() are variants of
+     crypto_aead_init_x() with a shorter nonce.  Those nonces are too short to
+     be selected at random.  Use a counter instead.
+
+     In addition to its short nonce, crypto_aead_init_ietf() has a smaller
+     internal counter that limits the size of chunks to 256GiB.  Exceeding
+     this size leaks the contents of the chunk.  It is provided strictly for
+     compatibility with RFC 8439.
+
+RETURN VALUES
+     crypto_aead_lock(), crypto_aead_init_x(), crypto_aead_init_djb(),
+     crypto_aead_init_ietf(), and crypto_aead_write() return nothing.
+     crypto_aead_unlock() and crypto_aead_read() return 0 on success or -1 if
+     the message was corrupted (i.e.  mac mismatched the combination of key,
+     nonce, ad, and cipher_text).  Corruption can be caused by transmission
+     errors, programmer error, or an attacker's interference.  plain_text does
+     not need to be wiped if the decryption fails.
+
+EXAMPLES
+     The following examples assume the existence of arc4random_buf(), which
+     fills the given buffer with cryptographically secure random bytes.  If
+     arc4random_buf() does not exist on your system, see intro(3monocypher)
+     for advice about how to generate cryptographically secure random bytes.
+
+     Encryption:
+
+           uint8_t key        [32];    /* Random, secret session key  */
+           uint8_t nonce      [24];    /* Use only once per key       */
+           uint8_t plain_text [12] = "Lorem ipsum"; /* Secret message */
+           uint8_t mac        [16];    /* Message authentication code */
+           uint8_t cipher_text[12];              /* Encrypted message */
+           arc4random_buf(key,   32);
+           arc4random_buf(nonce, 24);
+           crypto_aead_lock(cipher_text, mac,
+                            key, nonce,
+                            NULL, 0,
+                            plain_text, sizeof(plain_text));
+           /* Wipe secrets if they are no longer needed */
+           crypto_wipe(plain_text, 12);
+           crypto_wipe(key, 32);
+           /* Transmit cipher_text, nonce, and mac over the network,
+            * store them in a file, etc.
+            */
+
+     To decrypt the above:
+
+           uint8_t       key        [32]; /* Same as the above        */
+           uint8_t       nonce      [24]; /* Same as the above        */
+           const uint8_t cipher_text[12]; /* Encrypted message        */
+           const uint8_t mac        [16]; /* Received along with text */
+           uint8_t       plain_text [12]; /* Secret message           */
+           if (crypto_aead_unlock(plain_text, mac,
+                                  key, nonce,
+                                  NULL, 0,
+                                  cipher_text, sizeof(plain_text))) {
+               /* The message is corrupted.
+                * Wipe key if it is no longer needed,
+                * and abort the decryption.
+                */
+               crypto_wipe(key, 32);
+           } else {
+               /* ...do something with the decrypted text here... */
+               /* Finally, wipe secrets if they are no longer needed */
+               crypto_wipe(plain_text, 12);
+               crypto_wipe(key, 32);
+           }
+
+     In-place encryption:
+
+           uint8_t key  [32];    /* Random, secret session key  */
+           uint8_t nonce[24];    /* Use only once per key       */
+           uint8_t text [12] = "Lorem ipsum"; /* Secret message */
+           uint8_t mac  [16];    /* Message authentication code */
+           arc4random_buf(key,   32);
+           arc4random_buf(nonce, 24);
+           crypto_aead_lock(text, mac,
+                            key, nonce,
+                            NULL, 0,
+                            text, sizeof(text));
+           /* Wipe secrets if they are no longer needed */
+           crypto_wipe(key, 32);
+           /* Transmit cipher_text, nonce, and mac over the network,
+            * store them in a file, etc.
+            */
+
+     In-place decryption:
+
+           uint8_t        key  [32]; /* Same as the above             */
+           const uint8_t  nonce[24]; /* Same as the above             */
+           const uint8_t  mac  [16]; /* Received from along with text */
+           uint8_t        text [12]; /* Message to decrypt            */
+           if (crypto_aead_unlock(text, mac, key, nonce,
+                                  NULL, 0,
+                                  text, sizeof(text))) {
+                   /* The message is corrupted.
+                    * Wipe key if it is no longer needed,
+                    * and abort the decryption.
+                    */
+                   crypto_wipe(key, 32);
+           } else {
+                   /* ...do something with the decrypted text here... */
+                   /* Finally, wipe secrets if they are no longer needed */
+                   crypto_wipe(text, 12);
+                   crypto_wipe(key, 32);
+           }
+
+     Encrypt one message with the incremental interface:
+
+           uint8_t key        [32];    /* Random, secret session key  */
+           uint8_t nonce      [24];    /* Use only once per key       */
+           uint8_t plain_text [12] = "Lorem ipsum"; /* Secret message */
+           uint8_t mac        [16];    /* Message authentication code */
+           uint8_t cipher_text[12];              /* Encrypted message */
+           arc4random_buf(key,   32);
+           arc4random_buf(nonce, 24);
+           crypto_aead_ctx ctx;
+           crypto_aead_init_x(&ctx, key, nonce);
+           crypto_aead_write(&ctx, cipher_text, mac,
+                             NULL, 0,
+                             plain_text, sizeof(plain_text));
+           /* Wipe secrets if they are no longer needed */
+           crypto_wipe(plain_text, 12);
+           crypto_wipe(key, 32);
+           crypto_wipe(&ctx, sizeof(ctx));
+           /* Transmit cipher_text, nonce, and mac over the network,
+            * store them in a file, etc.
+            */
+
+     To decrypt the above:
+
+           uint8_t       key        [32]; /* Same as the above        */
+           uint8_t       nonce      [24]; /* Same as the above        */
+           const uint8_t cipher_text[12]; /* Encrypted message        */
+           const uint8_t mac        [16]; /* Received along with text */
+           uint8_t       plain_text [12]; /* Secret message           */
+           crypto_aead_ctx ctx;
+           crypto_aead_init_x(&ctx, key, nonce);
+           if (crypto_aead_read(&ctx, plain_text, mac,
+                                NULL, 0,
+                                cipher_text, sizeof(plain_text))) {
+                   /* The message is corrupted.
+                    * Wipe key if it is no longer needed,
+                    * and abort the decryption.
+                    */
+                   crypto_wipe(key, 32);
+                   crypto_wipe(&ctx, sizeof(ctx));
+           } else {
+                   /* ...do something with the decrypted text here... */
+                   /* Finally, wipe secrets if they are no longer needed */
+                   crypto_wipe(plain_text, 12);
+                   crypto_wipe(key, 32);
+                   crypto_wipe(&ctx, sizeof(ctx));
+           }
+
+SEE ALSO
+     crypto_x25519(3monocypher), crypto_wipe(3monocypher), intro(3monocypher)
+
+STANDARDS
+     These functions implement RFC 8439.  crypto_aead_lock() and
+     crypto_aead_init_x(), use XChaCha20 instead of ChaCha20.
+     crypto_aead_init_djb() uses a 64-bit nonce and a 64-bit counter.
+     crypto_aead_init_ietf() is fully compatible with the RFC.  Note that
+     XChaCha20 derives from ChaCha20 the same way XSalsa20 derives from
+     Salsa20 and benefits from the same security reduction (proven secure as
+     long as ChaCha20 itself is secure).
+
+     crypto_aead_read() and crypto_aead_write() preserve the nonce and counter
+     defined in crypto_aead_init_x(), crypto_aead_init_djb(), or
+     crypto_aead_init_ietf(), and instead change the session key.  The new
+     session key is made from bytes [32..63] of the ChaCha20 stream used to
+     generate the authentication key and encrypt the message.  (Recall that
+     bytes [0..31] are the authentication key, and bytes [64..]  are used to
+     encrypt the message.)
+
+HISTORY
+     The crypto_lock() and crypto_unlock() functions first appeared in
+     Monocypher 0.1.  crypto_lock_aead() and crypto_unlock_aead() were
+     introduced in Monocypher 1.1.0.  In Monocypher 2.0.0, the underlying
+     algorithms for these functions were changed from a custom
+     XChaCha20/Poly1305 construction to an implementation of RFC 7539 (now RFC
+     8439) with XChaCha20 instead of ChaCha20.  The crypto_lock_encrypt() and
+     crypto_lock_auth() functions were removed in Monocypher 2.0.0.  In
+     Monocypher 4.0.0, the crypto_lock() and crypto_unlock() were removed,
+     Functions were renamed and arguments reordered for consistency, and the
+     incremental interface was added.
+
+CAVEATS
+     Monocypher does not perform any input validation.  Any deviation from the
+     specified input and output length ranges results in undefined behaviour.
+     Make sure your inputs are correct.
+
+FreeBSD 14.1-RELEASE             March 6, 2023            FreeBSD 14.1-RELEASE

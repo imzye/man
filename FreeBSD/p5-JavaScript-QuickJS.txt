@@ -1,0 +1,292 @@
+JavaScript::QuickJS(3)                     User Contributed Perl Documentation
+
+
+NAME
+       JavaScript::QuickJS - Run JavaScript via QuickJS
+       <https://bellard.org/quickjs> in Perl
+
+SYNOPSIS
+       Quick and dirty …
+
+           my $val = JavaScript::QuickJS->new()->eval( q<
+               let foo = "bar";
+               [ "The", "last", "value", "is", "returned." ];
+           > );
+
+       … or load ES6 modules:
+
+           my $js = JavaScript::QuickJS->new()->helpers();
+
+           $js->eval_module( q/
+               import * as coolStuff from 'cool/stuff';
+
+               for (const [key, value] of Object.entries(coolStuff)) {
+                   console.log(key, value);
+               }
+           / );
+
+DESCRIPTION
+       This library embeds Fabrice Bellard’s QuickJS
+       <https://bellard.org/quickjs> engine into a Perl XS module. You can
+       thus run JavaScript (ES2020 <https://tc39.github.io/ecma262/>
+       specification) directly in your Perl programs.
+
+       This distribution includes all needed C code; unlike with most XS
+       modules that interface with C libraries, you don’t need QuickJS pre-
+       installed on your system.
+
+METHODS
+   $obj = CLASS->new( %CONFIG_OPTS )
+       Instantiates CLASS. %CONFIG_OPTS have the same effect as in configure()
+       below.
+
+   $obj = OBJ->configure( %OPTS )
+       Tunes the QuickJS interpreter. Returns OBJ.
+
+       %OPTS are any of:
+
+       •   "max_stack_size"
+
+       •   "memory_limit"
+
+       •   "gc_threshold"
+
+       For more information on these, see QuickJS itself.
+
+   $obj = OBJ->set_globals( NAME1 => VALUE1, .. )
+       Sets 1 or more globals in OBJ. See below for details on type
+       conversions from Perl to JavaScript.
+
+       Returns OBJ.
+
+   $obj = OBJ->helpers()
+       Defines QuickJS’s “helpers”, e.g., "console.log".
+
+       Returns OBJ.
+
+   $obj = OBJ->std()
+       Enables QuickJS’s "std" module and creates a global of the same name
+       that’s usable from both script and module modes.
+
+       This resembles "qjs"’s "--std" flag except that it only enables "std",
+       not "os".
+
+       Returns OBJ.
+
+   $obj = OBJ->os()
+       Like std() but enables QuickJS’s "os" module instead of "std".
+
+   $VALUE = OBJ->eval( $JS_CODE )
+       Like running "qjs -e '...'". Returns $JS_CODE’s last value; see below
+       for details on type conversions from JavaScript to Perl.
+
+       Untrapped exceptions in JavaScript will be rethrown as Perl exceptions.
+
+       $JS_CODE is a character string.
+
+   $promise = OBJ->eval_module( $JS_CODE )
+       Runs $JS_CODE as a module, which enables ES6 module syntax.  Note that
+       no values can be returned directly in this mode of execution.
+
+       Returns a promise that resolves once the module is loaded.
+
+   $obj = OBJ->await()
+       Blocks until all of OBJ’s pending work (if any) is complete.
+
+       For example, if you eval() some code that creates a promise, call this
+       to wait for that promise to complete.
+
+       Returns OBJ.
+
+   $obj = OBJ->set_module_base( $PATH )
+       Sets a base path (a byte string) for ES6 module imports.
+
+       Returns OBJ.
+
+   $obj = OBJ->unset_module_base()
+       Restores QuickJS’s default directory for ES6 module imports (as of this
+       writing, it’s the process’s current directory).
+
+       Returns OBJ.
+
+TYPE CONVERSION: JAVASCRIPT → PERL
+       This module converts returned values from JavaScript thus:
+
+       •   JS string primitives become character strings in Perl.
+
+       •   JS number & boolean primitives become corresponding Perl values.
+
+       •   JS null & undefined become Perl undef.
+
+       •   JS objects …
+
+           •   Arrays become Perl array references.
+
+           •   “Plain” objects become Perl hash references.
+
+           •   Function, RegExp, and Date objects become Perl
+               JavaScript::QuickJS::Function, JavaScript::QuickJS::RegExp, and
+               JavaScript::QuickJS::Date objects, respectively.
+
+           •   Behaviour is UNDEFINED for other object types.
+
+TYPE CONVERSION: PERL → JAVASCRIPT
+       Generally speaking, it’s the inverse of JS → Perl:
+
+       •   Perl strings, numbers, & booleans become corresponding JavaScript
+           primitives.
+
+           IMPORTANT: Perl versions before 5.36 don’t reliably distinguish
+           “numeric strings” from “numbers”. If your perl predates 5.36,
+           typecast accordingly to prevent your Perl “number” from becoming a
+           JavaScript string. (Even in 5.36 and later it’s still a good idea.)
+
+       •   Perl undef becomes JS null.
+
+       •   Unblessed array & hash references become JavaScript arrays and
+           “plain” objects.
+
+       •   Types::Serialiser booleans become JavaScript booleans.
+
+       •   Perl code references become JavaScript functions.
+
+       •   Perl JavaScript::QuickJS::Function, JavaScript::QuickJS::RegExp,
+           and JavaScript::QuickJS::Date objects become their original
+           JavaScript objects.
+
+       •   Anything else triggers an exception.
+
+MEMORY HANDLING NOTES
+       If any instance of a class of this distribution is DESTROY()ed at
+       Perl’s global destruction, we assume that this is a memory leak, and a
+       warning is thrown. To prevent this, avoid circular references, and
+       clean up all global instances.
+
+       Callbacks make that tricky. When you give a JavaScript function to
+       Perl, that Perl object holds a reference to the QuickJS context. Only
+       once that object is DESTROY()ed do we release that QuickJS context
+       reference.
+
+       Consider the following:
+
+           my $return;
+
+           $js->set_globals(  __return => sub { $return = shift; () } );
+
+           $js->eval('__return( a => a )');
+
+       This sets $return to be a JavaScript::QuickJS::Function instance. That
+       object holds a reference to $js. $js also stores "__return()", which is
+       a Perl code reference that closes around $return. Thus, we have a
+       reference cycle: $return refers to $js, and $js refers to $return.
+       Those two values will thus leak, and you’ll see a warning about it at
+       Perl’s global destruction time.
+
+       To break the reference cycle, just do:
+
+           undef $return;
+
+       … once you’re done with that variable.
+
+       You might have thought you could instead do:
+
+           $js->set_globals( __return => undef )
+
+       … but that doesn’t work because $js holds a reference to all Perl code
+       references it ever receives. This is because QuickJS, unlike Perl,
+       doesn’t expose object destructors (DESTROY() in Perl), so there’s no
+       good way to release that reference to the code reference.
+
+CHARACTER ENCODING NOTES
+       QuickJS (like all JS engines) assumes its strings are text. Since Perl
+       can’t distinguish text from bytes, though, it’s possible to convert
+       Perl byte strings to JavaScript strings. It often yields a reasonable
+       result, but not always.
+
+       One place where this falls over, though, is ES6 modules. QuickJS, when
+       it loads an ES6 module, decodes that module’s string literals to
+       characters.  Thus, if you pass in byte strings from Perl, QuickJS will
+       treat your Perl byte strings’ code points as character code points, and
+       when you combine those code points with those from your ES6 module you
+       may get mangled output.
+
+       Another place that may create trouble is if your argument to eval() or
+       eval_module() (above) contains JSON. Perl’s popular JSON encoders
+       output byte strings by default, but as noted above, eval() and
+       eval_module() need character strings. So either configure your JSON
+       encoder to output characters, or decode JSON bytes to characters before
+       calling eval()/eval_module().
+
+       For best results, always interact with QuickJS via character strings,
+       and double-check that you’re doing it that way consistently.
+
+NUMERIC PRECISION
+       Note the following if you expect to deal with “large” numbers:
+
+       •   JavaScript’s numeric-precision limits apply. (cf.
+           Number.MAX_SAFE_INTEGER <https://developer.mozilla.org/en-
+           US/docs/Web/JavaScript/Reference/Global_Objects/Number/MAX_SAFE_INTEGER>.)
+
+       •   Perl’s stringification of numbers may be less precise than
+           JavaScript’s storage of those numbers, or even than Perl’s own
+           storage.  For example, in Perl 5.34 "print 1000000000000001.0"
+           prints 1e+15.
+
+           To counteract this loss of precision, add 0 to Perl’s numeric
+           scalars (e.g., "print 0 + 1000000000000001.0"); this will encourage
+           Perl to store numbers as integers when possible, which fixes this
+           precision problem.
+
+       •   Long-double and quad-math perls may lose precision when converting
+           numbers to/from JavaScript. To see if this affects your perl—which,
+           if you’re unsure, it probably doesn’t—run "perl -V", and see if
+           that perl’s compile-time options mention long doubles or quad math.
+
+OS SUPPORT
+       QuickJS supports Linux, macOS, and Windows natively, so these work
+       without issue.
+
+       FreeBSD, OpenBSD, & Cygwin work after a few patches that we apply when
+       building this library. (Hopefully these will eventually merge into
+       QuickJS.)
+
+LIBATOMIC
+       QuickJS uses C11 atomics. Most platforms implement that functionality
+       in hardware, but others (e.g., arm32) don’t. To fill that void, we need
+       to link to libatomic.
+
+       This library’s build logic detects whether libatomic is necessary and
+       will only link to it if needed. If, for some reason, you need manual
+       control over that linking, set "JS_QUICKJS_LINK_LIBATOMIC" in the
+       environment to 1 or a falsy value.
+
+       If you don’t know what any of that means, you can probably ignore it.
+
+SEE ALSO
+       Other JavaScript modules on CPAN include:
+
+       •   JavaScript::Duktape::XS and JavaScript::Duktape make the Duktape
+           <https://duktape.org> library available to Perl. They’re similar to
+           this library, but Duktape itself (as of this writing) lacks support
+           for several JavaScript constructs that QuickJS supports. (It’s also
+           slower.)
+
+       •   JavaScript::V8 and JavaScript::V8::XS expose Google’s V8
+           <https://v8.dev> library to Perl. Neither seems to support current
+           V8 versions.
+
+       •   JE is a pure-Perl (!) JavaScript engine.
+
+       •   JavaScript and JavaScript::Lite expose Mozilla’s SpiderMonkey
+           <https://spidermonkey.dev/> engine to Perl.
+
+LICENSE & COPYRIGHT
+       This library is copyright 2023 Gasper Software Consulting.
+
+       This library is licensed under the same terms as Perl itself.  See
+       perlartistic.
+
+       QuickJS is copyright Fabrice Bellard and Charlie Gordon. It is released
+       under the MIT license <https://opensource.org/licenses/MIT>.
+
+perl v5.40.2                      2024-02-14            JavaScript::QuickJS(3)

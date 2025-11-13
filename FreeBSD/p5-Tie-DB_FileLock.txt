@@ -1,0 +1,131 @@
+DB_FileLock(3)        User Contributed Perl Documentation       DB_FileLock(3)
+
+
+NAME
+       Tie::DB_FileLock - Locking access to Berkeley DB 1.x
+
+SYNOPSIS
+        use Tie::DB_FileLock;
+
+        [$X =] tie %hash, 'Tie::DB_FileLock', [$file, $flags, $mode, $DB_HASH];
+        [$X =] tie %hash, 'Tie::DB_FileLock', $file, $flags, $mode, $DB_BTREE;
+
+        $X->debug($value);
+
+        $status = $X->del($key [, $flags]);
+        $status = $X->put($key, $value [, $flags]);
+        $status = $X->get($key, $value [, $flags]);
+        $status = $X->seq($key, $value, $flags);
+        $status = $X->sync([$flags]);
+        $status = $X->fd();
+
+        # BTREE only
+        $count = $X->get_dup($key);
+        @list  = $X->get_dup($key);
+        %list  = $X->get_dup($key, 1);
+        $status = $X->find_dup($key, $value);
+        $status = $X->del_dup($key, $value);
+
+        # DBM Filters
+        $old_filter = $db->filter_store_key  ( sub { ... } );
+        $old_filter = $db->filter_store_value( sub { ... } );
+        $old_filter = $db->filter_fetch_key  ( sub { ... } );
+        $old_filter = $db->filter_fetch_value( sub { ... } );
+
+        [undef $X;]
+        untie %hash;
+
+DESCRIPTION
+       Module DB_File allows perl to tie hashes to on-disk dbm files, but
+       fails to provide any method by which the hashes might be locked,
+       providing exclusive access or preventing page-level collisions.
+       Tie::DB_FileLock extends DB_File, providing a locking layer using
+       flock().
+
+       You should probably be using BerkeleyDB which supports locking, but if
+       that isn't an option read on.
+
+       Unlike Tie::DB_Lock, Tie::DB_FileLock does not duplicate files to allow
+       concurrent access for readers and writers.  Tie::DB_FileLock is
+       therefore suitable for large dbms with relatively short locking
+       periods.
+
+       Tie::DB_FileLock is designed as a drop-in replacement for DB_File,
+       requiring minimal code changes.  Change all occurrences of "DB_File" to
+       "Tie::DB_FileLock" and all should be well.  DB_RECNO is not presently
+       supported by Tie::DB_FileLock.
+
+       Arguments to Tie::DB_FileLock are identical as those to DB_File.  The
+       dbm is locked for shared access if opened RO, exclusively otherwise.
+       The default, as in DB_File, is read/write/create.
+
+       Use of the predefined references $DB_HASH, $DB_BTREE, and $DB_RECNO, is
+       identical as with DB_File.  When creating your own, the new call is the
+       same, but the object created is a DB_File::XXX thing and not a
+       Tie::DB_FileLock::XXX thing -- therefore error messages will refer to
+       DB_File::XXX.
+
+LOCKING
+       The locking autoline presented by 'Programming Perl' is incorrect for
+       multiple simultaneous writers.  The problem is that a successful
+       flock() lags the tie() by some amount of time.  However the snapshot of
+       the on-disk dbm is that from the time of the tie() and not of the
+       flock(), therefore once the flock() succeeds, the dbm may have changed
+       and therefore must be tie()ed again, loading the latest state of the
+       dbm.
+
+       Locking cannot be at the level of methods like FETCH() and STORE()
+       because then statements like $hash{$a}++ are not atomic: that is, a
+       different access could (will) take place between the FETCH($a) and the
+       STORE($a + 1).
+
+       Therefore locking must occur at a coarser level and the programmer must
+       not dawdle when locks are active.  In the case of loops, an effort need
+       be made to untie() the dbm periodically, permitting other processes
+       their due.  At some additional cost, a program may yield access to
+       others by breaking a loop like:
+
+             tie(%db, 'Tie::DB_FileLock', "arg1.db");
+             foreach (1..10000) { accesses; }
+             untie(%db);
+
+       into:
+
+             my $dbobj = tie(%db, 'Tie::DB_FileLock', "arg1.db");
+             foreach (1..10000) {
+               accesses;
+               if ($_ % 100 == 0) {
+                  $dbobj->unlockDB();
+                  $dbobj->lockDB();
+               }
+             }
+             undef($dbobj);
+             untie(%db);
+
+SPEED
+       The first law of thermodynamics holds true for object methods.  Access
+       through DB_FileLock is slower than through DB_File.  Working with a
+       40meg dbm containing 110k records, we find
+
+                               Keys    Values  Store
+               DB_File         30s     35s     55s
+               DB_FileLock     40s     45s     60s
+
+       All values +/- ~3s.  YMMV.  Previous versions of DB_FileLock had a very
+       inefficient FIRSTKEY() routine.
+
+AUTHOR
+       John M Vinopal, jmv@cpan.org
+
+SEE ALSO
+       BerkeleyDB - a replacement for DB_File that does locking and much much
+       more.
+
+       Tie::DB_Lock - duplicates the data file to allow concurrent
+       readers/writers, inappropriate for large data files.
+
+       DB_File::Lock - locks using an external lockfile, otherwise similar.
+
+       DB_File(3p).
+
+perl v5.40.2                      2010-05-14                    DB_FileLock(3)

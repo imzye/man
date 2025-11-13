@@ -1,0 +1,813 @@
+Minion(3pm)                                                                         User Contributed Perl Documentation                                                                         Minion(3pm)
+
+NAME
+       Minion - Job queue
+
+SYNOPSIS
+         use Minion;
+
+         # Connect to backend
+         my $minion = Minion->new(Pg => 'postgresql://postgres@/test');
+
+         # Add tasks
+         $minion->add_task(something_slow => sub ($job, @args) {
+           sleep 5;
+           say 'This is a background worker process.';
+         });
+
+         # Enqueue jobs
+         $minion->enqueue(something_slow => ['foo', 'bar']);
+         $minion->enqueue(something_slow => [1, 2, 3] => {priority => 5});
+
+         # Perform jobs for testing
+         $minion->enqueue(something_slow => ['foo', 'bar']);
+         $minion->perform_jobs;
+
+         # Start a worker to perform up to 12 jobs concurrently
+         my $worker = $minion->worker;
+         $worker->status->{jobs} = 12;
+         $worker->run;
+
+DESCRIPTION
+       Minion is a high performance job queue for the Perl programming language, with support for multiple named queues, priorities, high priority fast lane, delayed jobs, job dependencies, job progress,
+       job results, retries with backoff, rate limiting, unique jobs, expiring jobs, statistics, distributed workers, parallel processing, autoscaling, remote control, Mojolicious
+       <https://mojolicious.org> admin ui, resource leak protection and multiple backends (such as PostgreSQL <https://www.postgresql.org>).
+
+       Job queues allow you to process time and/or computationally intensive tasks in background processes, outside of the request/response lifecycle of web applications. Among those tasks you'll
+       commonly find image resizing, spam filtering, HTTP downloads, building tarballs, warming caches and basically everything else you can imagine that's not super fast.
+
+       Take a look at our excellent documentation in Minion::Guide!
+
+EXAMPLES
+       This distribution also contains a great example application you can use for inspiration. The link checker <https://github.com/mojolicious/minion/tree/main/examples/linkcheck> will show you how to
+       integrate background jobs into well-structured Mojolicious applications.
+
+EVENTS
+       Minion inherits all events from Mojo::EventEmitter and can emit the following new ones.
+
+   enqueue
+         $minion->on(enqueue => sub ($minion, $id) {
+           ...
+         });
+
+       Emitted after a job has been enqueued, in the process that enqueued it.
+
+         $minion->on(enqueue => sub ($minion, $id) {
+           say "Job $id has been enqueued.";
+         });
+
+   worker
+         $minion->on(worker => sub ($minion, $worker) {
+           ...
+         });
+
+       Emitted in the worker process after it has been created.
+
+         $minion->on(worker => sub ($minion, $worker) {
+           say "Worker $$ started.";
+         });
+
+ATTRIBUTES
+       Minion implements the following attributes.
+
+   app
+         my $app = $minion->app;
+         $minion = $minion->app(MyApp->new);
+
+       Application for job queue, defaults to a Mojo::HelloWorld object. Note that this attribute is weakened.
+
+   backend
+         my $backend = $minion->backend;
+         $minion     = $minion->backend(Minion::Backend::Pg->new);
+
+       Backend, usually a Minion::Backend::Pg object.
+
+   backoff
+         my $cb  = $minion->backoff;
+         $minion = $minion->backoff(sub {...});
+
+       A callback used to calculate the delay for automatically retried jobs, defaults to "(retries ** 4) + 15" (15, 16, 31, 96, 271, 640...), which means that roughly 25 attempts can be made in 21 days.
+
+         $minion->backoff(sub ($retries) {
+           return ($retries ** 4) + 15 + int(rand 30);
+         });
+
+   missing_after
+         my $after = $minion->missing_after;
+         $minion   = $minion->missing_after(172800);
+
+       Amount of time in seconds after which workers without a heartbeat will be considered missing and removed from the registry by "repair", defaults to 1800 (30 minutes).
+
+   remove_after
+         my $after = $minion->remove_after;
+         $minion   = $minion->remove_after(86400);
+
+       Amount of time in seconds after which jobs that have reached the state "finished" and have no unresolved dependencies will be removed automatically by "repair", defaults to 172800 (2 days). It is
+       not recommended to set this value below 2 days.
+
+   stuck_after
+         my $after = $minion->stuck_after;
+         $minion   = $minion->stuck_after(86400);
+
+       Amount of time in seconds after which jobs that have not been processed will be considered stuck by "repair" and transition to the "failed" state, defaults to 172800 (2 days).
+
+   tasks
+         my $tasks = $minion->tasks;
+         $minion   = $minion->tasks({foo => sub {...}});
+
+       Registered tasks.
+
+METHODS
+       Minion inherits all methods from Mojo::EventEmitter and implements the following new ones.
+
+   add_task
+         $minion = $minion->add_task(foo => sub {...});
+         $minion = $minion->add_task(foo => 'MyApp::Task::Foo');
+
+       Register a task, which can be a closure or a custom Minion::Job subclass. Note that support for custom task classes is EXPERIMENTAL and might change without warning!
+
+         # Job with result
+         $minion->add_task(add => sub ($job, $first, $second) {
+           $job->finish($first + $second);
+         });
+         my $id = $minion->enqueue(add => [1, 1]);
+         my $result = $minion->job($id)->info->{result};
+
+   broadcast
+         my $bool = $minion->broadcast('some_command');
+         my $bool = $minion->broadcast('some_command', [@args]);
+         my $bool = $minion->broadcast('some_command', [@args], [$id1, $id2, $id3]);
+
+       Broadcast remote control command to one or more workers.
+
+         # Broadcast "stop" command to all workers to kill job 10025
+         $minion->broadcast('stop', [10025]);
+
+         # Broadcast "kill" command to all workers to interrupt job 10026
+         $minion->broadcast('kill', ['INT', 10026]);
+
+         # Broadcast "jobs" command to pause worker 23
+         $minion->broadcast('jobs', [0], [23]);
+
+   class_for_task
+         my $class = $minion->class_for_task('foo');
+
+       Return job class for task. Note that this method is EXPERIMENTAL and might change without warning!
+
+   enqueue
+         my $id = $minion->enqueue('foo');
+         my $id = $minion->enqueue(foo => [@args]);
+         my $id = $minion->enqueue(foo => [@args] => {priority => 1});
+
+       Enqueue a new job with "inactive" state. Arguments get serialized by the "backend" (often with Mojo::JSON), so you shouldn't send objects and be careful with binary data, nested data structures
+       with hash and array references are fine though.
+
+       These options are currently available:
+
+       attempts
+           attempts => 25
+
+         Number of times performing this job will be attempted, with a delay based on "backoff" after the first attempt, defaults to 1.
+
+       delay
+           delay => 10
+
+         Delay job for this many seconds (from now), defaults to 0.
+
+       expire
+           expire => 300
+
+         Job is valid for this many seconds (from now) before it expires.
+
+       lax
+           lax => 1
+
+         Existing  jobs  this  job depends on may also have transitioned to the "failed" state to allow for it to be processed, defaults to "false". Note that this option is EXPERIMENTAL and might change
+         without warning!
+
+       notes
+           notes => {foo => 'bar', baz => [1, 2, 3]}
+
+         Hash reference with arbitrary metadata for this job that gets serialized by the "backend" (often with Mojo::JSON), so you shouldn't send objects and be careful  with  binary  data,  nested  data
+         structures with hash and array references are fine though.
+
+       parents
+           parents => [$id1, $id2, $id3]
+
+         One or more existing jobs this job depends on, and that need to have transitioned to the state "finished" before it can be processed.
+
+       priority
+           priority => 5
+
+         Job priority, defaults to 0. Jobs with a higher priority get performed first. Priorities can be positive or negative, but should be in the range between 100 and -100.
+
+       queue
+           queue => 'important'
+
+         Queue to put job in, defaults to "default".
+
+   foreground
+         my $bool = $minion->foreground($id);
+
+       Retry job in "minion_foreground" queue, then perform it right away with a temporary worker in this process, very useful for debugging.
+
+   guard
+         my $guard = $minion->guard('foo', 3600);
+         my $guard = $minion->guard('foo', 3600, {limit => 20});
+
+       Same as "lock", but returns a scope guard object that automatically releases the lock as soon as the object is destroyed, or "undef" if aquiring the lock failed.
+
+         # Only one job should run at a time (unique job)
+         $minion->add_task(do_unique_stuff => sub ($job, @args) {
+           return $job->finish('Previous job is still active')
+             unless my $guard = $minion->guard('fragile_backend_service', 7200);
+           ...
+         });
+
+         # Only five jobs should run at a time and we try again later if necessary
+         $minion->add_task(do_concurrent_stuff => sub ($job, @args) {
+           return $job->retry({delay => 30})
+             unless my $guard = $minion->guard('some_web_service', 60, {limit => 5});
+           ...
+         });
+
+   history
+         my $history = $minion->history;
+
+       Get history information for job queue.
+
+       These fields are currently available:
+
+       daily
+           daily => [{epoch => 12345, finished_jobs => 95, failed_jobs => 2}, ...]
+
+         Hourly counts for processed jobs from the past day.
+
+   is_locked
+         my $bool = $minion->is_locked('foo');
+
+       Check if a lock with that name is currently active.
+
+   job
+         my $job = $minion->job($id);
+
+       Get Minion::Job object without making any changes to the actual job or return "undef" if job does not exist.
+
+         # Check job state
+         my $state = $minion->job($id)->info->{state};
+
+         # Get job metadata
+         my $progress = $minion->job($id)->info->{notes}{progress};
+
+         # Get job result
+         my $result = $minion->job($id)->info->{result};
+
+   jobs
+         my $jobs = $minion->jobs;
+         my $jobs = $minion->jobs({states => ['inactive']});
+
+       Return Minion::Iterator object to safely iterate through job information.
+
+         # Iterate through jobs for two tasks
+         my $jobs = $minion->jobs({tasks => ['foo', 'bar']});
+         while (my $info = $jobs->next) {
+           say "$info->{id}: $info->{state}";
+         }
+
+         # Remove all failed jobs from a named queue
+         my $jobs = $minion->jobs({states => ['failed'], queues => ['unimportant']});
+         while (my $info = $jobs->next) {
+           $minion->job($info->{id})->remove;
+         }
+
+         # Count failed jobs for a task
+         say $minion->jobs({states => ['failed'], tasks => ['foo']})->total;
+
+       These options are currently available:
+
+       ids
+           ids => ['23', '24']
+
+         List only jobs with these ids.
+
+       notes
+           notes => ['foo', 'bar']
+
+         List only jobs with one of these notes.
+
+       queues
+           queues => ['important', 'unimportant']
+
+         List only jobs in these queues.
+
+       states
+           states => ['inactive', 'active']
+
+         List only jobs in these states.
+
+       tasks
+           tasks => ['foo', 'bar']
+
+         List only jobs for these tasks.
+
+       These fields are currently available:
+
+       args
+           args => ['foo', 'bar']
+
+         Job arguments.
+
+       attempts
+           attempts => 25
+
+         Number of times performing this job will be attempted.
+
+       children
+           children => ['10026', '10027', '10028']
+
+         Jobs depending on this job.
+
+       created
+           created => 784111777
+
+         Epoch time job was created.
+
+       delayed
+           delayed => 784111777
+
+         Epoch time job was delayed to.
+
+       expires
+           expires => 784111777
+
+         Epoch time job is valid until before it expires.
+
+       finished
+           finished => 784111777
+
+         Epoch time job was finished.
+
+       id
+           id => 10025
+
+         Job id.
+
+       lax
+           lax => 0
+
+         Existing jobs this job depends on may also have failed to allow for it to be processed.
+
+       notes
+           notes => {foo => 'bar', baz => [1, 2, 3]}
+
+         Hash reference with arbitrary metadata for this job.
+
+       parents
+           parents => ['10023', '10024', '10025']
+
+         Jobs this job depends on.
+
+       priority
+           priority => 3
+
+         Job priority.
+
+       queue
+           queue => 'important'
+
+         Queue name.
+
+       result
+           result => 'All went well!'
+
+         Job result.
+
+       retried
+           retried => 784111777
+
+         Epoch time job has been retried.
+
+       retries
+           retries => 3
+
+         Number of times job has been retried.
+
+       started
+           started => 784111777
+
+         Epoch time job was started.
+
+       state
+           state => 'inactive'
+
+         Current job state, usually "active", "failed", "finished" or "inactive".
+
+       task
+           task => 'foo'
+
+         Task name.
+
+       time
+           time => 78411177
+
+         Server time.
+
+       worker
+           worker => '154'
+
+         Id of worker that is processing the job.
+
+   lock
+         my $bool = $minion->lock('foo', 3600);
+         my $bool = $minion->lock('foo', 3600, {limit => 20});
+
+       Try  to  acquire  a  named lock that will expire automatically after the given amount of time in seconds. You can release the lock manually with "unlock" to limit concurrency, or let it expire for
+       rate limiting. For convenience you can also use "guard" to release the lock automatically, even if the job failed.
+
+         # Only one job should run at a time (unique job)
+         $minion->add_task(do_unique_stuff => sub ($job, @args) {
+           return $job->finish('Previous job is still active')
+             unless $minion->lock('fragile_backend_service', 7200);
+           ...
+           $minion->unlock('fragile_backend_service');
+         });
+
+         # Only five jobs should run at a time and we wait for our turn
+         $minion->add_task(do_concurrent_stuff => sub ($job, @args) {
+           sleep 1 until $minion->lock('some_web_service', 60, {limit => 5});
+           ...
+           $minion->unlock('some_web_service');
+         });
+
+         # Only a hundred jobs should run per hour and we try again later if necessary
+         $minion->add_task(do_rate_limited_stuff => sub ($job, @args) {
+           return $job->retry({delay => 3600})
+             unless $minion->lock('another_web_service', 3600, {limit => 100});
+           ...
+         });
+
+       An expiration time of 0 can be used to check if a named lock could have been acquired without creating one.
+
+         # Check if the lock "foo" could have been acquired
+         say 'Lock could have been acquired' unless $minion->lock('foo', 0);
+
+       Or to simply check if a named lock already exists you can also use "is_locked".
+
+       These options are currently available:
+
+       limit
+           limit => 20
+
+         Number of shared locks with the same name that can be active at the same time, defaults to 1.
+
+   new
+         my $minion = Minion->new(Pg => 'postgresql://postgres@/test');
+         my $minion = Minion->new(Pg => Mojo::Pg->new);
+
+       Construct a new Minion object.
+
+   perform_jobs
+         $minion->perform_jobs;
+         $minion->perform_jobs({queues => ['important']});
+
+       Perform all jobs with a temporary worker, very useful for testing.
+
+         # Longer version
+         my $worker = $minion->worker;
+         while (my $job = $worker->register->dequeue(0)) { $job->perform }
+         $worker->unregister;
+
+       These options are currently available:
+
+       id
+           id => '10023'
+
+         Dequeue a specific job.
+
+       min_priority
+           min_priority => 3
+
+         Do not dequeue jobs with a lower priority.
+
+       queues
+           queues => ['important']
+
+         One or more queues to dequeue jobs from, defaults to "default".
+
+   perform_jobs_in_foreground
+         $minion->perform_jobs_in_foreground;
+         $minion->perform_jobs_in_foreground({queues => ['important']});
+
+       Same as "perform_jobs", but all jobs are performed in the current process, without spawning new processes.
+
+   repair
+         $minion = $minion->repair;
+
+       Repair worker registry and job queue if necessary.
+
+   reset
+         $minion = $minion->reset({all => 1});
+
+       Reset job queue.
+
+       These options are currently available:
+
+       all
+           all => 1
+
+         Reset everything.
+
+       locks
+           locks => 1
+
+         Reset only locks.
+
+   result_p
+         my $promise = $minion->result_p($id);
+         my $promise = $minion->result_p($id, {interval => 5});
+
+       Return a Mojo::Promise object for the result of a job. The state "finished" will result in the promise being "fullfilled", and the state "failed" in the promise being  "rejected".  This  operation
+       can be cancelled by resolving the promise manually at any time.
+
+         # Enqueue job and receive the result at some point in the future
+         my $id = $minion->enqueue('foo');
+         $minion->result_p($id)->then(sub ($info) {
+           my $result = ref $info ? $info->{result} : 'Job already removed';
+           say "Finished: $result";
+         })->catch(sub ($info) {
+           say "Failed: $info->{result}";
+         })->wait;
+
+       These options are currently available:
+
+       interval
+           interval => 5
+
+         Polling interval in seconds for checking if the state of the job has changed, defaults to 3.
+
+   stats
+         my $stats = $minion->stats;
+
+       Get statistics for the job queue.
+
+         # Check idle workers
+         my $idle = $minion->stats->{inactive_workers};
+
+       These fields are currently available:
+
+       active_jobs
+           active_jobs => 100
+
+         Number of jobs in "active" state.
+
+       active_locks
+           active_locks => 100
+
+         Number of active named locks.
+
+       active_workers
+           active_workers => 100
+
+         Number of workers that are currently processing a job.
+
+       delayed_jobs
+           delayed_jobs => 100
+
+         Number of jobs in "inactive" state that are scheduled to run at specific time in the future or have unresolved dependencies.
+
+       enqueued_jobs
+           enqueued_jobs => 100000
+
+         Rough estimate of how many jobs have ever been enqueued.
+
+       failed_jobs
+           failed_jobs => 100
+
+         Number of jobs in "failed" state.
+
+       finished_jobs
+           finished_jobs => 100
+
+         Number of jobs in "finished" state.
+
+       inactive_jobs
+           inactive_jobs => 100
+
+         Number of jobs in "inactive" state.
+
+       inactive_workers
+           inactive_workers => 100
+
+         Number of workers that are currently not processing a job.
+
+       uptime
+           uptime => 1000
+
+         Uptime in seconds.
+
+       workers
+           workers => 200;
+
+         Number of registered workers.
+
+   unlock
+         my $bool = $minion->unlock('foo');
+
+       Release a named lock that has been previously acquired with "lock".
+
+   worker
+         my $worker = $minion->worker;
+
+       Build Minion::Worker object. Note that this method should only be used to implement custom workers.
+
+         # Use the standard worker with all its features
+         my $worker = $minion->worker;
+         $worker->status->{jobs} = 12;
+         $worker->status->{queues} = ['important'];
+         $worker->run;
+
+         # Perform one job manually in a separate process
+         my $worker = $minion->repair->worker->register;
+         my $job    = $worker->dequeue(5);
+         $job->perform;
+         $worker->unregister;
+
+         # Perform one job manually in this process
+         my $worker = $minion->repair->worker->register;
+         my $job    = $worker->dequeue(5);
+         if (my $err = $job->execute) { $job->fail($err) }
+         else                         { $job->finish }
+         $worker->unregister;
+
+         # Build a custom worker performing multiple jobs at the same time
+         my %jobs;
+         my $worker = $minion->repair->worker->register;
+         do {
+           for my $id (keys %jobs) {
+             delete $jobs{$id} if $jobs{$id}->is_finished;
+           }
+           if (keys %jobs >= 4) { sleep 5 }
+           else {
+             my $job = $worker->dequeue(5);
+             $jobs{$job->id} = $job->start if $job;
+           }
+         } while keys %jobs;
+         $worker->unregister;
+
+   workers
+         my $workers = $minion->workers;
+         my $workers = $minion->workers({ids => [2, 3]});
+
+       Return Minion::Iterator object to safely iterate through worker information.
+
+         # Iterate through workers
+         my $workers = $minion->workers;
+         while (my $info = $workers->next) {
+           say "$info->{id}: $info->{host}";
+         }
+
+       These options are currently available:
+
+       ids
+           ids => ['23', '24']
+
+         List only workers with these ids.
+
+       These fields are currently available:
+
+       id
+           id => 22
+
+         Worker id.
+
+       host
+           host => 'localhost'
+
+         Worker host.
+
+       jobs
+           jobs => ['10023', '10024', '10025', '10029']
+
+         Ids of jobs the worker is currently processing.
+
+       notified
+           notified => 784111777
+
+         Epoch time worker sent the last heartbeat.
+
+       pid
+           pid => 12345
+
+         Process id of worker.
+
+       started
+           started => 784111777
+
+         Epoch time worker was started.
+
+       status
+           status => {queues => ['default', 'important']}
+
+         Hash reference with whatever status information the worker would like to share.
+
+API
+       This is the class hierarchy of the Minion distribution.
+
+       • Minion
+
+       • Minion::Backend
+
+         • Minion::Backend::Pg
+
+       • Minion::Command::minion
+
+       • Minion::Command::minion::job
+
+       • Minion::Command::minion::worker
+
+       • Minion::Iterator
+
+       • Minion::Job
+
+       • Minion::Worker
+
+       • Mojolicious::Plugin::Minion
+
+       • Mojolicious::Plugin::Minion::Admin
+
+BUNDLED FILES
+       The Minion distribution includes a few files with different licenses that have been bundled for internal use.
+
+   Minion Artwork
+         Copyright (C) 2017, Sebastian Riedel.
+
+       Licensed under the CC-SA License, Version 4.0 <http://creativecommons.org/licenses/by-sa/4.0>.
+
+   Bootstrap
+         Copyright (C) 2011-2021 The Bootstrap Authors.
+
+       Licensed under the MIT License, <http://creativecommons.org/licenses/MIT>.
+
+   jQuery
+         Copyright (C) jQuery Foundation.
+
+       Licensed under the MIT License, <http://creativecommons.org/licenses/MIT>.
+
+   D3.js
+         Copyright (C) 2010-2016, Michael Bostock.
+
+       Licensed under the 3-Clause BSD License, <https://opensource.org/licenses/BSD-3-Clause>.
+
+   epoch.js
+         Copyright (C) 2014 Fastly, Inc.
+
+       Licensed under the MIT License, <http://creativecommons.org/licenses/MIT>.
+
+   Font Awesome
+         Copyright (C) Dave Gandy.
+
+       Licensed under the MIT License, <http://creativecommons.org/licenses/MIT>, and the SIL OFL 1.1, <http://scripts.sil.org/OFL>.
+
+   moment.js
+         Copyright (C) JS Foundation and other contributors.
+
+       Licensed under the MIT License, <http://creativecommons.org/licenses/MIT>.
+
+AUTHORS
+   Project Founder
+       Sebastian Riedel, "sri@cpan.org".
+
+   Contributors
+       In alphabetical order:
+
+         Andrey Khozov
+
+         Andrii Nikitin
+
+         Brian Medley
+
+         Franz Skale
+
+         Henrik Andersen
+
+         Hubert "depesz" Lubaczewski
+
+         Joel Berger
+
+         Paul Williams
+
+         Russell Shingleton
+
+         Stefan Adams
+
+         Stuart Skelton
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2014-2024, Sebastian Riedel and others.
+
+       This program is free software, you can redistribute it and/or modify it under the terms of the Artistic License version 2.0.
+
+SEE ALSO
+       <https://github.com/mojolicious/minion>, Minion::Guide, <https://minion.pm>, Mojolicious::Guides, <https://mojolicious.org>.
+
+perl v5.40.0                                                                                     2024-12-20                                                                                     Minion(3pm)

@@ -1,0 +1,227 @@
+HTTP::Async(3pm)                                                 User Contributed Perl Documentation                                                HTTP::Async(3pm)
+
+NAME
+       HTTP::Async - process multiple HTTP requests in parallel without blocking.
+
+SYNOPSIS
+       Create an object and add some requests to it:
+
+           use HTTP::Async;
+           my $async = HTTP::Async->new;
+
+           # create some requests and add them to the queue.
+           $async->add( HTTP::Request->new( GET => 'http://www.perl.org/'         ) );
+           $async->add( HTTP::Request->new( GET => 'http://www.ecclestoad.co.uk/' ) );
+
+       and then EITHER process the responses as they come back:
+
+           while ( my $response = $async->wait_for_next_response ) {
+               # Do some processing with $response
+           }
+
+       OR do something else if there is no response ready:
+
+           while ( $async->not_empty ) {
+               if ( my $response = $async->next_response ) {
+                   # deal with $response
+               } else {
+                   # do something else
+               }
+           }
+
+       OR just use the async object to fetch stuff in the background and deal with the responses at the end.
+
+           # Do some long code...
+           for ( 1 .. 100 ) {
+             some_function();
+             $async->poke;            # lets it check for incoming data.
+           }
+
+           while ( my $response = $async->wait_for_next_response ) {
+               # Do some processing with $response
+           }
+
+DESCRIPTION
+       Although using the conventional "LWP::UserAgent" is fast and easy it does have some drawbacks - the code execution blocks until the request has been
+       completed and it is only possible to process one request at a time.  "HTTP::Async" attempts to address these limitations.
+
+       It gives you a 'Async' object that you can add requests to, and then get the requests off as they finish. The actual sending and receiving of the requests is
+       abstracted. As soon as you add a request it is transmitted, if there are too many requests in progress at the moment they are queued. There is no concept of
+       starting or stopping - it runs continuously.
+
+       Whilst it is waiting to receive data it returns control to the code that called it meaning that you can carry out processing whilst fetching data from the
+       network. All without forking or threading - it is actually done using "select" lists.
+
+Default settings:
+       There are a number of default settings that should be suitable for most uses.  However in some circumstances you might wish to change these.
+
+                   slots:  20
+                 timeout:  180 (seconds)
+        max_request_time:  300 (seconds)
+           max_redirect:   7
+           poll_interval:  0.05 (seconds)
+              proxy_host:  ''
+              proxy_port:  ''
+              local_addr:  ''
+              local_port:  ''
+              ssl_options: {}
+              cookie_jar:  undef
+              peer_addr:   ''
+
+       If defined, is expected to be similar to "HTTP::Cookies", with extract_cookies and add_cookie_header methods.
+
+       The option max_redirects has been renamed to max_redirect to be consistent with LWP::UserAgent, although max_redirects still works.
+
+METHODS
+   new
+           my $async = HTTP::Async->new( %args );
+
+       Creates a new HTTP::Async object and sets it up. Variations from the default can be set by passing them in as %args.
+
+   slots, timeout, max_request_time, poll_interval, max_redirect, proxy_host, proxy_port, local_addr, local_port, ssl_options, cookie_jar, peer_addr
+           $old_value = $async->slots;
+           $new_value = $async->slots( $new_value );
+
+       Get/setters for the $async objects config settings. Timeout is for inactivity and is in seconds.
+
+       Slots is the maximum number of parallel requests to make.
+
+   add
+           my @ids      = $async->add(@requests);
+           my $first_id = $async->add(@requests);
+
+       Adds requests to the queues. Each request is given an unique integer id (for this $async) that can be used to track the requests if needed. If called in list
+       context an array of ids is returned, in scalar context the id of the first request added is returned.
+
+   add_with_opts
+           my $id = $async->add_with_opts( $request, \%opts );
+
+       This method lets you add a single request to the queue with options that differ from the defaults. For example you might wish to set a longer timeout or to
+       use a specific proxy. Returns the id of the request.
+
+       The method croaks when passed an invalid option.
+
+   poke
+           $async->poke;
+
+       At fairly frequent intervals some housekeeping needs to performed - such as reading received data and starting new requests. Calling "poke" lets the object
+       do this and then return quickly. Usually you will not need to use this as most other methods do it for you.
+
+       You should use "poke" if your code is spending time elsewhere (ie not using the async object) to allow it to keep the data flowing over the network. If it is
+       not used then the buffers may fill up and completed responses will not be replaced with new requests.
+
+   next_response
+           my $response          = $async->next_response;
+           my ( $response, $id ) = $async->next_response;
+
+       Returns the next response (as a HTTP::Response object) that is waiting, or returns undef if there is none. In list context it returns a (response, id) pair,
+       or an empty list if none. Does not wait for a response so returns very quickly.
+
+   wait_for_next_response
+           my $response          = $async->wait_for_next_response( 3.5 );
+           my ( $response, $id ) = $async->wait_for_next_response( 3.5 );
+
+       As "next_response" but only returns if there is a next response or the time in seconds passed in has elapsed. If no time is given then it blocks. Whilst
+       waiting it checks the queues every c<poll_interval> seconds. The times can be fractional seconds.
+
+   to_send_count
+           my $pending = $async->to_send_count;
+
+       Returns the number of items which have been added but have not yet started being processed.
+
+   to_return_count
+           my $completed = $async->to_return_count;
+
+       Returns the number of items which have completed transferring, and are waiting to be returned by next_response().
+
+   in_progress_count
+           my $running = $async->in_progress_count;
+
+       Returns the number of items which are currently being processed asynchronously.
+
+   total_count
+           my $total = $async->total_count;
+
+       Returns the sum of the to_send_count, in_progress_count and to_return_count.
+
+       This should be the total number of items which have been added that have not yet been returned by next_response().
+
+   info
+           print $async->info;
+
+       Prints a line describing what the current state is.
+
+   remove
+           $async->remove($id);
+           my $success = $async->remove($id);
+
+       Removes the item with the given id no matter which state it is currently in. Returns true if an item is removed, and false otherwise.
+
+   remove_all
+           $async->remove_all;
+           my $success = $async->remove_all;
+
+       Removes all items no matter what states they are currently in. Returns true if any items are removed, and false otherwise.
+
+   empty, not_empty
+           while ( $async->not_empty ) { ...; }
+           while (1) { ...; last if $async->empty; }
+
+       Returns true or false depending on whether there are request or responses still on the object.
+
+   DESTROY
+       The destroy method croaks if an object is destroyed but is not empty. This is to help with debugging.
+
+SEE ALSO
+       HTTP::Async::Polite - a polite form of this module. Slows the scraping down by domain so that the remote server is not overloaded.
+
+GOTCHAS
+       The responses may not come back in the same order as the requests were made.  For https requests to work, you must have Net::HTTPS::NB installed.
+
+THANKS
+       Egor Egorov contributed patches for proxies, catching connections that die before headers sent and more.
+
+       Tomohiro Ikebe from livedoor.jp submitted patches (and a test) to properly handle 304 responses.
+
+       Naveed Massjouni for adding the https handling code.
+
+       Alex Balhatchet for adding the https + proxy handling code, and for making the tests run ok in parallel.
+
+       Josef Toman for fixing two bugs, one related to header handling and another related to producing an absolute URL correctly.
+
+       Github user 'c00ler-' for adding LocalAddr and LocalPort support.
+
+       rt.cpan.org user 'Florian (fschlich)' for typo in documentation.
+
+       Heikki Vatiainen for the ssl_options support patch.
+
+       Daniel Lintott of the Debian Perl Group for pointing out a test failure when using a very recent version of HTTP::Server::Simple to implement t/TestServer.pm
+
+BUGS AND REPO
+       Please submit all bugs, patches etc on github
+
+       <https://github.com/evdb/HTTP-Async>
+
+AUTHOR
+       Edmund von der Burg "<evdb@ecclestoad.co.uk>".
+
+       <http://www.ecclestoad.co.uk/>
+
+LICENCE AND COPYRIGHT
+       Copyright (c) 2006, Edmund von der Burg "<evdb@ecclestoad.co.uk>".  All rights reserved.
+
+       This module is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+DISCLAIMER OF WARRANTY
+       BECAUSE THIS SOFTWARE IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY FOR THE SOFTWARE, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN OTHERWISE
+       STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES PROVIDE THE SOFTWARE "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED,
+       INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND
+       PERFORMANCE OF THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR, OR CORRECTION.
+
+       IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR REDISTRIBUTE THE
+       SOFTWARE AS PERMITTED BY THE ABOVE LICENCE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF
+       THE USE OR INABILITY TO USE THE SOFTWARE (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD
+       PARTIES OR A FAILURE OF THE SOFTWARE TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH
+       DAMAGES.
+
+perl v5.34.0                                                                 2022-06-14                                                             HTTP::Async(3pm)

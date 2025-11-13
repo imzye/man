@@ -1,0 +1,264 @@
+Net::OpenID::Server(3)                     User Contributed Perl Documentation
+
+
+NAME
+       Net::OpenID::Server - Library for building your own OpenID
+       server/provider
+
+VERSION
+       version 1.09
+
+SYNOPSIS
+         use Net::OpenID::Server;
+
+         my $nos = Net::OpenID::Server->new(
+           args         => $cgi,
+           get_user     => \&get_user,
+           get_identity => \&get_identity,
+           is_identity  => \&is_identity,
+           is_trusted   => \&is_trusted,
+           endpoint_url => "http://example.com/server.bml",
+           setup_url    => "http://example.com/pass-identity.bml",
+         );
+
+         # From your OpenID server endpoint:
+
+         my ($type, $data) = $nos->handle_page;
+         if ($type eq "redirect") {
+             WebApp::redirect_to($data);
+         } elsif ($type eq "setup") {
+             my %setup_opts = %$data;
+             # ... show them setup page(s), with options from setup_map
+             # it's then your job to redirect them at the end to "return_to"
+             # (or whatever you've named it in setup_map)
+         } else {
+             WebApp::set_content_type($type);
+             WebApp::print($data);
+         }
+
+DESCRIPTION
+       This is the Perl API for (the server half of) OpenID, a distributed
+       identity system based on proving you own a URL, which is then your
+       identity.  More information is available at:
+
+         http://openid.net/
+
+       As of version 1.01 this module has support for both OpenID 1.1 and 2.0.
+       Prior to this, only 1.1 was supported.
+
+CONSTRUCTOR
+       Net::OpenID::Server->new([ %opts ])
+           You can set anything in the constructor options that there are
+           getters/setters methods for below.  That includes: args, get_user,
+           is_identity, is_trusted, setup_url, and setup_map.  See below for
+           docs.
+
+METHODS
+       ($type, $data) = $nos->handle_page([ %opts ])
+           Returns a $type and $data, where $type can be:
+
+           "redirect"
+               ... in which case you redirect the user (via your web
+               framework's redirect functionality) to the URL specified in
+               $data.
+
+           "setup"
+               ... in which case you should show the user a page (or redirect
+               them to one of your pages) where they can setup trust for the
+               given "trust_root" in the hashref in $data, and then redirect
+               them to "return_to" at the end.  Note that the parameters in
+               the $data hashref are as you named them with setup_map.
+
+           Some content type
+               Otherwise, set the content type to $type and print the page
+               out, the contents of which are in $data.
+
+           The optional %opts may contain:
+
+           "redirect_for_setup"
+               If set to a true value, signals that you don't want to handle
+               the "setup" return type from handle_page, and you'd prefer it
+               just be converted to a "redirect" type to your already-defined
+               "setup_url", with the arguments from setup_map already
+               appended.
+
+       $url = $nos->signed_return_url( %opts )
+           Generates a positive identity assertion URL that you'd redirect a
+           user to.  Typically this would be after they've completed your
+           setup_url.  Once trust has been setup, the "handle_page" method
+           will redirect you to this signed return automatically.
+
+           The URL generated is the consumer site's return_to URL, with a
+           signed identity included in the GET arguments.  The %opts are:
+
+           "identity"
+               Required.  The identity URL to sign.
+
+           "claimed_id"
+               Optional.  The claimed_id URL to sign.
+
+           "return_to"
+               Required.  The base of the URL being generated.
+
+           "assoc_handle"
+               The association handle to use for the signature.  If blank,
+               dumb consumer mode is used, and the library picks the handle.
+
+           "trust_root"
+               Optional.  If present, the "return_to" URL will be checked to
+               be within ("under") this trust_root.  If not, the URL returned
+               will be undef.
+
+           "ns"
+               Optional.
+
+           "additional_fields"
+               Optional.  If present, must be a hashref with keys starting
+               with "\w+\.".  All keys and values will be returned in the
+               response, and signed.  This is used for OpenID extensions.
+
+       $url = $nos->cancel_return_url( %opts )
+           Generates a cancel notice to the return_to URL, if a user declines
+           to share their identity.  %opts are:
+
+           "return_to"
+               Required.  The base of the URL being generated.
+
+       $nos->args
+           Can be used in 1 of 3 ways:
+
+           1. Setting the way which the Server instances obtains parameters:
+
+           $nos->args( $reference )
+
+           Where $reference is either a HASH ref, CODE ref, Apache $r (for
+           get_args only), Apache::Request $apreq, or CGI.pm $cgi.  If a CODE
+           ref, the subref must return the value given one argument (the
+           parameter to retrieve)
+
+           2. Get a paramater:
+
+           my $foo = $nos->get_args("foo");
+
+           When given an unblessed scalar, it retrieves the value.  It croaks
+           if you haven't defined a way to get at the parameters.
+
+           3. Get the getter:
+
+           my $code = $nos->get_args;
+
+           Without arguments, returns a subref that returns the value given a
+           parameter name.
+
+       $nos->get_user($code)
+       $code = $nos->get_user; $u = $code->();
+           Get/set the subref returning a defined value representing the
+           logged in user, or undef if no user.  The return value (let's call
+           it $u) is not touched.  It's simply given back to your other
+           callbacks (is_identity and is_trusted).
+
+       $nos->get_identity($code)
+       $code = $nos->get_identity; $identity = $code->($u, $identity);
+           For OpenID 2.0. Get/set the subref returning a identity. This is
+           called when claimed identity is 'identifier_select'.
+
+       $nos->is_identity($code)
+       $code = $nos->is_identity; $code->($u, $identity_url)
+           Get/set the subref which is responsible for returning true if the
+           logged in user $u (which may be undef if user isn't logged in) owns
+           the URL tree given by $identity_url.  Note that if $u is undef,
+           your function should always return 0.  The framework doesn't do
+           that for you so you can do unnecessary work on purpose if you care
+           about exposing information via timing attacks.
+
+       $nos->is_trusted($code)
+       $code = $nos->is_trusted; $code->($u, $trust_root, $is_identity)
+           Get/set the subref which is responsible for returning true if the
+           logged in user $u (which may be undef if user isn't logged in)
+           trusts the URL given by $trust_root to know his/her identity.  Note
+           that if either $u is undef, or $is_identity is false (this is the
+           result of your previous is_identity callback), you should return 0.
+           But your callback is always run so you can avoid timing attacks, if
+           you care.
+
+       $nos->server_secret($scalar)
+       $nos->server_secret($code)
+       $code = $nos->server_secret; ($secret) = $code->($time);
+           The server secret is used to generate and sign lots of per-consumer
+           secrets, and is never handed out directly.
+
+           In the simplest (and least secure) form, you configure a static
+           secret value with a scalar.  If you use this method and change the
+           scalar value, all consumers that have cached their per-consumer
+           secrets will start failing, since their secrets no longer work.
+
+           The recommended usage, however, is to supply a subref that returns
+           a secret based on the provided $time, a unix timestamp.  And if one
+           doesn't exist for that time, create, store and return it (with
+           appropriate locking so you never return different secrets for the
+           same time.)  Your secret can just be random characters, but it's
+           your responsibility to do the locking and storage.  If you want
+           help generating random characters, call
+           Net::OpenID::Server::rand_chars($len).
+
+           Your secret may not exceed 255 characters.
+
+       $nos->setup_url($url)
+       $url = $nos->setup_url
+           Get/set the user setup URL.  This is the URL the user is told to go
+           to if they're either not logged in, not who they said they were, or
+           trust hasn't been setup.  You use the same URL in all three cases.
+           Your setup URL may contain existing query parameters.
+
+       $nos->endpoint_url($url)
+       $url = $nos->endpoint_url
+           For OpenID 2.0. Get/set the op_endpoint URL.
+
+       $nos->setup_map($hashref)
+       $hashref = $nos->setup_map
+           When this module gives a consumer site a user_setup_url from your
+           provided setup_url, it also has to append a number of get
+           parameters onto your setup_url, so your app based at that setup_url
+           knows what it has to setup.  Those keys are named, by default,
+           "trust_root", "return_to", "identity", and "assoc_handle".  If you
+           don't like those parameter names, this $hashref setup_map lets you
+           change one or more of them.  The hashref's keys should be the
+           default values, with values being the parameter names you want.
+
+       Net::OpenID::Server->rand_chars($len)
+           Utility function to return a string of $len random characters.  May
+           be called as package method, object method, or regular function.
+
+       $nos->err
+           Returns the last error, in form "errcode: errtext";
+
+       $nos->errcode
+           Returns the last error code.
+
+       $nos->errtext
+           Returns the last error text.
+
+COPYRIGHT
+       This module is Copyright (c) 2005 Brad Fitzpatrick.  All rights
+       reserved.
+
+       You may distribute under the terms of either the GNU General Public
+       License or the Artistic License, as specified in the Perl README file.
+       If you need more liberal licensing terms, please contact the
+       maintainer.
+
+WARRANTY
+       This is free software. IT COMES WITHOUT WARRANTY OF ANY KIND.
+
+MAILING LIST
+       The Net::OpenID family of modules has a mailing list powered by Google
+       Groups. For more information, see
+       http://groups.google.com/group/openid-perl .
+
+SEE ALSO
+       OpenID website:  http://openid.net/
+
+AUTHORS
+       Brad Fitzpatrick <brad@danga.com>
+
+perl v5.40.2                      2011-11-10            Net::OpenID::Server(3)

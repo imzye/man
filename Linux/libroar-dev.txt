@@ -1,0 +1,245 @@
+roartut(7)                                                       System Manager's Manual: RoarAuido                                                       roartut(7)
+
+NAME
+       roartut - RoarAudio sound library developer tutorial
+
+DESCRIPTION
+       This  tutorial  descipes some basics with working with libroar. We will create a simple application that can play a file and one that can play some sines.  A
+       lot of other examples can be found in RoarAudio's sources in the roarclients directory.
+
+       This tutorial will cover some basics of the so called VS API.  The VS API is a abstract layer ontop of the normal API. It is designed to be simple yet power‐
+       ful.  The VS API is all you need for most applications. If you need more control over what you do you must use the normal. If you need only a little of those
+       extra power you can mix VS API and normal API.
+
+PLAYING A FILE
+       Playing back a file is a easy task with libroar. The VS API has some special support to play back files in a very simple way. This is shown here.
+
+       First of all we need to include the needed header files:
+        #include <roaraudio.h>  /* libroar */
+
+       This main header already includes all we need to use the VS API.
+
+       Now we can start our main(). We need to declare a object for the VS API as it is object oriented. This object is used to interact with the  server  and  send
+       all audio data to it:
+        roar_vs_t * vss;
+        int err; /* see later */
+
+       Next  we need to open the connection to the server. The most simple function to do this is roar_vs_new_from_file(3) if we are going to play a file.  It takes
+       the following arguments:
+
+       server address
+              This is the address of the server. In general case This should be set to NULL.
+
+       program name
+              This is the name of our program. This should be set to some name the user will recognize like "some App", "some Game". It should not contain the file‐
+              name of the process like "/usr/bin/someapp.bin".
+
+       file name
+              This  is  the name of the file we want to play. In fact this is a URL.  VS API uses so called DSTR API to open files. DSTR API supports local files as
+              well as for example HTTP. Examples include: "somefile.ogg", "file:///data/bla.wav", "http://radiostation.org:8000/bla.ogg".
+
+       error var
+              This is a pointer to a int used to store the error value in case of error.  This can be set to NULL but should not. The function roar_vs_strerr(3) can
+              be used to get a lion readable string of the error.
+
+       Our call to roar_vs_new_from_file(3) will look like this:
+        vss = roar_vs_new_from_file(NULL, "some App", "somefile.ogg", &err);
+        if ( vss == NULL ) {
+         roar_vio_printf(roar_stderr, "Error: Can not connect to server: %s0, roar_vs_strerr(err));
+         return 1;
+        }
+
+       Next we need to continuously feed in the data so the server can do the playback.  Again most simple way is to use roar_vs_run(3).
+
+        if ( roar_vs_run(vss, &err) == -1 ) {
+         roar_vio_printf(roar_stderr, "Error: can not loop: %s0, roar_vs_strerr(err));
+        }
+
+       This will block until all of the file is played.
+
+       After it returned must close the VS object. This should be done directly after roar_vs_run(3) returned. This is done this way:
+        if ( roar_vs_close(vss, ROAR_VS_FALSE, &err) == -1 ) {
+         roar_vio_printf(roar_stderr, "Error: Can not close connection to server: %s0, roar_vs_strerr(err));
+         return 1;
+        }
+
+       After adding some standard main() construct we should have something like this:
+        //vsfile.c:
+
+        #include <roaraudio.h>
+
+        int main (void) {
+         roar_vs_t * vss;
+         int err; /* see later */
+
+         vss = roar_vs_new_from_file(NULL, "some App", "somefile.ogg", &err);
+         if ( vss == NULL ) {
+          roar_vio_printf(roar_stderr, "Error: Can not connect to server: %s0, roar_vs_strerr(err));
+          return 1;
+         }
+
+         if ( roar_vs_run(vss, &err) == -1 ) {
+          roar_vio_printf(roar_stderr, "Error: can not loop: %s0, roar_vs_strerr(err));
+         }
+
+         if ( roar_vs_close(vss, ROAR_VS_FALSE, &err) == -1 ) {
+          roar_vio_printf(roar_stderr, "Error: Can not close connection to server: %s0, roar_vs_strerr(err));
+          return 1;
+         }
+
+         return 0;
+        }
+
+        //ll
+
+       To compile and link we can use a command like this one:
+        cc -o vsfile vsfile.c `roar-config --libs --cflags`
+
+       The tool roar-config(1) will keep care for us about all flags needed for libroar.
+
+PLAYING A SINE
+       Now we want to write a application playing a sine for some secs.  We start the same way by including the correct header files:
+        #include <math.h>       /* sin() */
+        #include <roaraudio.h>  /* libroar */
+
+       After that we need some basic variables with data about the audio we want to play back:
+        int rate     = ROAR_RATE_DEFAULT;
+        int bits     = 16;
+        int channels =  1; /* mono */
+
+       Next we need to set the 'codec'. The codec is how the data is encoded.  We want PCM as signed ints in the native byte order of our machine.
+        int codec    = ROAR_CODEC_DEFAULT;
+
+       Now we need to store the frequency of our sine:
+        float freq = 523.2;            /* middle C */
+        float step = M_PI*2*freq/rate; /* how much time per sample we have to encode ... */
+
+       In addition we need some variables to store the current time and the length of time sine:
+        float t      = 0; /* current time */
+        float length = 5; /* 5 sec */
+
+       Next we need the buffer to hold the data as well as a variable used to go thru the buffer on generation of data.
+        int16_t out[1024];
+        int i;
+
+       last we need the VS object again as well as our error var:
+        roar_vs_t * vss;
+        int err;
+
+       This time we open the connection to the server using roar_vs_new_playback(3).  It is similar to roar_vs_new_from_file(3) but takes some other options:
+
+       server address
+              Same as above.
+
+       program name
+              same as above.
+
+       sample rate
+              The number of audio frames per sec.
+
+       channels
+              The number of samples (one per channel) per audio frame.
+
+       codec  The codec to be used. This is one of ROAR_CODEC_*.  In our case we use ROAR_CODEC_DEFAULT which is signed PCM in CPU native format.
+
+       bits   The number of bits per sample.
+
+       error var
+              same as above.
+
+       The call looks like this:
+        vss = roar_vs_new_playback(NULL, "vssin", rate, channels, codec, bits, &err);
+        if ( vss == NULL ) {
+         roar_vio_printf(roar_stderr, "Error: Can not connect to server: %s0, roar_vs_strerr(err));
+         return 1;
+        }
+
+       Now we want to loop for length seconds:
+        while (t < 2*M_PI*freq*length) {
+        }
+
+       In this loop we need to calculate our samples:
+         for (i = 0; i < (sizeof(out)/sizeof(*out)); i++) {
+          out[i] = 32767.f*sin(t);
+          t += step;
+         }
+
+       The sine is multiplyed by 32767 as our amplitude range for 16 bit signed int is from -32768 to +32767.
+
+       After we have our current data in out we want to write them to the server:
+         if ( roar_vs_write(vss, out, sizeof(out), &err) == -1 ) {
+          roar_vio_printf(roar_stderr, "Error: Can not write audio data to server: %s0, roar_vs_strerr(err));
+          break;
+         }
+
+       NOTE:  In  a real application you may want to check the return value for short writes: Those are writes shorter than the requested amount of data to be writ‐
+       ten. If you got any short writes you should try to rewrite the rest of your buffer later. This is not a error case.
+
+       After we are finished with our main loop we have to close the connection to the server.  This is done by roar_vs_close(3) as we  already  done  in  the  file
+       playback example:
+        if ( roar_vs_close(vss, ROAR_VS_FALSE, &err) == -1 ) {
+         roar_vio_printf(roar_stderr, "Error: Can not close connection to server: %s0, roar_vs_strerr(err));
+         return 1;
+        }
+
+       After adding some standard main() construct we should have something like this:
+        //vssin.c:
+
+        #include <roaraudio.h>
+        #include <math.h>
+
+        int main (void) {
+         roar_vs_t * vss;
+         int rate     = ROAR_RATE_DEFAULT;
+         int bits     = 16;
+         int channels =  1; /* mono */
+         int codec    = ROAR_CODEC_DEFAULT;
+         float freq = 523.2;            /* middle C */
+         float step = M_PI*2*freq/rate; /* how much time per sample we have to encode ... */
+         float t      = 0; /* current time */
+         float length = 5; /* 5 sec */
+         int16_t out[1024];
+         size_t i;
+         int err;
+
+         vss = roar_vs_new_playback(NULL, "vssin", rate, channels, codec, bits, &err);
+         if ( vss == NULL ) {
+          roar_vio_printf(roar_stderr, "Error: Can not connect to server: %s0, roar_vs_strerr(err));
+          return 1;
+         }
+
+         while (t < 2*M_PI*freq*length) {
+          for (i = 0; i < (sizeof(out)/sizeof(*out)); i++) {
+           out[i] = 32768.f*sin(t);
+           t += step;
+          }
+
+          if ( roar_vs_write(vss, out, sizeof(out), &err) == -1 ) {
+           roar_vio_printf(roar_stderr, "Error: Can not write audio data to server: %s0, roar_vs_strerr(err));
+           break;
+          }
+         }
+
+         if ( roar_vs_close(vss, ROAR_VS_FALSE, &err) == -1 ) {
+          roar_vio_printf(roar_stderr, "Error: Can not close connection to server: %s0, roar_vs_strerr(err));
+          return 1;
+         }
+
+         return 0;
+        }
+
+        //ll
+
+       To compile and link we can use a command like this one:
+        cc -o vssin vssin.c -lm `roar-config --libs --cflags`
+
+       We need to use -lm to link the math library for sin().  The tool roar-config(1) will keep care for us about all flags needed for libroar.
+
+       Now we should have a working binary vssin playing a sin() for 5 sec.
+
+       Happy hacking!
+
+SEE ALSO
+       roar-config(1), roarcat(1), libroar(7).  RoarAudio(7).
+
+RoarAudio                                                                   November 2010                                                                 roartut(7)

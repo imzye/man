@@ -1,0 +1,291 @@
+Sendmail::PMilter(3pm)                                                              User Contributed Perl Documentation                                                              Sendmail::PMilter(3pm)
+
+LICENSE
+       Copyright (c) 2016-2024 G.W. Haywood.  All rights reserved.
+         With thanks to all those who have trodden these paths before,
+         including Copyright (c) 2002-2004 Todd Vierling.  All rights reserved.
+
+       Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+       1. Redistributions of source code must retain the above copyright notices, this list of conditions and the following disclaimer.
+
+       2. Redistributions in binary form must reproduce the above copyright notices, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the
+       distribution.
+
+       3. Neither the name of the author nor the names of contributors may be used to endorse or promote products derived from this software without specific prior written permission.  In the case of
+       G.W. Haywood this permission is hereby now granted.
+
+       THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+       FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+       (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+       CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NAME
+       Sendmail::PMilter - Perl binding of Sendmail Milter protocol
+
+SYNOPSIS
+           use Sendmail::PMilter;
+
+           my $milter = new Sendmail::PMilter;
+
+           $milter->auto_setconn(NAME);
+           $milter->register(NAME, { CALLBACKS }[, FLAGS]);
+           $milter->main();
+
+DESCRIPTION
+       Sendmail::PMilter is a mail filtering API implementing the Sendmail Milter Protocol in Perl.  This allows the administrator of Sendmail (and perhaps other MTAs which implement the Milter Protocol)
+       to use pure Perl code to filter and modify mail during an SMTP connection.
+
+       Over the years, the protocol which governs the communication between qSendmail and its milters has passed through a number of revisions.
+
+       This documentation is for Sendmail::PMilter versions 1.20 and later, which now supports Milter Protocol Version 6.  This is a substantial upgrade from earlier versions, which at best supported up
+       to Milter Protocol Version 2 - this was first seen in Sendmail version 8.14.0 which was released on January 31st 2007.
+
+       Sendmail::PMilter now uses neither the original Sendmail::Milter (it is obsolete, badly flawed and unmaintained) nor the Sendmail::Milter which was packaged with earlier versions of
+       Sendmail::PMilter as a temporary workaround for the broken original.
+
+       For communications between the MTA and the milter, a 'dispatcher' acts as a go-between.  This must be chosen when the milter is initialized, before it serves requests.  Several dispatchers are
+       provided within the Sendmail::PMilter module, but in versions before 1.20 all the dispatchers suffered from issues of varying gravity.  The 'prefork' dispatcher (see DISPATCHERS below) has now
+       been extensively exercised by the current maintainer, but although the others have been patched from issue reports going back more than a decade from the time of writing (June 2019) THEY HAVE NOT
+       BEEN TESTED.  Feedback via the CPAN issue tracking system is encouraged.  If you have developed your own dispatcher you can either pass a code reference to set_dispatcher() or set an environment
+       variable to point to it.  Sendmail::PMilter will then use it instead of a built-in dispatcher.
+
+METHODS
+           get_max_interpreters()
+               Returns the maximum number of interpreters passed to main().  This is only useful when called from within the dispatcher, as it is not set before main() is called.
+
+           get_max_requests()
+               Returns the maximum number of requests per interpreter passed to main().  This is only useful when called from within the dispatcher, as it is not set before main() is called.
+
+           main([MAXCHILDREN[, MAXREQ]])
+               This is the last method called in the main block of a milter program.  If successful, this call never returns; the protocol engine is launched and begins accepting connections.
+
+               MAXCHILDREN  (default  0, meaning unlimited) specifies the maximum number of connections that may be serviced simultaneously.  If a connection arrives with the number of active connections
+               above this limit, the milter will immediately return a temporary failure condition and close the connection.  Passing a value for MAXCHILDREN is optional.
+
+               MAXREQ (default 0, meaning unlimited) is the maximum number of requests that a child may service before being recycled.  It is not guaranteed that the interpreter will  service  this  many
+               requests, only that it will not go over the limit.  MAXCHILDREN must be given if MAXREQ is to be set.
+
+               Any  callback  which  "die"s  will  have  its output sent to "warn", followed by a clean shutdown of the milter connection.  To catch any warnings generated by the callbacks, and any error
+               messages caused by a "die", set $SIG{__WARN__} to a user-defined subroutine.  (See perlvar.)
+
+           register(NAME, CALLBACKS[, FLAGS])
+               Sets up the main milter loop configuration.
+
+               NAME is the name of the milter.  This should be the same name as passed to auto_getconn() or auto_setconn(), but this PMilter implementation does not enforce this.
+
+               CALLBACKS is a hash reference containing one or more callback subroutines.  For example
+
+                 my %callbacks =
+                 (
+                   'negotiate' => \&my_negotiate_callback,
+                   'connect'   => \&my_connect_callback,
+                   'helo'      => \&my_helo_callback,
+                   'envfrom'   => \&my_envfrom_callback,
+                   'close'     => \&my_close_callback,
+                   'abort'     => \&my_abort_callback,
+                 );
+                 $milter->register( $milter_name, \%callbacks );
+
+               If a callback is not named in this hashref, the caller's package will be searched for subroutines named "CALLBACK_callback", where CALLBACK is the name of the callback function.
+
+               FLAGS is accepted for backward compatibility with older versions of this module.  Consider it deprecated.  Set it to SMFI_V6_PROT for all available 'actions' in any recent (last few years)
+               Sendmail version.
+
+               If no "negotiate" callback is registered, then by default the protocol steps available are as described in .../libmilter/engine.c in the Sendmail sources.  This means  all  the  registered
+               CALLBACKS plus the SKIP function call which is allowed in the End Of Message callback.  Note that SMFIP_RCPT_REJ is specifically not included.
+
+               register() must be called successfully exactly once.  If called a second time, the previously registered callbacks will be erased.
+
+               Returns 1 on success, undef on failure.
+
+           setconn(DESC[, PERMS])
+               Sets  up the server socket with connection descriptor DESC.  This is identical to the descriptor syntax used by the "X" milter configuration lines in sendmail.cf (if using Sendmail).  This
+               should be one of the following:
+
+               local:PATH
+                 A local ("UNIX") socket on the filesystem, named PATH.  This has some smarts that will auto-delete the pathname if it seems that the milter is not currently running (but  this  currently
+                 contains a race condition that may not be fixable; at worst, there could be two milters running with one never receiving connections).
+
+               inet:PORT[@HOST]
+                 An IPv4 socket, bound to address HOST (default INADDR_ANY), on port PORT.  It is not recommended to open milter engines to the world, so the @HOST part should be specified.
+
+               inet6:PORT[@HOST]
+                 An  IPv6 socket, bound to address HOST (default INADDR_ANY), on port PORT.  This requires IPv6 support and the Perl IO::Socket::IP package to be installed.  It is not recommended to open
+                 milter engines to the world, so the @HOST part SHOULD be specified.
+
+               PERMS
+                 Optional permissions mask.
+
+               Returns a true value on success, undef on failure.
+
+           set_dispatcher(CODEREF)
+               Sets the dispatcher used to accept socket connections and hand them off to the protocol engine.  This allows pluggable resource allocation so that the milter script may use fork,  threads,
+               or any other such means of handling milter connections.  See "DISPATCHERS" below for more information.
+
+               The subroutine (code) reference will be called by main() when the listening socket object is prepared and ready to accept connections.  It will be passed the arguments:
+
+                   MILTER, LSOCKET, HANDLER
+
+               MILTER  is the milter object currently running.  LSOCKET is a listening socket (an instance of "IO::Socket"), upon which accept() should be called.  HANDLER is a subroutine reference which
+               should be called, passing the socket object returned by "LSOCKET->accept()".
+
+               Note that the dispatcher may also be set from one of the off-the-shelf dispatchers noted in this document by setting the PMILTER_DISPATCHER environment variable.  See "DISPATCHERS", below.
+
+           set_listen(BACKLOG)
+               Set the socket listen backlog to BACKLOG.  The default is 5 connections if not set explicitly by this method.  Only useful before calling main().
+
+           set_socket(SOCKET)
+               Rather than calling setconn(), this method may be called explicitly to set the "IO::Socket" instance used to accept inbound connections.
+
+SENDMAIL-SPECIFIC METHODS
+       The following methods are only useful if Sendmail is the MTA connecting to this milter.  Other MTAs likely don't use Sendmail's configuration file, so these methods would not be useful with them.
+
+       auto_getconn(NAME[, CONFIG])
+           Returns the connection descriptor for milter NAME in Sendmail configuration file CONFIG (default "/etc/mail/sendmail.cf" or whatever was set by set_sendmail_cf()).  This can then be passed  to
+           setconn(), below.
+
+           Returns a true value on success, undef on failure.
+
+       auto_setconn(NAME[, CONFIG])
+           Creates the server connection socket for milter NAME in Sendmail configuration file CONFIG.
+
+           Essentially, does:
+
+               $milter->setconn($milter->auto_getconn(NAME, CONFIG))
+
+           Returns a true value on success, undef on failure.
+
+       get_sendmail_cf()
+           Returns the pathname of the Sendmail configuration file.  If this has been set by set_sendmail_cf(), then that is the value returned.  Otherwise the default pathname "/etc/mail/sendmail.cf" is
+           returned.
+
+       get_sendmail_class(CLASS[, CONFIG])
+           Returns  a  list containing all members of the Sendmail class CLASS, in Sendmail configuration file CONFIG (default "/etc/mail/sendmail.cf" or whatever is set by set_sendmail_cf()).  Typically
+           this is used to look up the entries in class "w", the local hostnames class.
+
+       get_sendmail_option(OPTION[, CONFIG])
+           Returns a list containing the first occurrence of Sendmail option OPTION in Sendmail configuration file CONFIG (default "/etc/mail/sendmail.cf", or whatever has been set by set_sendmail_cf()).
+           Returns the value of the option or undef if it is not found.  This can be used to learn configuration parameters such as Milter.maxdatasize.
+
+       set_sendmail_cf(FILENAME)
+           Set the default filename used by "auto_getconn", "auto_setconn", and "sendmail_class" to find Sendmail-specific configuration data.  If not explicitly  set  by  this  method,  it  defaults  to
+           "/etc/mail/sendmail.cf".  Returns 1.
+
+DISPATCHERS
+       Milter  requests  may  be  dispatched  to  the  protocol  handler  in a pluggable manner (see the description for the set_dispatcher() method above).  "Sendmail::PMilter" offers some off-the-shelf
+       dispatchers that use different methods of resource allocation.
+
+       Each of these is referenced as a non-object function, and return a value that may be passed directly to set_dispatcher().
+
+       Sendmail::PMilter::ithread_dispatcher()
+       (environment) PMILTER_DISPATCHER=ithread
+           June 2019: This dispatcher has not been tested adequately.
+
+           The "ithread" dispatcher spins up a new thread upon each connection to the milter socket.  This provides a thread-based model that may be more resource efficient than  the  similar  "postfork"
+           dispatcher.  This requires that the Perl interpreter be compiled with "-Duseithreads", and uses the "threads" module (available on Perl 5.8 or later only).
+
+       Sendmail::PMilter::prefork_dispatcher([PARAMS])
+       (environment) PMILTER_DISPATCHER=prefork
+           June 2019: This dispatcher has been tested extensively by the maintainer.
+
+           The "prefork" dispatcher forks the main Perl process before accepting connections, and uses the main process to monitor the children.  This should be appropriate for steady traffic flow sites.
+           Note that if MAXINTERP is not set in the call to main() or in PARAMS, an internal default of 10 processes will be used; similarly, if MAXREQ is not set, 100 requests will be served per child.
+
+           Currently the child process pool is fixed in size:  discarded children will be replaced immediately.
+
+           PARAMS, if specified, is a hash of key-value pairs defining parameters for the dispatcher.  The available parameters that may be set are:
+
+           child_init
+             subroutine reference that will be called after each child process is forked.  It will be passed the "MILTER" object.
+
+           child_exit
+             subroutine reference that will be called just before each child process terminates.  It will be passed the "MILTER" object plus current requests handled and maximum requests per child.
+
+           milter_exit
+             subroutine reference that will be called just before the milter terminates.  It will be passed the "MILTER" object.
+
+           max_children
+             Maximum number of child processes active at any time.  Equivalent to the MAXINTERP option to main() -- if not set in the main() call, this value will be used.
+
+           max_requests_per_child
+             Maximum number of requests a child process may service before being recycled.  Equivalent to the MAXREQ option to main() -- if not set in the main() call, this value will be used.
+
+       Sendmail::PMilter::postfork_dispatcher()
+       (environment) PMILTER_DISPATCHER=postfork
+           June 2019: This dispatcher has not been tested adequately.
+
+           This is the default dispatcher for PMilter if no explicit dispatcher is set.
+
+           The  "postfork"  dispatcher forks the main Perl process upon each connection to the milter socket.  This is adequate for machines that get bursty but otherwise mostly idle mail traffic, as the
+           idle-time resource consumption is very low.
+
+           If the maximum number of interpreters is running when a new connection comes in, this dispatcher blocks until a slot becomes available for a new interpreter.
+
+       Sendmail::PMilter::sequential_dispatcher()
+       (environment) PMILTER_DISPATCHER=sequential
+           June 2019: This dispatcher has not been tested adequately.
+
+           The "sequential" dispatcher forces one request to be served at a time, making other requests wait on the socket for the next pass through the loop.  This is not suitable  for  most  production
+           installations, but may be quite useful for milter debugging or other software development purposes.
+
+           Note that, because the default socket backlog is 5 connections, if you use this dispatcher it may be wise to increase this backlog by calling set_listen() before entering main().
+
+EXPORTS
+       Each of these symbols may be imported explicitly, imported with tag ":all", or referenced as part of the "Sendmail::PMilter::" package.
+
+       Callback Return Values
+           SMFIS_CONTINUE - continue processing the message
+           SMFIS_REJECT - reject the message with a 5xx error
+           SMFIS_DISCARD - accept, but discard the message
+           SMFIS_ACCEPT - accept the message without further processing
+           SMFIS_TEMPFAIL - reject the message with a 4xx error
+           SMFIS_MSG_LOOP - send a never-ending response to the HELO command
+
+         In  the  "envrcpt"  callback,  SMFIS_REJECT  and  SMFIS_TEMPFAIL  will reject only the current recipient.  Message processing will continue for any other recipients as if SMFIS_CONTINUE had been
+         returned.
+
+         In all callbacks, SMFIS_CONTINUE tells the MTA to continue calling the milter (and any other milters which may be installed), for the remaining message steps.  Except as noted for the  "envrcpt"
+         callback, all the other return values terminate processing of the message by all the installed milters.  Message disposal is according to the return value.
+
+SECURITY CONSIDERATIONS
+       Running as root
+           Running Perl as root is dangerous.  Running "Sendmail::PMilter" as root may well be system-assisted suicide at this point.  So don't do that.
+
+           More  specifically,  though,  it  is possible to run a milter frontend as root, in order to gain access to network resources (such as a filesystem socket in /var/run), and then drop privileges
+           before accepting connections.  To do this, insert drop-privileges code between calls to setconn/auto_setconn and main; for instance:
+
+               $milter->auto_setconn('pmilter');
+               $> = 65534; # drop root privileges
+               $milter->main();
+
+           The semantics of properly dropping system administrator privileges in Perl are, unfortunately, somewhat OS-specific, so this process is not described in detail here.
+
+AUTHORS
+       Todd Vierling, Ged Haywood.
+
+Maintenance
+       cpan:GWHAYWOOD now maintains Sendmail::PMilter.  Use the CPAN issue tracking system to request more information, or to comment.  Private mail is fine  but  you'll  need  to  use  the  right  email
+       address, it should be obvious.  This module is NOT maintained on Sourceforge/Github/etc..
+
+See also
+       Sendmail::PMilter::Context
+
+       The Sendmail documentation, especially libmilter/docs/* in the sources of Sendmail version 8.15.2 and later.
+
+THANKS
+       rob.casey@bluebottle.com - for the prefork mechanism idea Carlos Velasco - for milter_exit and other improvements
+
+POD ERRORS
+       Hey! The above document had some coding errors, which are explained below:
+
+       Around line 650:
+           You forgot a '=back' before '=head1'
+
+       Around line 1204:
+           '=item' outside of any '=over'
+
+       Around line 1273:
+           You forgot a '=back' before '=head1'
+
+perl v5.40.1                                                                                     2025-08-28                                                                          Sendmail::PMilter(3pm)

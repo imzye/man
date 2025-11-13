@@ -1,0 +1,358 @@
+Config::Versioned(3)  User Contributed Perl Documentation Config::Versioned(3)
+
+
+NAME
+       Config::Versioned - Simple, versioned access to configuration data
+
+SYNOPSIS
+           use Config::Versioned;
+
+           my $cfg = Config::Versioned->new();
+           my $param1 = $cfg->get('subsystem1.group.param1');
+           my $old1 = $cfg->get('subsystem1.group.param1', $version);
+           my @keys = $cfg->list('subsys1.db');
+
+DESCRIPTION
+       Config::Versioned allows an application to access configuration
+       parameters not only by parameter name, but also by version number. This
+       allows for the configuration subsystem to store previous versions of
+       the configuration parameters. When requesting the value for a specific
+       attribute, the programmer specifies whether to fetch the most recent
+       value or a previous value.
+
+       This is useful for long-running tasks such as in a workflow-based
+       application where task-specific values (e.g.: profiles) are static over
+       the life of a workflow, while global values (e.g.: name of an LDAP
+       server to be queried) should always be the most recent.
+
+       Config::Versioned handles the versions by storing the configuration
+       data in an internal Git repository. Each import of configuration files
+       into the repository is documented with a commit. When a value is
+       fetched, it is this commit that is referenced directly when specifying
+       the version.
+
+       The access to the individual attributes is via a named-parameter
+       scheme, where the key is a dot-separated string.
+
+       Currently, "Config::Std" is used for the import of the data files into
+       the internal Git repository. Support for other configuration modules
+       (e.g.: "Config::Any") is planned.
+
+METHODS
+   init()
+       This is invoked automatically via import(). It is called when running
+       the following code:
+
+        use Config::Versioned;
+
+       The init() method reads the configuration data from the configuration
+       files and populates an internal data structure.
+
+       Optionally, parameters may be passed to init(). The following named-
+       parameters are supported:
+
+       path    Specifies an anonymous array contianing the names of the
+               directories to check for the configuration files.
+
+                path => qw( /etc/yourapp/etc /etc/yourapp/local/etc . ),
+
+               The default path is just the current directory.
+
+       filename
+               Specifies the name of the configuration file to be found in the
+               given path.
+
+                filename => qw( yourapp.conf ),
+
+               If no filename is given, no new configuration data will be
+               imported and the internal git repository will be used.
+
+       dbpath  The directory for the internal git repository that stores the
+               config.
+
+                dbpath => qw( config.git ),
+
+               The default is "cfgver.git".
+
+       author_name, author_mail
+               The name and e-mail address to use in the internal git
+               repository for commits.
+
+       autocreate
+               If no internal git repository exists, it will be created during
+               code initialization. Note that if an import filename is
+               specified, this automatically sets autocreate to true.
+
+                autocreate => 1,
+
+               The default is "0".
+
+               Note: this option might become deprecated. I just wanted some
+               extra "insurance" during the early stages of development.
+
+       commit_time
+               This sets the time to use for the commits in the internal git
+               repository.  It is used for debugging purposes only!
+
+               Note: this must be a DateTime object instance.
+
+       delimiter
+               Specifies the delimiter used to separate the different levels
+               in the string used to designate the location of a configuration
+               parameter. [Default: '.']
+
+       delimiter_regex
+               Specifies the delimiter used to separate the different levels
+               in the string used to designate the location of a configuration
+               parameter.  [Default: qr/ \. /xms]
+
+       log_get_callback
+               Specifies a callback function to be called by get() after
+               fetching the value for the given key. The subroutine should
+               accept the parameters LOCATION, VERSION, VALUE. The VALUE may
+               either be a single scalar value or an array reference
+               containing a list of values.
+
+                   sub cb_log_get {
+                       my $self = shift;
+                       my $loc = shift;
+                       my $ver = shift;
+                       my $val = shift;
+
+                       warn "Access config parameter: $loc ($ver) => ",
+                           ref($val) eq 'ARRAY'
+                               ? join(', ', @{ $val })
+                               : $val,
+                           "\n";
+                   }
+                   my $cfg = Config::Versioned->new( { log_get_callback => 'cb_log_get' } );
+
+               Note: if log_get_callback is a code ref, it will be called as a
+               function.  Otherwise, the log_get_callback will specify a
+               method name that is to be called on the current object
+               instance.
+
+   BUILD( { PARAMS } )
+       NOTE: This is used internally, so the typical user shouldn't bother
+       with this.
+
+       This is called after an object is created. When cloning, it is
+       important that the new instance gets a reference to the same
+       Git::PurePerl instance. This will prevent two instances from getting
+       out of sync if modifications are made to the configuration data at
+       runtime. To handle this, the parameter 'GITREF' must be passed when
+       cloning.
+
+       Note 2: this should be handled automatically in the _near_ future.
+
+           my $cv2 = $cv1->new( GITREF => $cv1->_git() );
+
+   get( LOCATION [, VERSION ] )
+       This is the accessor for fetching the value(s) of the given parameter.
+       The value may either be zero or more elements.
+
+       In list context, the values are returned. In scalar context, "undef" is
+       returned if the variable is empty. Otherwise, the first element is
+       returned.
+
+       Optionally, a VERSION may be specified to return the value for that
+       specific version.
+
+   kind ( LOCATION [, VERSION ] )
+       The get() method tries to return a scalar when the location corresponds
+       to a single value and a list when the location has child nodes.
+       Sometimes, however, it is helpful to have a definitive answer on what a
+       location contains.
+
+       The kind() method returns the object type that the given location
+       accesses.  This can be one of the following values:
+
+       tree
+           The given location contains a tree object containing zero or more
+           child objects. The get() method will return a list of the entry
+           names.
+
+       blob
+           The data node that usually contains a scalar value, but in future
+           implementations may contain other encoded data.
+
+       Note: As a side-effect, this can be used to test whether the given
+       location exists at all in the configuration. If not found, "undef" is
+       returned.
+
+   listattr( LOCATION [, VERSION ] )
+       This fetches a list of the parameters available for a given location in
+       the configuration tree.
+
+   dumptree( [ VERSION ] )
+       This fetches the entire tree for the given version (default: newest
+       version) and returns a hashref to a named-parameter list.
+
+   version
+       This returns the current version of the configuration database, which
+       happens to be the SHA1 hash of the HEAD of the internal git repository.
+
+       Optionally, a version hash may be passed and version() will return a
+       true value if it is found.
+
+INTERNALS
+   _init_repo
+       Initializes the internal git repository used for storing the config
+       values.
+
+       If the objects directory in the "dbpath" does not exist, an init() on
+       the "Git::PurePerl" class is run. Otherwise, the instance is
+       initialized using the existing bare repository.
+
+       On error, it returns "undef" and the reason is in $@.
+
+   _get_anon_scalar
+       Creates an anonymous scalar for representing symlinks in the tree
+       structure.
+
+   parser ARGS
+       Imports the configuration read and writes it to the internal database.
+       If no filename is passed as an argument, then it will quietly skip the
+       commit.
+
+       Note: if you override this method in a child class, it must create an
+       anonymous hash tree and pass the reference to the commit() method. Here
+       is a simple example:
+
+           sub parser {
+               my $self = shift;
+               my $args = shift;
+               $args->{comment} = 'import from my perl hash';
+
+               my $cfg = {
+                   group1 => {
+                       subgroup1 => {
+                           param1 => 'val1',
+                           param2 => 'val2',
+                       },
+                   },
+                   group2 => {
+                       subgroup1 => {
+                           param3 => 'val3',
+                           param4 => 'val4',
+                       },
+                   },
+                   # This creates a symlink from 'group3.subgroup3' to 'connector1/group4'.
+                   # Note the use of the scalar reference using the backslash.
+                   group3 => {
+                       subgroup3 => \'connector1/group4',
+                   },
+
+               };
+
+               # pass original args, appended with a comment string for the commit
+               $self->commit( $cfg, $args );
+           }
+
+       In the comment, you should include details on where the config came
+       from (i.e.: the filename or directory).
+
+   commit CFGHASH[, ARGS]
+       Import the configuration tree in the CFGHASH anonymous hash and commit
+       the modifications to the internal git bare repository.
+
+       ARGS is a ref to a named-parameter list (e.g. HASH) that may contain
+       the following keys to override the instance defaults:
+
+           author_name, author_mail, comment, commit_time
+
+   _mknode LOCATION
+       Creates a node at the given LOCATION, creating parent nodes if
+       necessary.
+
+       A reference to the node at the LOCATION is returned.
+
+   _findobjx LOCATION [, VERSION ]
+       Returns the Git::PurePerl and Git::PurePerl::DirectoryEntry objects
+       found in the file path at LOCATION.
+
+           my ($ref1, $de1) = $cfg->_findnode("smartcard.ldap.uri");
+           my $ref2, $de2) = $cfg->_findnode("certs.signature.duration", $wfcfgver);
+
+       In most cases, the "_findobj" version is sufficient. This extended
+       version is used to look at the attribtes of the directory entry for
+       things like whether the blob is a symlink.
+
+   _findobj LOCATION [, VERSION ]
+       Returns the Git::PurePerl object found in the file path at LOCATION.
+
+           my $ref1 = $cfg->_findnode("smartcard.ldap.uri");
+           my $ref2 = $cfg->_findnode("certs.signature.duration", $wfcfgver);
+
+   _get_sect_key LOCATION
+       Returns the section and key needed by Config::Std to access the
+       configuration values. The given LOCATION is split on the last
+       delimiter.  The resulting section and key are returned as a list.
+
+   _which( NAME, DIR ... )
+       Searches the directory list DIR, returning the full path in which the
+       file NAME was found.
+
+   _read_config_path SELF, FILENAME, CFGREF, PATH
+       Searches for FILENAME in the given directories in PATH. When found, the
+       file is parsed and a data structure is written to the location in
+       CFGREF.
+
+       Note: this is the wrapper around the underlying libs that read the
+       configuration data from the files.
+
+   _debugtree( OBJREF | SHA1 )
+       This fetches the entire tree for the given SHA1 and dumps it in a
+       human-readable format.
+
+   hdump
+       Return hexdump of given data.
+
+ACKNOWLEDGEMENTS
+       Was based on the CPAN module App::Options, but since been converted to
+       Moose.
+
+AUTHOR
+       Scott T. Hardin, "<mrscotty at cpan.org>"
+
+       Martin Bartosch
+
+       Oliver Welter
+
+BUGS
+       Please report any bugs or feature requests to "bug-config-versioned at
+       rt.cpan.org", or through the web interface at
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Config-Versioned>.  I
+       will be notified, and then you'll automatically be notified of progress
+       on your bug as I make changes.
+
+SUPPORT
+       You can find documentation for this module with the perldoc command.
+
+           perldoc Config::Versioned
+
+       You can also look for information at:
+
+       •   RT: CPAN's request tracker
+
+           <http://rt.cpan.org/NoAuth/Bugs.html?Dist=Config-Versioned>
+
+       •   AnnoCPAN: Annotated CPAN documentation
+
+           <http://annocpan.org/dist/Config-Versioned>
+
+       •   CPAN Ratings
+
+           <http://cpanratings.perl.org/d/Config-Versioned>
+
+       •   Search CPAN
+
+           <http://search.cpan.org/dist/Config-Versioned/>
+
+COPYRIGHT
+       Copyright 2011 Scott T. Hardin, all rights reserved.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2014-06-18              Config::Versioned(3)

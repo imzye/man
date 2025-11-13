@@ -1,0 +1,95 @@
+SPAUSEDD(8)                                                                               BSD System Manager's Manual                                                                               SPAUSEDD(8)
+
+NAME
+     spausedd — Utility to detect and log scheduler pause
+
+SYNOPSIS
+     spausedd [-dDfhp] [-m steal_threshold] [-P mode] [-t timeout]
+
+DESCRIPTION
+     The spausedd utility is used for detecting and logging scheduler pause. This means, when process should have been scheduled, but it was not. It's also able to use steal time (time spent in other operat‐
+     ing systems when running in a virtualized environment) so it is (to some extend) able to detect if problem is on the VM or host side.  spausedd is able to read information about steal time ether from
+     kernel or (if compiled in) also use VMGuestLib.  Internally spausedd works as following pseudocode:
+
+           repeat:
+               store current monotonic time
+               store current steal time
+               sleep for (timeout / 3)
+               set time_diff to (current monotonic time - stored monotonic time)
+               if time_diff > timeout:
+                   display error
+                   set steal_time_diff to (current steal time - stored steal time)
+                   if (steal_time_diff / time_diff) * 100 > steal_threshold:
+                       display steal time error
+
+     spausedd arguments are as follows:
+
+     -d      Display debug messages (specify twice to display also trace messages).
+
+     -D      Run on background (daemonize).
+
+     -f      Run on foreground (do not demonize - default).
+
+     -h      Show help.
+
+     -p      Do not set RR scheduler.
+
+     -m steal_threshold
+             Set steal threshold percent. (default is 10 if kernel information is used and 100 if VMGuestLib is used).
+
+     -P mode
+             Set mode of moving process to root cgroup. Default is auto which first checks if setting of RR scheduler is enabled. If so, it tries to set RR scheduler.  If this fails, process is moved to root
+             cgroup and set of RR scheduler is retried.  Another options are on when process is always moved to root cgroup and off which makes spausedd to never try move pid into root cgroup.  It's worth
+             noting that currently (May 3 2021) cgroup v2 doesn’t yet support control of realtime processes and, for systems with CONFIG_RT_GROUP_SCHED kernel option enabled, the cpu controller can only be
+             enabled when all RT processes are in the root cgroup. So when moving to root cgroup is disabled and used together with systemd, it may be impossible to make systemd options like CPUQuota working
+             correctly until spausedd is stopped.  Also when moving to root cgroup is used together with cgroup v2 and systemd it makes impossible (most of the time) for journald to add systemd specific
+             metadata (most importantly _SYSTEMD_UNIT) properly, because spausedd is moved out of cgroup created by systemd. This means it is not possible to filter spausedd logged messages based on these
+             metadata (for example using -u or _SYSTEMD_UNIT=UNIT pattern) and also running systemctl status doesn't display (all) spausedd log messages.  Problem is even worse because journald caches pid
+             for some time (approx. 5 sec) so initial spausedd messages have correct metadata.
+
+     -t timeout
+             Set timeout value in milliseconds (default 200).
+
+     If spausedd receives a SIGUSR1 signal, the current statistics are show.
+
+EXAMPLES
+     To generate CPU load yes(1) together with chrt(1) is used in following examples:
+
+           chrt -r 99 yes >/dev/null &
+
+     If chrt fails it may help to use cgexec(1) like:
+
+           cgexec -g cpu:/ chrt -r 99 yes >/dev/null &
+
+     First example is physical or virtual machine with 4 CPU threads so yes(1) was executed 4 times. In a while spausedd should start logging messages similar to:
+
+           Mar 20 15:01:54 spausedd: Running main poll loop with maximum timeout 200 and steal threshold 10%
+           Mar 20 15:02:15 spausedd: Not scheduled for 0.2089s (threshold is 0.2000s), steal time is 0.0000s (0.00%)
+           Mar 20 15:02:16 spausedd: Not scheduled for 0.2258s (threshold is 0.2000s), steal time is 0.0000s (0.00%)
+           ...
+
+     This means that spausedd didn't got time to run for longer time than default timeout. It's also visible that steal time was 0% so spausedd is running ether on physical machine or VM where host machine
+     is not overloaded (VM was scheduled on time).
+
+     Second example is a host machine with 2 CPU threads running one VM. VM is running an instance of spausedd. Two instancies of yes(1) was executed on the host machine. After a while spausedd should start
+     logging messages similar to:
+
+           Mar 20 15:08:20 spausedd: Not scheduled for 0.9598s (threshold is 0.2000s), steal time is 0.7900s (82.31%)
+           Mar 20 15:08:20 spausedd: Steal time is > 10.0%, this is usually because of overloaded host machine
+           ...
+
+     This means that spausedd didn't got the time to run for almost one second. Also because steal time is high, it means that spausedd was not scheduled because VM wasn't scheduled by host machine.
+
+DIAGNOSTICS
+     The spausedd utility exits 0 on success, and >0 if an error occurs.
+
+AUTHORS
+     The spausedd utility was written by Jan Friesse <jfriesse@redhat.com>.
+
+BUGS
+     -   OS is not updating steal time as often as monotonic clock. This means that steal time difference can be (and very often is) bigger than monotonic clock difference, so steal time percentage can be
+         bigger than 100%. It's happening very often for highly overloaded host machine when spausedd is called with small timeout. This problem is even bigger when VMGuestLib is used.
+
+     -   VMGuestLib seems to randomly block.
+
+BSD                                                                                               Jul 15, 2021                                                                                              BSD

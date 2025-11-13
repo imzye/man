@@ -1,0 +1,516 @@
+dombey(3)              FreeBSD Library Functions Manual              dombey(3)
+
+NAME
+     dombey – Generic SCGI Application Server Library
+
+SYNOPSIS
+     #include <dombey.h>
+     (-pthread) -I/usr/local/include -L/usr/local/lib -ldombey(threads) -lcrypto
+
+DESCRIPTION
+     Libdombey provides 3 generic SCGI application servers as libraries.  The
+     libraries handle network and concurrency tasks.  You supply code to
+     service connections.  Separate libraries provide multi-process, multi-
+     threaded, and event-driven servers.  All 3 libraries service TCP or UNIX-
+     domain connections.  This manual describes the multi-process and multi-
+     threaded libraries.  The event-driven library is described in the
+     "libdombeyevents" manual.
+
+     An bare bones example SCGI server is included in the dombey distribution,
+     named test.c.  The server can be linked against the multi-process and
+     multi-threaded libraries.
+
+   USAGE
+     The libraries provide your server's "main" function.  You define 4
+     functions to match the following prototypes.
+
+     void scgi_init_func();
+     void scgi_exit_func();
+     void scgi_worker_init_func();
+     void scgi_request_handler( FILE * );
+
+     Do not define any other global symbol beginning with the five characters
+     ´scgi_' because dombey reserves that namespace.
+
+   SCGI_REQUEST_HANDLER()
+     One master process/thread grows and shrinks a pool of workers to service
+     connections.  Workers call scgi_request_handler() once to service each
+     connection that they accept.  Workers close connections when
+     scgi_request_handler() returns.
+
+     scgi_request_handler() is invoked with the FILE pointer of a write-only
+     buffered stream that is connected to the client.  You use the standard
+     buffered IO functions to send data to the client.  If you wish to use
+     non-buffered IO, use the fileno() function to determine the descriptor
+     that is associated with the FILE pointer.  Do not close the FILE pointer
+     or its underlying descriptor, or you will crash your server.
+
+   SCGI_INIT_FUNC()
+     In scgi_init_func(), perform the initialization tasks your server needs
+     to do once at server start-up before any workers are created.
+
+     Dombey calls scgi_init_func():
+
+     •   after changing to the directory specified by the -r command line
+         option.
+
+     •   before attempting to change the server's user and group to the values
+         specified by the command line options.  If the server starts as root,
+         scgi_init_func() executes as root.
+
+     •   before the server becomes a daemon and starts listening for
+         connections.  The standard streams are connected to the terminal from
+         which the server was started.  Error and informative messages should
+         be sent to the terminal.
+
+   SCGI_SET_STACK_SIZE()
+     Threaded servers typically want small thread stacks.  The system default
+     is 2M.  Set the stack size for threaded servers with
+     scgi_set_stack_size().  The function is only available in the threaded
+     library and can only be called from inside scgi_init_func().
+
+     int scgi_set_stack_size( int );
+
+     The function returns 0 on success and 1 on error.  On error, an error
+     message is printed to stderr.
+
+     You must ensure that the kernal tunable kern.threads.max_threads_per_proc
+     is set to a value appropriate for your server.  The default value is
+     1500.  The variable can be set at system start by putting an assignment
+     into /etc/sysctl.conf.
+
+   SCGI_EXIT_FUNC()
+     If you have exit handlers you would like to register to run before the
+     server exits, do not invoke atexit() from scgi_init_func().  If you do
+     so, your handlers are run when the server becomes a daemon.  The server
+     forks to create a new session.  The dying parent process will call your
+     handlers when it exits.  Instead, call your cleanup code from
+     scgi_exit_func().
+
+     If you need to invoke worker-specific cleanup code in a multi-process
+     server, you can install your cleanup handlers with atexit() inside
+     scgi_worker_init_func().
+
+     If you need to invoke worker-specific cleanup code in a multi-threaded
+     server, you can call your cleanup code from the destructor functions of
+     your thread-specific keys.
+
+   SCGI_SET_NAME()
+     To set the server's name, call scgi_set_name() inside scgi_init_func().
+
+     void scgi_set_name( char * );
+
+     If not set, the server's name defaults to "dombey".  The server's name is
+     used in two ways.
+
+     •   When a server is running, stderr is connected to /dev/null.  Errors
+         are reported with syslog(3).  Dombey calls openlog() with the
+         server's name to ensure log entries are identified by the server's
+         name.
+
+     •   The server's pidfile is written to /var/run/ if the server is started
+         as root.  The filename is the server's name with ".pid" appended to
+         it.  This file is used by rc.d scripts to stop the server.  A sample
+         script is included in the dombey distribution.
+
+   SCGI_SET_PERIODIC()
+     in scgi_init_func(), you can install a function for the master to invoke
+     periodically with:
+
+     void scgi_set_periodic( void (*)(), int );
+
+     Dombey calls the function pointed to by first argument when the number of
+     seconds specified by the second argument have elapsed and then again
+     repeatedly when that number of seconds has elapsed since the last call.
+
+   SCGI_WORKER_INIT_FUNC()
+     In scgi_worker_init_func(), perform the initialization tasks each worker
+     needs to perform independently of the master.  For example, open unique
+     database connections for each worker in scgi_worker_init_func().
+
+     Dombey calls scgi_worker_init_func() after:
+
+     •   the user and group of the server process have been changed to the
+         values specified by the -u and -g command line options.
+
+     •   the standard streams are connected to /dev/null.  Therefore errors
+         must be reported with syslog(3).
+
+   SIGNALS
+     Both libraries need to catch SIGTERM, so do not change the disposition of
+     that signal.
+
+     The multi-threaded library additionally needs to catch SIGUSR1, so do not
+     change the disposition of that signal in multi-threaded servers.
+
+     Upon receipt of SIGBUS or SIGSEGV, libdombey restarts the server with a
+     call to execv(3).  If you want to do something else, install your own
+     handler.
+
+     If your server starts as root and changes user and group, dombey will be
+     unable to restart if your server is not executable by the user or group.
+
+     Dombey will be unable to perform the operations that require root
+     privileges after restart unless you turn on the setuid bit of the server
+     (chmod u=+s).
+
+   ACCESS TO REQUEST DATA
+     Inside scgi_request_handler(), use the following library functions to
+     access the environment, the parameters, and cookies.
+
+     char *scgi_get_env( char * );
+     char **scgi_get_envs();
+
+     char *scgi_get_param( char * );
+     char **scgi_get_params();
+
+     char *scgi_get_cookie( char * );
+     char **scgi_get_cookies();
+
+     scgi_get_env() retrieves the value of one particular SCGI environment
+     variable.  Pass the name of the variable as argument, and the function
+     returns that variable's value or NULL if the variable is not defined.
+
+     scgi_get_envs() returns an array of character pointers listing all the
+     SCGI environment variables and their values with each variable name
+     followed by its value.  The array is always terminated with a NULL
+     pointer.
+
+     scgi_get_param() retrieves the decoded value of one particular SCGI
+     parameter.  Pass the name of the parameter as argument, and the function
+     returns that parameter's value or NULL if the parameter is not defined.
+
+     scgi_get_params() returns an array of character pointers listing all the
+     SCGI parameters and their values with each parameter name followed by its
+     value.  The array is always terminated by a NULL pointer.
+
+     scgi_get_cookie() retrieves the value of one named cookie defined in the
+     the HTTP_COOKIE environment variable.  Pass the name of the desired
+     cookie as argument, and the function returns that cookie's value or NULL
+     if the cookie is not set.
+
+     scgi_get_cookies() returns an array of character pointers listing all the
+     cookies defined in HTTP_COOKIE with each cookie name followed by its
+     value.  The array is always terminated by a NULL pointer.
+
+   ACCESS TO UPLOADED FILES
+     Inside scgi_request_handler(), use the following library functions to
+     access files uploaded by the client.
+
+     char **scgi_get_file( char * );
+     char **scgi_get_next_file( char **, char * );
+     char **scgi_get_files();
+
+     When processing a POSTed multipart/form-data document, elements of that
+     document with a "filename" parameter are stored in files in the directory
+     specified by the -r option.  Files are created with mkstemp(), and
+     filenames begin with the characters "dombey-" so that you may disguish
+     dombey's working files from files your application uses.  All files are
+     unlink()ed by dombey when scgi_request_handler() returns.  If you want
+     the files to persist, hard link new names to them.
+
+     scgi_get_file() retrieves the files array entries associated with a
+     particular SCGI parameter.  Pass the name of the parameter as argument,
+     and the function returns a pointer to character pointer.  Index the
+     returned pointer with 0 to access the client filename.  Index the pointer
+     with 1 to access the local filename.  Index the pointer with 2 to access
+     the key used to encrypt the file.  Index the pointer with 3 to access the
+     iv used to encrypt the file.  The last two values are NULL if the file is
+     not encrypted.  If these values are not NULL, the key is 32 bytes, and
+     the iv is 16 bytes.  Both values may contain zeros.
+
+     If the user did not select a file to upload for a particular file input,
+     the entry for that input is placed in the params array, and the
+     parameter's value is the empty string.  If scgi_get_file() returns NULL
+     for an expected form element, then call scgi_get_param().  If that
+     function returns the empty string, the user did not select a file to
+     upload.  If that function returns NULL, the named input was not part of
+     the originating form.
+
+     For file inputs that have the multiple attribute set, dombey creates more
+     than one entry in the files array with the same name.  scgi_get_file()
+     only returns the data for the first file.  To access the next file, call
+     scgi_get_next_file() with the address returned by scgi_get_file() and the
+     name of the parameter.  To access the remainder of the files, call
+     scgi_get_next_file() with the address it returned on its previous
+     invocation and the name of the parameter.  When there are no more entries
+     of the same name, the function returns NULL.
+
+     scgi_get_files() returns a NULL-terminated array of character pointers
+     listing the parameters of all the files uploaded by the current request.
+     The array consists of groups of 5 ajacent entries for each uploaded file.
+     The first entry of each group is the "name" parameter (the name of the
+     input in the form from which the file was posted).  The second entry is
+     the "filename" parameter (the filename on the client machine).  The third
+     entry is the filename on the local filesystem where the file has been
+     stored.  The fourth entry is the key used to encrypt the file or NULL if
+     the file is not encrypted.  The fifth entry is the initialization vector
+     used to encrypt the file or NULL if the file is not encrypted.
+
+   SCGI_ENCRYPT_FILES()
+     Dombey can encrypt uploaded files with the AES-256 cipher in GCM mode
+     (see the -c option).  A random key and initialization vector are
+     generated for each encrypted file.  Files are encrypted on the fly with
+     no data reaching storage unencrypted.  To enable encryption, call the
+     following function with the argument set to a non-zero value.  To disable
+     encryption, set the argument to 0.
+
+     void scgi_encrypt_files( int on );
+
+   SCGI_READ_ENCRYPTED()
+     Read encrypted files with the following function.
+
+     char *scgi_read_encrypted( int fd, int *len, char *key, char *iv );
+
+     First, call the function with fd set to -2 to establish a cipher context.
+     The len argument must point to an int to hold status codes.  The key and
+     iv arguments must point to the key and iv values for the file.
+
+     Next, open the filename with open(2), and call scgi_read_encrypted() with
+     fd set to the open file descriptor.  The function returns a pointer to a
+     dynamically allocated array of character data.  The length of the data is
+     placed into len.  Free the data when you are finished with it.  Upon EOF,
+     the function returns NULL with len set to 0.  Upon failure, the function
+     returns NULL with len set to -1.  An error message is logged with
+     syslog(3).  The cipher context is automatically cleaned when an error
+     occurs or when EOF is read.
+
+     The key and iv arguments can be NULL after the cipher context has been
+     established.
+
+     If you do not read a file to EOF, call the function with fd set to -1 to
+     clean the cipher context.  Calling the function with fd set to -2 also
+     cleans any previously established context.
+
+   CONVENIENCE FUNCTIONS
+     Use these convenience functions to encode a string in x-www-form-
+     urlencoding and to escape <, >, and & with their HTML entities.
+
+     char *scgi_form_encode( char * );
+     char *scgi_html_escape( char * );
+
+     Both functions return dynamically allocated strings that must be freed by
+     the caller.
+
+   ACCESS TO CONFIGURATION VARIABLES
+     You can examine the following configuration variables from your code, but
+     you must not modify them.   See the CONFIGURATION section for more
+     information.
+
+     char *scgi_config_file;
+     char *scgi_root_dir;
+     char *scgi_interface;
+     char *scgi_port;
+     char *scgi_user;
+     char *scgi_group;
+
+     scgi_config_file  points to the value passed to the -f option.  Defaults
+                       to NULL.
+
+     scgi_root_dir     points to the value passed to the -r option.  Must be
+                       explicitly set.
+
+     scgi_interface    points to the value passed to the -i option.  Defaults
+                       to "".
+
+     scgi_port         points to the value passed as argument to the -p
+                       option.  Defaults to "4000".
+
+     scgi_user         points to the value passed as argument to the -u
+                       option.  Defaults to "nobody".
+
+     scgi_group        points to the value passed as argument to the -g
+                       option.  Defaults to "nobody".
+
+   LIMITS
+     Dombey stores the information for 25 SCGI environment variables, 50 SCGI
+     parameters (including uploaded files), and 25 cookies.  More items
+     provided in a client request are ignored.  See the COMMAND-LINE OPTIONS
+     for how to use the -a, -b, and  -e options to limit the amount of data
+     clients can submit.
+
+   THREADED SERVERS
+     If your threaded server encounters an unrecoverable error call
+     scgi_thread_exit() in the thread with the error.  DO NOT call
+     pthread_exit() directly.
+
+     void scgi_thread_exit();
+
+     To create and manage globally-visible data that is unique for each
+     connection use the pthread thread-specific data functions.  The following
+     are the minimal set of functions that you need to understand.  All are
+     documented in manual pages.
+
+     pthread_key_create();
+     pthread_setspecific();
+     pthread_getspecific();
+
+     Each thread maps keys to its thread-specific storage space.
+
+     •   In scgi_init_func(), create your keys with pthread_key_create().
+         Pass a destructor function to pthread_key_create() to free the space
+         workers associate with keys, or your server will leak memory on
+         thread termination.
+
+     •   In scgi_worker_init_func(), malloc(3) the current thread's thread-
+         specific storage and install it with pthread_setspecific().
+
+     •   In scgi_request_handler(), retrieve your thread-specific storage with
+         pthread_getspecific().  Put fresh data in your storage as you like in
+         each invocation of scgi_request_handler().
+
+     •   Release any dynamically allocated storage that is not freed by your
+         keys' destructors before returning from scgi_request_handler().
+
+   CONFIGURATION
+     If it is started as root, dombey writes its pidfile into /var/run/.  Stop
+     dombey with SIGTERM.  Dombey stops gracefully.  Idle workers exit
+     immediately.  Workers with established connections exit after established
+     connections close.  To kill a server outright, send it a SIGKILL.
+
+     A sample control script, dombey.rcfile, is provided in the dombey
+     distribution.  To use the script, replace all occurrences of "dombey"
+     with the value that you pass to scgi_set_name().  Rename the script to
+     the same value.  Install the script in /usr/local/etc/rc.d.  Add the
+     following variables to /etc/rc.conf.  Substitute your server's name for
+     "dombey".
+
+     dombey_enable="YES"
+     dombey_flags="-u www -g www -r /usr/local/dombey"
+
+     If the "enable" variable is set to "YES", the server is started at system
+     start.  Use the following control commands.
+
+     service dombey start
+     service dombey stop
+     service dombey restart
+     service dombey status
+
+     If you do not want the server started on system start, then set
+
+     dombey_enable="NO"
+
+     Use the following control commands.
+
+     service dombey onestart
+     service dombey onestop
+     service dombey onerestart
+     service dombey onestatus
+
+   DEBUGGING
+     To debug a server, compile it with the -g and -O0 compiler options.  With
+     the debugger, invoke the server with dombey's -x option.  This forces the
+     server to run as a single-thread foreground process.  You must use -x
+     option regardless of the concurrency type of the server.
+
+     If you suspect a library bug exists, compile the dombey source to object
+     files with symbol information with "make debug".  The object files can be
+     included in your projects to allow you to trace the dombey function
+     calls.
+
+   COMMAND-LINE OPTIONS
+     The following command-line options are recognized by dombey servers.  The
+     -r option is mandatory.
+
+     -r  Use the -r option to specify the absolute path to the server root
+         directory.  Dombey chdir(2)s here.  POSTed files are stored in this
+         directory.
+
+     -l  By default, dombey listens on all interfaces it can find capable of
+         IPv4 or IPv6.  The -l option instructs dombey to listen on a UNIX-
+         domain socket instead.  Specify the path to the socket as argument.
+         The server creates the socket when it starts, unlinking it first if
+         it already exists in the filesystem.  The owner and group of the
+         socket are changed to the values of the -u and -g options.  The
+         permisssions of the socket are set to srwxrwx---.
+
+     -p  The -p option specifies the port to listen on.  This defaults to
+         4000.  To bind to a port lower than 1024, the server must be started
+         as root.
+
+     -i  By default, dombey accepts connections on all interfaces it can find
+         capable of IPv4 or IPv6.  The -i option limits dombey to accepting
+         connections from a specified interface.  Pass the IP address of the
+         desired interface as argument.
+
+     -n  The -n options specifies the number of idle workers the master
+         attempts to keep ready.  The value defaults to 5.  Dombey actually
+         allows the number of idle workers to reach half this value before it
+         creates more.
+
+     -m  The -m option specifies the maximum number of workers which can run
+         at any time.  The value defaults to 25.  This value is the maximum
+         number of simultaneous connections a server can accept.  The value
+         specified must be equal to or greater than the value specified for
+         -n.
+
+     -q  The -q option specifies the backlog of client connections queued by
+         the OS kernel for the server to subsequently service.  This value
+         defaults to 1024.  The kernel actually uses a queue of 1.5 times the
+         size of the specified value.  Connections arriving when the queue is
+         full are dropped by the kernel.  Libdombey does not le you set this
+         value to less than 1024.
+
+     -a  The -a option specifies the maximum number of parameters accepted in
+         a multipart/form-data POST request.  By default, dombey accepts up to
+         50 parameters in a GET or a POST request.  More items are silently
+         discarded.  Use -a to lower this parameter for multipart/form-data
+         POSTs.  You cannot set the parameter to a value greater than 50 or
+         less than 1.
+
+     -b  The -b option specifies a maximum acceptable data size in bytes.
+         This value defaults to 10000.
+
+         •   For GET requests this value is ignored.  We rely on the web
+             server to limit the length of request lines.
+
+         •   For POST requests that are encoded with x-www-form-urlencoding,
+             this value is the maximum size of request bodies.  Connections
+             are dropped without explanantion when CONTENT_LENGTH exceeds this
+             value.
+
+         •   For POST requests that are multipart/form-data documents, this
+             value specifies the maximum size of each non-file entity in in
+             the POST.
+
+     -e  The -e option specifies the maximum acceptable size in bytes of files
+         uploaded in multipart/form-data POSTS.  This value defaults to
+         2000000.  Connections attempting to upload a file larger than this
+         are assumed to be malicious and are dropped without explanation.
+         Setting this parameter to 0 causes dombey to drop connections that
+         submit files in POSTS.
+
+     -u
+
+     -g  The -u and the -g options specify the user and group of the server.
+         Both values default to "nobody".  To change user, the server must be
+         started as root.
+
+         Dombey restarts servers on receipt of SIGSEGV or SIGBUS.
+
+         If your server starts as root and changes user and group, dombey will
+         be unable to restart if your server is not executable by the user or
+         group.
+
+         Dombey will be unable to perform the operations that require root
+         privileges after restart unless you turn on the setuid bit of the
+         server (chmod +s).
+
+     -c  Previous versions of the library used CBC mode when encrypting files.
+         If you want to continue to use CBC mode, add the -c option to your
+         server's command line.
+
+     -x  This option is useful when debugging servers.  The -x option prevents
+         dombey from becoming a daemon and creating multiple workers.  Servers
+         run as single thread iterative servers.
+
+     -f  The -f option specifies a filename as argument.  Dombey assigns it to
+         the global character pointer named scgi_config_file.  This enables
+         the code in scgi_init_func() and scgi_worker_init_func() to read a
+         configuration file.
+
+AUTHORS
+     James Bailie ⟨jimmy@mammothcheese.ca⟩
+     http://www.mammothcheese.ca
+
+                               Tue Apr 21, 2020

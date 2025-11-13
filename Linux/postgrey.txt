@@ -1,0 +1,185 @@
+POSTGREY(8)                                                                         User Contributed Perl Documentation                                                                         POSTGREY(8)
+
+NAME
+       postgrey - Postfix Greylisting Policy Server
+
+SYNOPSIS
+       postgrey [options...]
+
+        -h, --help              display this help and exit
+            --version           output version information and exit
+        -v, --verbose           increase verbosity level
+            --syslog-facility   Syslog facility to use (default mail)
+        -q, --quiet             decrease verbosity level
+        -u, --unix=PATH         listen on unix socket PATH
+            --socketmode=MODE   unix socket permission (default 0666)
+        -i, --inet=[HOST:]PORT  listen on PORT, localhost if HOST is not specified
+        -d, --daemonize         run in the background
+            --pidfile=PATH      put daemon pid into this file
+            --user=USER         run as USER (default: postgrey)
+            --group=GROUP       run as group GROUP (default: postgrey)
+            --dbdir=PATH        put db files in PATH (default: /var/lib/postgrey)
+            --delay=N           greylist for N seconds (default: 300)
+            --max-age=N         delete entries older than N days since the last time
+                                that they have been seen (default: 35)
+            --retry-window=N    allow only N days for the first retrial (default: 2)
+                                append 'h' if you want to specify it in hours
+            --greylist-action=A if greylisted, return A to Postfix (default: DEFER_IF_PERMIT)
+            --greylist-text=TXT response when a mail is greylisted
+                                (default: Greylisted + help url, see below)
+            --lookup-by-subnet  strip the last N bits from IP addresses, determined by ipv4cidr and ipv6cidr (default)
+            --ipv4cidr=N        What cidr to use for the subnet on IPv4 addresses when using lookup-by-subnet (default: 24)
+            --ipv6cidr=N        What cidr to use for the subnet on IPv6 addresses when using lookup-by-subnet (default: 64)
+            --lookup-by-host    do not strip the last 8 bits from IP addresses
+            --privacy           store data using one-way hash functions
+            --hostname=NAME     set the hostname (default: `hostname`)
+            --exim              don't reuse a socket for more than one query (exim compatible)
+            --whitelist-clients=FILE     default: /etc/postgrey/whitelist_clients
+            --whitelist-recipients=FILE  default: /etc/postgrey/whitelist_recipients
+            --auto-whitelist-clients=N   whitelist host after first successful delivery
+                                         N is the minimal count of mails before a client is
+                                         whitelisted (turned on by default with value 5)
+                                         specify N=0 to disable.
+            --listen-queue-size=N        allow for N waiting connections to our socket
+            --x-greylist-header=TXT      header when a mail was delayed by greylisting
+                                         default: X-Greylist: delayed <seconds> seconds by postgrey-<version> at <server>; <date>
+
+        Note that the --whitelist-x options can be specified multiple times,
+        and that per default /etc/postgrey/whitelist_clients.local and
+        /etc/postgrey/whitelist_recipients.local are also read, so that you can put
+        there local entries.
+
+DESCRIPTION
+       Postgrey is a Postfix policy server implementing greylisting.
+
+       When a request for delivery of a mail is received by Postfix via SMTP, the triplet "CLIENT_IP" / "SENDER" / "RECIPIENT" is built. If it is the first time that this triplet is seen, or if the
+       triplet was first seen less than delay seconds (300 is the default), then the mail gets rejected with a temporary error. Hopefully spammers or viruses will not try again later, as it is however
+       required per RFC.
+
+       Note that you shouldn't use the --lookup-by-host option unless you know what you are doing: there are a lot of mail servers that use a pool of addresses to send emails, so that they can change IP
+       every time they try again. That's why without this option postgrey will strip the last byte of the IP address when doing lookups in the database.
+
+   Installation
+       •   Create a "postgrey" user and the directory where to put the database dbdir (default: "/var/lib/postgrey")
+
+       •   Write an init script to start postgrey at boot and start it. Like this for example:
+
+            postgrey --inet=10023 -d
+
+           contrib/postgrey.init in the postgrey source distribution includes a LSB-compliant init script by Adrian von Bidder for the Debian system.
+
+       •   Put something like this in /etc/main.cf:
+
+            smtpd_recipient_restrictions =
+                          permit_mynetworks
+                          ...
+                          reject_unauth_destination
+                          check_policy_service inet:127.0.0.1:10023
+
+       •   Install the provided whitelist_clients and whitelist_recipients in /etc/postgrey.
+
+       •   Put in /etc/postgrey/whitelist_recipients users that do not want greylisting.
+
+   Whitelists
+       Whitelists allow you to specify client addresses or recipient address, for which no greylisting should be done. Per default postgrey will read the following files:
+
+        /etc/postgrey/whitelist_clients
+        /etc/postgrey/whitelist_clients.local
+        /etc/postgrey/whitelist_recipients
+        /etc/postgrey/whitelist_recipients.local
+
+       You can specify alternative paths with the --whitelist-x options.
+
+       Postgrey whitelists follow similar syntax rules as Postfix access tables.  The following can be specified for recipient addresses:
+
+       domain.addr
+                 "domain.addr" domain and subdomains.
+
+       name@     "name@.*" and extended addresses "name+blabla@.*".
+
+       name@domain.addr
+                 "name@domain.addr" and extended addresses.
+
+       /regexp/  anything that matches "regexp" (the full address is matched).
+
+       The following can be specified for client addresses:
+
+       domain.addr
+                 "domain.addr" domain and subdomains.
+
+       IP1.IP2.IP3.IP4
+                 IP address IP1.IP2.IP3.IP4. You can also leave off one number, in which case only the first specified numbers will be checked.
+
+       IP1.IP2.IP3.IP4/MASK
+                 CIDR-syle network. Example: 192.168.1.0/24
+
+       /regexp/  anything that matches "regexp" (the full address is matched).
+
+   Auto-whitelisting clients
+       With the option --auto-whitelist-clients a client IP address will be automatically whitelisted if the following conditions are met:
+
+       •   At  least  5  successful  attempts  of  delivering  a mail (after greylisting was done). That number can be changed by specifying a number after the --auto-whitelist-clients argument. Only one
+           attempt per hour counts.
+
+       •   The client was last seen before --max-age days (35 per default).
+
+   Greylist Action
+       To set the action to be returned to postfix when a message fails postgrey's tests and should be deferred, use the --greylist-action=ACTION option.
+
+       By default, postgrey returns DEFER_IF_PERMIT, which causes postfix to check the rest of the restrictions and defer the message only if it would otherwise be accepted.  A delay action of 451 causes
+       postfix to always defer the message with an SMTP reply code of 451 (temp fail).
+
+       See the postfix manual page access(5) for a discussion of the actions allowed.
+
+   Greylist Text
+       When a message is greylisted, an error message like this will be sent at the SMTP-level:
+
+        Greylisted, see http://postgrey.schweikert.ch/help/example.com.html
+
+       Usually no user should see that error message and the idea of that URL is to provide some help to system administrators seeing that message or users of broken mail clients which try to send  mails
+       directly and get a greylisting error. Note that the default help-URL contains the original recipient domain (example.com), so that domain-specific help can be presented to the user (on the default
+       page it is said to contact postmaster@example.com)
+
+       You can change the text (and URL) with the --greylist-text parameter. The following special variables will be replaced in the text:
+
+       %s  How many seconds left until the greylisting is over (300).
+
+       %r  Mail-domain of the recipient (example.com).
+
+   Greylist Header
+       When a message is greylisted, an additional header can be prepended to the header section of the mail:
+
+        X-Greylist: delayed %t seconds by postgrey-%v at %h; %d
+
+       You can change the text with the --x-greylist-header parameter. The following special variables will be replaced in the text:
+
+       %t  How many seconds the mail has been delayed due to greylisting.
+
+       %v  The version of postgrey.
+
+       %d  The date.
+
+       %h  The host.
+
+   Privacy
+       The --privacy option enable the use of a SHA1 hash function to store IPs and emails in the greylisting database.  This will defeat straight forward attempts to retrieve mail user behaviours.
+
+   SEE ALSO
+       See <http://www.greylisting.org/> for a description of what greylisting is and <http://www.postfix.org/SMTPD_POLICY_README.html> for a description of how Postfix policy servers work.
+
+COPYRIGHT
+       Copyright (c) 2004-2007 by ETH Zurich. All rights reserved.  Copyright (c) 2007 by Open Systems AG. All rights reserved.
+
+LICENSE
+       This  program  is  free  software;  you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the
+       License, or (at your option) any later version.
+
+       This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR  PURPOSE.   See  the  GNU
+       General Public License for more details.
+
+       You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+AUTHOR
+       David Schweikert <david@schweikert.ch>
+
+perl v5.40.1                                                                                     2025-09-19                                                                                     POSTGREY(8)

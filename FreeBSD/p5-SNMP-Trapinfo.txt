@@ -1,0 +1,217 @@
+SNMP::Trapinfo(3)     User Contributed Perl Documentation    SNMP::Trapinfo(3)
+
+
+NAME
+       SNMP::Trapinfo - Read and process an SNMP trap from Net-SNMP's
+       snmptrapd
+
+SYNOPSIS
+         use SNMP::Trapinfo;
+         $trap = SNMP::Trapinfo->new(*STDIN);
+
+         open F, ">> /tmp/trap.log";
+         print F $trap->packet;
+         close F;
+
+         if (! defined $trap->trapname) {
+           die "No trapname in packet";
+         } elsif ($trap->trapname eq "IF-MIB::linkUp" or $trap->trapname eq "IF-MIB::linkDown") {
+           # $mailer is a Mail::Mailer object, for example
+           print $mailer "Received trap :", $trap->trapname, $/,
+             "From host: ", $trap->hostname, $/,
+             "Message: ", $trap->expand('Interface ${V5} received ${TRAPNAME}'), $/;
+         } else {
+           # not expected trap
+         }
+
+         # Do some complex evaluation of the packet
+         my $result = $trap->eval('"${IF-MIB::ifType}" eq "ppp" && ${IF-MIB::ifIndex} < 5');
+         if ($result) {
+           print "Got a trap for ppp where index is less than 5", $/;
+         } elsif ($result == 0) {
+           print "Packet not desired", $/;
+         } else {
+           print "Error evaluating: " . $trap->last_eval_string . "; result: $@", $/;
+         }
+
+DESCRIPTION
+       This module allows the user to get to the useful parts of an snmptrapd
+       packet, as provided by the Net-SNMP software (http://www.net-snmp.org).
+       You can evaluate the packet to match whatever rules you define and then
+       take whatever action with the packet, such as sending an email, post an
+       IM or submit it as a passive check to Nagios (http://www.nagios.org).
+
+       Rules are defined as little perl snippets of code - run using the eval
+       method.  You use macros to pull out specific bits of the trap to then
+       evaluate against.  See the expand method for the macro definitions.
+
+IMPLEMENTATION
+       1.  Create your perl script (such as the example above).
+
+       2.  Edit snmptrapd.conf so that the default traphandle calls your perl
+           script.
+
+       3.  Startup snmptrapd and let it do all the OID translations (no -On
+           option) and let it do hostname translations (no -n option).
+
+       4.  Create a trap and check that it has been received and processed
+           correctly.
+
+METHODS
+       SNMP::Trapinfo->new(*STDIN)
+           Reads STDIN, expecting input from snmptrapd, and returns the object
+           holding all the information about this packet. An example packet
+           is:
+
+             cisco2611.lon.altinity
+             192.168.10.20
+             SNMPv2-MIB::sysUpTime.0 9:16:47:53.80
+             SNMPv2-MIB::snmpTrapOID.0 IF-MIB::linkUp
+             IF-MIB::ifIndex.2 2
+             IF-MIB::ifDescr.2 Serial0/0
+             IF-MIB::ifType.2 ppp
+             SNMPv2-SMI::enterprises.9.2.2.1.1.20.2 "PPP LCP Open"
+             SNMP-COMMUNITY-MIB::snmpTrapAddress.0 192.168.10.20
+             SNMP-COMMUNITY-MIB::snmpTrapCommunity.0 "public"
+             SNMPv2-MIB::snmpTrapEnterprise.0 SNMPv2-SMI::enterprises.9.1.186
+
+           Any trailing linefeeds will be stripped.
+
+           Apart from the first two lines, expects each line to be of the
+           format: key value. If not, then will silently ignore the line.
+
+           If you want to use multiple packets within a stream, you have to
+           put a marker in between each trap: "#---next trap---#\n". Then call
+           SNMP::Trapinfo->new(*STDIN) again. Will receive an undef if there
+           are no more packets to read or the packet is malformed (such as no
+           IP on the 2nd line).
+
+       SNMP::Trapinfo->new(\$data)
+           Instead of a filehandle, can specify a scalar reference that holds
+           the packet data.
+
+       hostname
+           Returns the first line of the packet, which should be the hostname
+           as resolved by snmptrapd.
+
+       hostip
+           Returns the IP address in the 2nd line of the packet, which should
+           be the originating host.
+
+       trapname
+           Returns the value of the parameter SNMPv2-MIB::snmpTrapOID. In the
+           example above, this method would return IF-MIB::linkUp.
+
+           If the SNMPv2-MIB::snmpTrapOID is not found, then will return
+           undef.  This could mean that the MIB for snmpTrapOID has not been
+           loaded.
+
+       fully_translated
+           Returns 0 if the trapname has more than 1 set of trailing digits (a
+           single .\d+ would be removed automatically) - this would mean that
+           a MIB is missing. Otherwise returns 1.
+
+       packet( {hide_passwords => 1} )
+           Returns a scalar with the full packet, as originally received. If
+           hide_passwords is specified, will replace the value of
+           snmpTrapCommunity.0 with 5 asterisks.
+
+       data
+           Returns a hash ref where the keys consist of the SNMP parameter and
+           the values are the string values of thos parameters. For the
+           example trap above, a Data::Dumper of $trap->data would give:
+
+             $VAR1 = {
+                     'SNMPv2-MIB::snmpTrapEnterprise' => 'SNMPv2-SMI::enterprises.9.1.186',
+                     'SNMP-COMMUNITY-MIB::snmpTrapAddress' => '192.168.10.20',
+                     'IF-MIB::ifType' => 'ppp',
+                     'IF-MIB::ifIndex' => '2',
+                     'SNMPv2-MIB::snmpTrapOID' => 'IF-MIB::linkUp',
+                     'IF-MIB::ifDescr' => 'Serial0/0',
+                     'SNMP-COMMUNITY-MIB::snmpTrapCommunity' => '"public"',
+                     'SNMPv2-MIB::sysUpTime' => '9:16:47:53.80',
+                     'SNMPv2-SMI::enterprises.9.2.2.1.1.20.2' => '"PPP LCP Open"'
+                   };
+
+       expand($string)
+           Takes $string and expands it so that macros within the string will
+           be expanded out based on the packet details. Available macros are:
+
+           •   ${Px} - Returns the parameter for line x
+
+           •   ${Vx} - Returns the value for line x
+
+           •   ${TRAPNAME} - Returns the trapname (as called from
+               $trap->trapname)
+
+           •   ${HOSTIP} - Returns the IP of the originating packet
+
+           •   ${IF-MIB::ifType} - Returns the value for the specified
+               parameter.
+
+           •   ${SNMPv2-SMI::enterprises.9.*.2.1.1.20.2} - Returns the value
+               for the specified parameter. The use of the wildcard means any
+               value can be in that dot area. If there are multiple matches,
+               there is no guarantee which one is returned.  This is only
+               really for MIBs that have variables within the OID - in this
+               particular case, there is a missing MIB file.  Multiple *s can
+               be used.
+
+           •   ${DUMP} - Returns all key, value pairs (stripping out
+               snmpTrapCommunity)
+
+           For the example trap above, if you ran:
+
+             $trap->expand('Port ${IF-MIB::ifIndex} (${P7}=${V7}) is Up with message ${V8}');
+
+           this would return:
+
+             Port 2 (ifType=ppp) is Up with message "PPP LCP Open"
+
+       eval($string)
+           $string is passed into expand to expand any macros. Then the entire
+           string is eval'd.  This method is useful for creating SNMP rules,
+           using perl syntax. Will return 1 if true, 0 if false, or undef if
+           eval failure ($@ will be set with the error).
+
+           For the example trap above, if you ran:
+
+             $trap->eval('"${IF-MIB::ifType}" eq "ppp" && ${IF-MIB::ifIndex} < 5');
+
+           this would expand to
+
+             "ppp" eq "ppp" && 2 < 5
+
+           and this would return 1.
+
+           The perl code executed is run in a Safe compartment so only numeric
+           comparisons or regexps are allowed. Other calls, such as open or
+           system, will return undef with the error in $@
+
+       last_eval_string
+           Returns the last string used in an eval, with all macros expanded.
+           Useful for debugging
+
+VERSION NUMBERING
+       After a brief flirtation with 3 digit version numbering, I've changed
+       back to X.YY format as perlmodstyle recommends.
+
+REFERENCES
+       Net-SNMP - http://www.net-snmp.org. This module has been tested on
+       versions 5.1.2 and 5.2.1.
+
+AUTHOR
+       Ton Voon, <ton.voon@opsera.com>
+
+CREDITS
+       Thanks to Brand Hilton for documentation suggestions and Rob Moss for
+       integrating Safe.pm.
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2006-2008 Opsera Limited. All rights reserved
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself, either Perl version 5.8.4 or, at
+       your option, any later version of Perl 5 you may have available.
+
+perl v5.40.2                      2010-09-06                 SNMP::Trapinfo(3)

@@ -1,0 +1,625 @@
+Crypt::LE(3)          User Contributed Perl Documentation         Crypt::LE(3)
+
+
+NAME
+       Crypt::LE - Let's Encrypt (and other ACME-based) API interfacing module
+       and client.
+
+VERSION
+       Version 0.39
+
+SYNOPSIS
+        use Crypt::LE;
+
+        my $le = Crypt::LE->new();
+        $le->load_account_key('account.pem');
+        $le->load_csr('domain.csr');
+        $le->register();
+        $le->accept_tos();
+        $le->request_challenge();
+        $le->accept_challenge(\&process_challenge);
+        $le->verify_challenge();
+        $le->request_certificate();
+        my $cert = $le->certificate();
+        ...
+        sub process_challenge {
+           my $challenge = shift;
+           print "Challenge for $challenge->{domain} requires:\n";
+           print "A file '/.well-known/acme-challenge/$challenge->{token}' with the text: $challenge->{token}.$challenge->{fingerprint}\n";
+           print "When done, press <Enter>";
+           <STDIN>;
+           return 1;
+        };
+
+DESCRIPTION
+       Crypt::LE provides the functionality necessary to use Let's Encrypt API
+       and generate free SSL certificates for your domains. It can also be
+       used to generate RSA keys and Certificate Signing Requests or to revoke
+       previously issued certificates. Crypt::LE is shipped with a self-
+       sufficient client for obtaining SSL certificates - le.pl.
+
+       Provided client supports 'http' and 'dns' domain verification out of
+       the box.
+
+       Crypt::LE can be easily extended with custom plugins to handle Let's
+       Encrypt challenges. See Crypt::LE::Challenge::Simple module for an
+       example of a challenge-handling plugin.
+
+       Basic usage:
+
+       le.pl --key account.key --csr domain.csr --csr-key domain.key --crt
+       domain.crt --domains "www.domain.ext,domain.ext" --generate-missing
+
+       That will generate an account key and a CSR (plus key) if they are
+       missing. If any of those files exist, they will just be loaded, so it
+       is safe to re-run the client. Run le.pl without any parameters or with
+       "--help" to see more details and usage examples.
+
+       In addition to challenge-handling plugins, the client also supports
+       completion-handling plugins, such as Crypt::LE::Complete::Simple. You
+       can easily handle challenges and trigger specific actions when your
+       certificate gets issued by using those modules as templates, without
+       modifying the client code.  You can also pass custom parameters to your
+       modules from le.pl command line:
+
+       le.pl ... --handle-with Crypt::LE::Challenge::Simple --handle-params
+       '{"key1": 1, "key2": "one"}'
+
+       le.pl ... --complete-with Crypt::LE::Complete::Simple --complete-params
+       '{"key1": 1, "key2": "one"}'
+
+       The parameters don't have to be put directly in the command line, you
+       could also give a name of a file containing valid JSON to read them
+       from.
+
+       le.pl ... --complete-params complete.json
+
+       Crypt::LE::Challenge:: and Crypt::LE::Complete:: namespaces are
+       suggested for new plugins.
+
+EXPORT
+       Crypt::LE does not export anything by default, but allows you to import
+       the following constants:
+
+       •   OK
+
+       •   READ_ERROR
+
+       •   LOAD_ERROR
+
+       •   INVALID_DATA
+
+       •   DATA_MISMATCH
+
+       •   UNSUPPORTED
+
+       •   ALREADY_DONE
+
+       •   BAD_REQUEST
+
+       •   AUTH_ERROR
+
+       •   ERROR
+
+       To import all of those, use ':errors' tag:
+
+        use Crypt::LE ':errors';
+        ...
+        $le->load_account_key('account.pem') == OK or die "Could not load the account key: " . $le->error_details;
+
+       If you don't want to use error codes while checking whether the last
+       called method has failed or not, you can use the rule of thumb that on
+       success it will return zero. You can also call error() or
+       error_details() methods, which will be set with some values on error.
+
+METHODS (API Setup)
+       The following methods are provided for the API setup. Please note that
+       account key setup by default requests the resource directory from Let's
+       Encrypt servers.  This can be changed by resetting the 'autodir'
+       parameter of the constructor.
+
+   new()
+       Create a new instance of the class. Initialize the object with passed
+       parameters. Normally you don't need to use any, but the following are
+       supported:
+
+       "ua"        User-agent name to use while sending requests to Let's
+                   Encrypt servers. By default set to module name and version.
+
+       "server"    Server URL to connect to. Only needed if the default live
+                   or staging server URLs have changed and this module has not
+                   yet been updated with the new information or if you are
+                   using a custom server supporting ACME protocol. Note: the
+                   value is supposed to point to the root of the API (for
+                   example: https://some.server/acme/) rather than the
+                   directory handler. This parameter might be deprecated in
+                   the future in favour of the 'dir' one below.
+
+       "live"      Set to true to connect to a live Let's Encrypt server. By
+                   default it is not set, so staging server is used, where you
+                   can test the whole process of getting SSL certificates.
+
+       "debug"     Activates printing debug messages to the standard output
+                   when set. If set to 1, only standard messages are printed.
+                   If set to any greater value, then structures and server
+                   responses are printed as well.
+
+       "dir"       Full URL of a 'directory' handler on the server (the actual
+                   name of the handler can be different in certain
+                   configurations, where multiple handlers are mapped). Only
+                   needed if you are using a custom server supporting ACME
+                   protocol. This parameter replaces the 'server' one.
+
+       "ca"        The name of CA (Certificate Authority) to use. If the name
+                   is found in the list of supported ones, the URLs to use
+                   will be automatically set.  Please note that this parameter
+                   will be ignored if the 'directory' or 'server' are
+                   explicitly set.
+
+       "autodir"   Enables automatic retrieval of the resource directory
+                   (required for normal API processing) from the servers.
+                   Enabled by default.
+
+       "delay"     Specifies the time in seconds to wait before Let's Encrypt
+                   servers are checked for the challenge verification results
+                   again. By default set to 2 seconds.  Non-integer values are
+                   supported (so for example you can set it to 1.5 if you
+                   like).
+
+       "version"   Enforces the API version to be used. If the response is not
+                   found to be compatible, an error will be returned. If not
+                   set, system will try to make an educated guess.
+
+       "try"       Specifies the amount of retries to attempt while in
+                   'pending' state and waiting for verification results
+                   response. By default set to 300, which combined with the
+                   delay of 2 seconds gives you 10 minutes of waiting.
+
+       "logger"    Logger instance to use for debug messages. If not given,
+                   the messages will be printed to STDOUT.
+
+       Returns: Crypt::LE object.
+
+   load_account_key($filename|$scalar_ref)
+       Loads the private account key from the file or scalar in PEM or DER
+       formats.
+
+       Returns: OK | READ_ERROR | LOAD_ERROR | INVALID_DATA.
+
+   generate_account_key()
+       Generates a new private account key of the $keysize bits (4096 by
+       default). The key is additionally validated for not being divisible by
+       small primes.
+
+       Returns: OK | INVALID_DATA.
+
+   account_key()
+       Returns: A previously loaded or generated private key in PEM format or
+       undef.
+
+   load_csr($filename|$scalar_ref [, $domains])
+       Loads Certificate Signing Requests from the file or scalar. Domains
+       list can be omitted or it can be given as a string of comma-separated
+       names or as an array reference.  If omitted, then names will be loaded
+       from the CSR. If it is given, then the list of names will be verified
+       against those found on CSR.
+
+       Returns: OK | READ_ERROR | LOAD_ERROR | INVALID_DATA | DATA_MISMATCH.
+
+   generate_csr($domains, [$key_type], [$key_attr])
+       Generates a new Certificate Signing Request. Optionally accepts key
+       type and key attribute parameters, where key type should be either
+       KEY_RSA or KEY_ECC (if supported on your system) and key attribute is
+       either the key size (for RSA) or the curve (for ECC).  By default an
+       RSA key of 4096 bits will be used.  Domains list is mandatory and can
+       be given as a string of comma-separated names or as an array reference.
+
+       Returns: OK | ERROR | UNSUPPORTED | INVALID_DATA.
+
+   csr()
+       Returns: A previously loaded or generated CSR in PEM format or undef.
+
+   load_csr_key($filename|$scalar_ref)
+       Loads the CSR key from the file or scalar (to be used for generating a
+       new CSR).
+
+       Returns: OK | READ_ERROR.
+
+   csr_key()
+       Returns: A CSR key (either loaded or generated with CSR) or undef.
+
+   set_account_email([$email])
+       Sets (or resets if no parameter is given) an email address that will be
+       used for registration requests.
+
+       Returns: OK | INVALID_DATA.
+
+   set_domains($domains)
+       Sets the list of domains to be used for verification process. This call
+       is optional if you load or generate a CSR, in which case the list of
+       the domains will be set at that point.
+
+       Returns: OK | INVALID_DATA.
+
+   set_version($version)
+       Sets the API version to be used. To pick the version automatically, use
+       0, other accepted values are currently 1 and 2.
+
+       Returns: OK | INVALID_DATA.
+
+   version()
+       Returns: The API version currently used (1 or 2). If 0 is returned, it
+       means it is set to automatic detection and the directory has not yet
+       been retrieved.
+
+METHODS (API Workflow)
+       The following methods are provided for the API workflow processing. All
+       but accept_challenge() methods interact with Let's Encrypt servers.
+
+   directory([ $reload ])
+       Loads resource pointers from Let's Encrypt. This method needs to be
+       called before the registration. It will be called automatically upon
+       account key loading/generation unless you have reset the 'autodir'
+       parameter when creating a new Crypt::LE instance. If any true value is
+       provided as a parameter, reloads the directory even if it has been
+       already retrieved, but preserves the 'reg' value (for example to pull
+       another Nonce for the current session).
+
+       Returns: OK | INVALID_DATA | LOAD_ERROR.
+
+   new_nonce()
+       Requests a new nonce by forcing the directory reload. Picks up the
+       value from the returned headers if it is present (API v1.0), otherwise
+       uses newNonce method to get it (API v2.0) if one is provided.
+
+       Returns: Nonce value or undef (if neither the value is in the headers
+       nor newNonce method is available).
+
+   register([$kid, $mac])
+       Registers an account key with Let's Encrypt. If the key is already
+       registered, it will be handled automatically.  Accepts optional $kid
+       (eab-kid) and $mac (eab-hmac-key) parameters - those are used for EAB
+       (External Account Binding).
+
+       Returns: OK | ERROR.
+
+   accept_tos()
+       Accepts Terms of Service set by Let's Encrypt.
+
+       Returns: OK | ERROR.
+
+   update_contacts($array_ref)
+       Updates contact details for your Let's Encrypt account. Accepts an
+       array reference of contacts.  Non-prefixed contacts will be
+       automatically prefixed with 'mailto:'.
+
+       Returns: OK | INVALID_DATA | ERROR.
+
+   request_challenge()
+       Requests challenges for domains on your CSR. On error you can call
+       failed_domains() method, which returns an array reference to domain
+       names for which the challenge was not requested successfully.
+
+       Returns: OK | ERROR.
+
+   accept_challenge($callback [, $params] [, $type])
+       Sets up a callback, which will be called for each non-verified domain
+       to satisfy the requested challenge. Each callback will receive two
+       parameters - a hash reference with the challenge data and a hash
+       reference of parameters optionally passed to accept_challenge(). The
+       challenge data has the following keys:
+
+       "domain"      The domain name being processed (lower-case)
+
+       "host"        The domain name without the wildcard part (if that was
+                     present)
+
+       "token"       The challenge token
+
+       "fingerprint" The account key fingerprint
+
+       "file"        The file name for HTTP verification (essentially the same
+                     as token)
+
+       "text"        The text for HTTP verification
+
+       "record"      The value of the TXT record for DNS verification
+
+       "logger"      Logger object.
+
+       The type of the challenge accepted is optional and it is 'http' by
+       default. The following values are currently available: 'http', 'tls',
+       'dns'.  New values which might be added by Let's Encrypt will be
+       supported automatically. While currently all domains being processed
+       share the same type of challenge, it might be changed in the future
+       versions.
+
+       On error you can call failed_domains() method, which returns an array
+       reference to domain names for which the challenge was not accepted
+       successfully.
+
+       The callback should return a true value on success.
+
+       The callback could be either a code reference (for example to a
+       subroutine in your program) or a blessed reference to a module handling
+       the challenge. In the latter case the module should have methods
+       defined for handling appropriate challenge type, such as:
+
+       •   handle_challenge_http()
+
+       •   handle_challenge_tls()
+
+       •   handle_challenge_dns()
+
+       You can use Crypt::LE::Challenge::Simple example module as a template.
+
+       Returns: OK | INVALID_DATA | ERROR.
+
+   verify_challenge([$callback] [, $params] [, $type])
+       Asks Let's Encrypt server to verify the results of the challenge. On
+       error you can call failed_domains() method, which returns an array
+       reference to domain names for which the challenge was not verified
+       successfully.
+
+       Optionally you can set up a callback, which will be called for each
+       domain with the results of verification. The callback will receive two
+       parameters - a hash reference with the results and a hash reference of
+       parameters optionally passed to verify_challenge(). The results data
+       has the following keys:
+
+       "domain"      The domain name processed (lower-case)
+
+       "host"        The domain name without the wildcard part (if that was
+                     present)
+
+       "token"       The challenge token
+
+       "fingerprint" The account key fingerprint
+
+       "file"        The file name for HTTP verification (essentially the same
+                     as token)
+
+       "text"        The text for HTTP verification
+
+       "record"      The value of the TXT record for DNS verification
+
+       "valid"       Set to 1 if the domain has been verified successfully or
+                     set to 0 otherwise.
+
+       "error"       Error message returned for domain on verification
+                     failure.
+
+       "logger"      Logger object.
+
+       The type of the challenge accepted is optional and it is 'http' by
+       default. The following values are currently available: 'http', 'tls',
+       'dns'.
+
+       The callback should return a true value on success.
+
+       The callback could be either a code reference (for example to a
+       subroutine in your program) or a blessed reference to a module handling
+       the verification outcome. In the latter case the module should have
+       methods defined for handling appropriate verification type, such as:
+
+       •   handle_verification_http()
+
+       •   handle_verification_tls()
+
+       •   handle_verification_dns()
+
+       You can use Crypt::LE::Challenge::Simple example module as a template.
+
+       Returns: OK | INVALID_DATA | ERROR.
+
+   request_certificate()
+       Requests the certificate for your CSR.
+
+       Returns: OK | AUTH_ERROR | ERROR.
+
+   request_alternatives()
+       Requests alternative certificates if any are available.
+
+       Returns: OK | ERROR.
+
+   request_issuer_certificate()
+       Requests the issuer's certificate.
+
+       Returns: OK | ERROR.
+
+   revoke_certificate($certificate_file|$scalar_ref)
+       Revokes a certificate.
+
+       Returns: OK | READ_ERROR | ALREADY_DONE | ERROR.
+
+METHODS (Other)
+       The following methods are the common getters you can use to get more
+       details about the outcome of the workflow run and return some retrieved
+       data, such as registration info and certificates for your domains.
+
+   tos()
+       Returns: The link to a Terms of Service document or undef.
+
+   tos_changed()
+       Returns: True if Terms of Service have been changed (or you haven't yet
+       accepted them). Otherwise returns false.
+
+   new_registration()
+       Returns: True if new key has been registered. Otherwise returns false.
+
+   registration_info()
+       Returns: Registration information structure returned by Let's Encrypt
+       for your key or undef.
+
+   registration_id()
+       Returns: Registration ID returned by Let's Encrypt for your key or
+       undef.
+
+   contact_details()
+       Returns: Contact details returned by Let's Encrypt for your key or
+       undef.
+
+   certificate()
+       Returns: The last received certificate or undef.
+
+   alternative_certificate()
+       Returns: Specific alternative certificate as an arrayref (domain,
+       issuer) or undef.
+
+   alternative_certificates()
+       Returns: All available alternative certificates (as an arrayref of
+       arrayrefs) or undef.
+
+   certificate_url()
+       Returns: The URL of the last received certificate or undef.
+
+   issuer()
+       Returns: The issuer's certificate or undef.
+
+   issuer_url()
+       Returns: The URL of the issuer's certificate or undef.
+
+   domains()
+       Returns: An array reference to the loaded domain names or undef.
+
+   failed_domains([$all])
+       Returns: An array reference to the domain names for which processing
+       has failed or undef. If any true value is passed as a parameter, then
+       the list will contain domain names which failed on any of the
+       request/accept/verify steps. Otherwise the list will contain the names
+       of the domains failed on the most recently called request/accept/verify
+       step.
+
+   verified_domains()
+       Returns: An array reference to the successfully verified domain names.
+
+   ca_list()
+       Returns: An array of names of the directly supported CAs.
+
+   ca_supported($name)
+       Returns: True if CA is directly supported, or false otherwise.
+
+   ca_supported_staging($name)
+       Returns: True if CA is directly supported and has staging environment,
+       or false otherwise.
+
+   check_expiration($certificate_file|$scalar_ref|$url, [ \%params ])
+       Checks the expiration of the certificate. Accepts an URL, a full path
+       to the certificate file or a scalar reference to a certificate in
+       memory. Optionally a hash ref of parameters can be provided with the
+       timeout key set to the amount of seconds to wait for the https checks
+       (by default set to 10 seconds).
+
+       Returns: Days left until certificate expiration or undef on error. Note
+       - zero and negative values can be returned for the already expired
+       certificates. On error the status is set accordingly to one of the
+       following: INVALID_DATA, LOAD_ERROR or ERROR, and the 'error_details'
+       call can be used to get more information about the problem.
+
+   pem2der($pem)
+       Returns: DER form of the provided PEM content
+
+   der2pem($der, $type)
+       Returns: PEM form of the provided DER content of the given type (for
+       example 'CERTIFICATE REQUEST') or undef.
+
+   export_pfx($file, $pass, $cert, $key, [ $ca ], [ $tag ])
+       Exports given certificate, CA chain and a private key into a PFX/P12
+       format with a given password.  Optionally you can specify a text to go
+       into pfx instead of the default "Crypt::LE exported".
+
+       Returns: OK | UNSUPPORTED | INVALID_DATA | ERROR.
+
+   error()
+       Returns: Last error (can be a code or a structure) or undef.
+
+   error_details()
+       Returns: Last error details if available or a generic 'error' string
+       otherwise. Empty string if the last called method returned OK.
+
+AUTHOR
+       Alexander Yezhov, "<leader at cpan.org>" Domain Knowledge Ltd.
+       <https://do-know.com/>
+
+BUGS
+       Considering that this module has been written in a rather quick manner
+       after I decided to give a go to Let's Encrypt certificates and found
+       that CPAN seems to be lacking some easy ways to leverage LE API from
+       Perl, expect some (hopefully minor) bugs.  The initial goal was to make
+       this work, make it easy to use and possibly remove the need to use
+       openssl command line.
+
+       Please report any bugs or feature requests to "bug-crypt-le at
+       rt.cpan.org", or through the web interface at
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Crypt-LE>.  I will be
+       notified, and then you'll automatically be notified of progress on your
+       bug as I make changes.
+
+SUPPORT
+       You can find documentation for this module with the perldoc command.
+
+           perldoc Crypt::LE
+
+       You can also look for information at:
+
+       •   RT: CPAN's request tracker (report bugs here)
+
+           <http://rt.cpan.org/NoAuth/Bugs.html?Dist=Crypt-LE>
+
+       •   AnnoCPAN: Annotated CPAN documentation
+
+           <http://annocpan.org/dist/Crypt-LE>
+
+       •   CPAN Ratings
+
+           <http://cpanratings.perl.org/d/Crypt-LE>
+
+       •   Search CPAN
+
+           <http://search.cpan.org/dist/Crypt-LE/>
+
+       •   Project homepage
+
+           <https://Do-Know.com/>
+
+LICENSE AND COPYRIGHT
+       Copyright 2016-2023 Alexander Yezhov.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the terms of the Artistic License (2.0). You may obtain a copy of
+       the full license at:
+
+       <http://www.perlfoundation.org/artistic_license_2_0>
+
+       Any use, modification, and distribution of the Standard or Modified
+       Versions is governed by this Artistic License. By using, modifying or
+       distributing the Package, you accept this license. Do not use, modify,
+       or distribute the Package, if you do not accept this license.
+
+       If your Modified Version has been derived from a Modified Version made
+       by someone other than you, you are nevertheless required to ensure that
+       your Modified Version complies with the requirements of this license.
+
+       This license does not grant you the right to use any trademark, service
+       mark, tradename, or logo of the Copyright Holder.
+
+       This license includes the non-exclusive, worldwide, free-of-charge
+       patent license to make, have made, use, offer to sell, sell, import and
+       otherwise transfer the Package with respect to any patent claims
+       licensable by the Copyright Holder that are necessarily infringed by
+       the Package. If you institute patent litigation (including a cross-
+       claim or counterclaim) against any party alleging that the Package
+       constitutes direct or contributory patent infringement, then this
+       Artistic License to you shall terminate on the date that such
+       litigation is filed.
+
+       Disclaimer of Warranty: THE PACKAGE IS PROVIDED BY THE COPYRIGHT HOLDER
+       AND CONTRIBUTORS "AS IS' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES.
+       THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+       PURPOSE, OR NON-INFRINGEMENT ARE DISCLAIMED TO THE EXTENT PERMITTED BY
+       YOUR LOCAL LAW. UNLESS REQUIRED BY LAW, NO COPYRIGHT HOLDER OR
+       CONTRIBUTOR WILL BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, OR
+       CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE OF THE PACKAGE,
+       EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+perl v5.40.2                      2023-03-11                      Crypt::LE(3)

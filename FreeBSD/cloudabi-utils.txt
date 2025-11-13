@@ -1,0 +1,241 @@
+CLOUDABI-RUN(1)         FreeBSD General Commands Manual        CLOUDABI-RUN(1)
+
+NAME
+     cloudabi-run – execute CloudABI processes
+
+SYNOPSIS
+     cloudabi-run [-e] path
+
+DESCRIPTION
+     CloudABI is a purely capability-based runtime environment, meaning that
+     access to system resources is solely based on the set of file descriptor
+     that the process possesses.  For example, CloudABI processes can only
+     access a file if it possesses a file descriptor for that file or one of
+     its parent directories.  This makes it critical that a CloudABI process
+     is provided the right set of file descriptors on startup.
+
+     The problem with providing a set of file descriptors on startup is that
+     the file descriptors either need to be placed at fixed indices or that a
+     separate configuration file describes the purpose of each file
+     descriptor.  The latter is hard to accomplish, due to the fact that
+     CloudABI programs cannot open configuration files from arbitrary
+     locations on the filesystem.
+
+     To simplify program configuration and at the same time make it easier to
+     safely set up the initial set of file descriptors, CloudABI processes can
+     be launched using the cloudabi-run utility.  cloudabi-run executes a
+     CloudABI program stored at a path and provides it a copy of YAML data
+     read from standard input.  The YAML data is provided in an already parsed
+     form and can be accessed by using the alternative entry point
+     program_main():
+
+           #include <program.h>
+
+           void program_main(const argdata_t *ad);
+
+     The YAML data can be traversed by using the <argdata.h> functions
+     argdata_get_binary(), argdata_get_bool(), argdata_get_float(),
+     argdata_get_int(), argdata_get_str(), argdata_get_str_c(),
+     argdata_get_timestamp(), argdata_map_iterate(), and
+     argdata_seq_iterate().  The names of these functions correspond to the
+     respective YAML types.
+
+     By default, cloudabi-run executes the process with an empty set of file
+     descriptors.  File descriptors can be granted to the process by attaching
+     them to the YAML data as objects using specialized YAML tags.  The
+     CloudABI process can obtain the file descriptor numbers of these objects
+     by calling argdata_get_fd().
+
+     CloudABI executables can be executed directly on operating systems that
+     have a compatibility layer for CloudABI executables.  Alternatively,
+     cloudabi-run includes a built-in emulator that can be enabled by
+     providing the -e flag.  The use of this emulator is strongly discouraged
+     if the operating system provides native support for CloudABI.
+
+YAML TAGS
+     The following YAML tags can be used to provide resources to CloudABI
+     processes:
+
+     tag:nuxi.nl,2015:cloudabi/fd: int
+           Exposes a file descriptor by decimal file descriptor number, or the
+           special values “stdout” and “stderr”.
+
+     tag:nuxi.nl,2015:cloudabi/executable
+           Provides a file descriptor of the target executable path, opened
+           O_EXEC if possible, O_RDONLY otherwise.
+
+     tag:nuxi.nl,2015:cloudabi/file: map
+           Opens a file for reading.  File objects have the following
+           attributes:
+
+           path: str
+                 The path of the file.
+
+     tag:nuxi.nl,2015:cloudabi/flower_switchboard_handle: map
+           Creates a handle to a Flower switchboard instance.  The Flower
+           switchboard is a daemon that allows programs to access the network
+           in a capability-based fashion.  These objects have the following
+           attributes:
+
+           switchboard_path: str
+                 The path at which the Flower switchboard daemon has bound its
+                 UNIX domain socket.
+
+           constraints: flower.protocol.switchboard.ConstrainRequest
+                 Security constraints that should be placed on the handle
+                 provided to the process.  This allows for restricting access
+                 to parts of the switchboard's address space.
+
+EXAMPLES
+     The following example shows a program that writes a fixed message to all
+     of the file descriptors stored in a sequence.  With the configuration
+     provided, it writes the message to standard output three times in a row.
+
+           $ cat hello.c
+           #include <argdata.h>
+           #include <program.h>
+           #include <stdio.h>
+           #include <stdlib.h>
+
+           void program_main(const argdata_t *ad) {
+             argdata_seq_iterator_t it;
+             argdata_seq_iterate(ad, &it);
+             const argdata_t *value;
+             while (argdata_seq_get(&it, &value)) {
+               int fd;
+               if (argdata_get_fd(value, &fd) == 0)
+                 dprintf(fd, "Hello, world\n");
+               argdata_seq_next(&it);
+             }
+             exit(0);
+           }
+           $ cat hello.yaml
+           %TAG ! tag:nuxi.nl,2015:cloudabi/
+           ---
+           - !fd stdout
+           - !fd stdout
+           - !fd stdout
+           $ x86_64-unknown-cloudabi-cc -o hello hello.c
+           $ cloudabi-run hello < hello.yaml
+           Hello, world
+           Hello, world
+           Hello, world
+
+     Below is a web server that writes fixed responses to incoming requests.
+     With the commands invoked, it listens on TCP port 12345.
+
+           $ cat webserver.cc
+           #include <sys/socket.h>
+
+           #include <program.h>
+           #include <unistd.h>
+
+           #include <cstdlib>
+           #include <memory>
+           #include <thread>
+
+           #include <arpc++/arpc++.h>
+           #include <flower/protocol/server.ad.h>
+           #include <flower/protocol/switchboard.ad.h>
+           #include <argdata.hpp>
+
+           using arpc::ClientContext;
+           using arpc::CreateChannel;
+           using arpc::FileDescriptor;
+           using arpc::ServerBuilder;
+           using arpc::ServerContext;
+           using arpc::Status;
+           using flower::protocol::server::ConnectRequest;
+           using flower::protocol::server::ConnectResponse;
+           using flower::protocol::server::Server;
+           using flower::protocol::switchboard::ServerStartRequest;
+           using flower::protocol::switchboard::ServerStartResponse;
+           using flower::protocol::switchboard::Switchboard;
+
+           namespace {
+
+           class FixedResponseServer : public Server::Service {
+            public:
+             Status Connect(ServerContext* context, const ConnectRequest* request,
+                            ConnectResponse* response) override {
+               // Process the request asynchronously.
+               std::thread([connection{request->client()}]() {
+                 // Write a fixed HTTP response.
+                 const char response[] =
+                     "HTTP/1.1 200 OK\r\n"
+                     "Content-Type: text/plain\r\n"
+                     "Content-Length: 13\r\n\r\n"
+                     "Hello, world\n";
+                 write(connection->get(), response, sizeof(response) - 1);
+
+                 // Wait for the client to close the connection.
+                 shutdown(connection->get(), SHUT_WR);
+                 char discard[4096];
+                 while (read(connection->get(), discard, sizeof(discard)) > 0) {
+                 }
+               })
+                   .detach();
+               return Status::OK;
+             }
+           };
+
+           }  // namespace
+
+           void program_main(const argdata_t* ad) {
+             // Start a server through the switchboard.
+             ServerStartResponse response;
+             {
+               std::shared_ptr<Switchboard::Stub> stub = Switchboard::NewStub(
+                   CreateChannel(std::make_unique<FileDescriptor>(ad->as_fd())));
+               ClientContext context;
+               ServerStartRequest request;
+               if (Status status = stub->ServerStart(&context, request, &response);
+                   !status.ok())
+                 std::exit(1);
+             }
+
+             // Process incoming requests.
+             ServerBuilder builder(response.server());
+             FixedResponseServer fixed_response_server;
+             builder.RegisterService(&fixed_response_server);
+             for (auto server = builder.Build(); server->HandleRequest() == 0;) {
+             }
+             std::exit(1);
+           }
+           $ cat webserver.yaml
+           %TAG ! tag:nuxi.nl,2015:cloudabi/
+           ---
+           !flower_switchboard_handle
+             switchboard_path: /tmp/switchboard
+             constraints:
+               rights: [SERVER_START]
+               in_labels:
+                 prog: webserver
+           $ x86_64-unknown-cloudabi-c++ -o webserver webserver.cc -std=c++1z -larpc
+           $ flower_switchboard /tmp/switchboard &
+           $ cloudabi-run webserver < webserver.yaml &
+           $ flower_ingress_accept 0.0.0.0:12345 /tmp/switchboard '{"prog": "webserver"}' &
+           $ curl http://localhost:12345/
+           Hello, world
+
+IMPLEMENTATION NOTES
+     cloudabi-run invokes a helper utility called cloudabi-reexec before
+     executing the executable stored at path.  cloudabi-reexec is a CloudABI
+     executable that merely acts as a proxy to guarantee that the process
+     already runs in capabilities mode before executing the requested binary,
+     making it safe to run cloudabi-run on third-party executables.
+
+     As CloudABI's program_exec() function scans the argument data to obtain a
+     list of file descriptors that need to be retained in the new process,
+     cloudabi-run guarantees that any file descriptors that are not specified
+     in the YAML data are closed.  File descriptors are renumbered to be
+     contiguous, starting at file descriptor zero.
+
+     The emulator makes no attempt to sandbox the execution of running
+     processes.  It should therefore only be used for development and testing
+     purposes.  Using it in production is strongly discouraged.
+
+AUTHORS
+     CloudABI has been developed by Nuxi, the Netherlands: https://nuxi.nl/.
+
+FreeBSD 13.1-RELEASE-p3        January 13, 2018        FreeBSD 13.1-RELEASE-p3

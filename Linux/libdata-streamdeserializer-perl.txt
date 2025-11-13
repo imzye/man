@@ -1,0 +1,276 @@
+Data::StreamDeserializer(3pm)                                                       User Contributed Perl Documentation                                                       Data::StreamDeserializer(3pm)
+
+NAME
+       Data::StreamDeserializer - non-blocking deserializer.
+
+SYNOPSIS
+           my $sr = new Data::StreamDeserializer
+                   data => $very_big_dump;
+
+           ... somewhere
+
+           unless($sr->next) {
+               # deserialization hasn't been done yet
+           }
+
+           ...
+
+           if ($sr->next) {
+               # deserialization has been done
+
+               ...
+               if ($sr->is_error) {
+                   printf "%s\n",  $sr->error;
+                   printf "Unparsed string tail: %s\n", $sr->tail;
+               }
+
+               my $result = $sr->result;           # first deserialized object
+               my $result = $sr->result(first);    # the same
+
+               my $results = $sr->result('all');   # all deserialized objects
+                                                   # (ARRAYREF)
+           }
+
+           # stream deserializer
+           $sr = new Data::StreamDeserializer;
+
+           while(defined (my $block = read_next_data_block)) {
+               $sr->next($block);
+               ...
+           }
+           $sr->next(undef); # eof signal
+           until ($sr->next) {
+               ... do something
+           }
+           # all data were parsed
+
+DESCRIPTION
+       Sometimes You need to deserialize a lot of data. If You use 'eval' (or Safe->reval, etc) it can take You too much time. If Your code is executed in event machine it can be inadmissible. So using
+       the module You can deserialize Your stream progressively and do something else between deserialization itearions.
+
+   Recognized statements
+       HASHES
+
+        { something }
+
+       ARRAYS
+
+        [ something ]
+
+       REFS
+
+        \ something
+        \[ ARRAY ]
+        \{ HASH }
+
+       Regexps
+
+        qr{something}
+
+       SCALARS
+
+        "something"
+        'something'
+        q{something}
+        qq{something}
+
+METHODS
+   new
+       Creates new deserializer. It can receive a few named arguments:
+
+       block_size
+
+       The size of block which will be serialized in each 'next' cycle.  Default value is 512 bytes.
+
+       data
+
+       If You know (have) all data to deserialize before constructing the object, You can use this argument.
+
+       NOTE: You must not use the function part or next with arguments if You used this argument.
+
+   block_size
+       Set/get the same field.
+
+   part
+       Append a part of input data to serialize. If there is no argument (or undef), deserializer will know that there will be no data in the future.
+
+   next
+       Processes to parse next block_size bytes. Returns TRUE if an error was detected or all input datas were parsed.
+
+   next_object
+       The same as next but returns true after new object is found.  Drop previous results.
+
+       For example You have the string:
+
+           $str = "1, 2, [ 0, 1 ], { 'a' => 'b' }";
+
+       You can extract objects:
+
+           my $dsr = new Data::StreamDeserializer data => $str;
+
+           1 until $dsr->next_object;
+           my $first = $dsr->result;       # scalar: 1
+
+           1 until $dsr->next_object;
+           my $second = $dsr->result;      # scalar: 2
+
+           1 until $dsr->next_object;
+           my $third = $dsr->result;       # arrayref: [ 0, 1 ]
+
+           1 until $dsr->next_object;
+           my $third = $dsr->result;       # hashref: { 'a' => 'b' }
+
+   skip_divider
+       If You have a string:
+
+           Object Object Object
+
+       (there are no dividers between objects), You can call skip_divider after fetching the next object.
+
+       Example:
+
+           $str = "1 2 [ 0, 1 ]{ 'a' => 'b' }";
+
+           my $dsr = new Data::StreamDeserializer data => $str;
+
+           1 until $dsr->next_object;
+           my $first = $dsr->result;       # scalar: 1
+
+           $dsr->skip_divider;
+
+           1 until $dsr->next_object;
+           my $second = $dsr->result;      # scalar: 2
+
+           $dsr->skip_divider;
+           1 until $dsr->next_object;
+           my $third = $dsr->result;       # arrayref: [ 0, 1 ]
+
+       Important: You can't skip dividers inside nested object. The function will croak if You call it in the point that isn't between objects.
+
+   is_error
+       Returns TRUE if an error was detected.
+
+   error
+       Returns error string.
+
+   tail
+       Returns unparsed data.
+
+   result
+       Returns result of parsing. By default the function returns only the first parsed object.
+
+       You can call the function with argument 'all' to get all parsed objects. In this case the function will receive ARRAYREF.
+
+   is_done
+       Returns TRUE if all input data were processed or an error was found.  If You didn't call part without arguments, and didn't call next or next_object with undef the function could return TRUE only
+       if an error occured.
+
+PRIVATE METHODS
+   _push_error
+       Pushes error into deserializer's error stack.
+
+SEE ALSO
+       DATA::StreamSerializer
+
+BENCHMARKS
+       This module is almost fully written using XS/C language. So it works a bit faster or slowly than CORE::eval.
+
+       You can try a few scripts in benchmark/ directory. There are a few test arrays in this directory.
+
+       Here are a few test results of my system.
+
+   Array which contains 100 hashes:
+       It works faster than eval:
+
+           $ perl benchmark/ds_vs_eval.pl -n 1000 -b 512 benchmark/tests/01_100x10
+           38296 bytes were read
+           First deserializing by eval... done
+           First deserializing by Data::DeSerializer... done
+           Check if deserialized objects are same... done
+
+           Starting 1000 iterations for eval... done (3.755 seconds)
+           Starting 1000 iterations for Data::StreamDeserializer... done (3.059 seconds)
+
+           Eval statistic:
+                   1000 iterations were done
+                   maximum deserialization time: 0.0041 seconds
+                   minimum deserialization time: 0.0035 seconds
+                   average deserialization time: 0.0036 seconds
+
+           StreamDeserializer statistic:
+                   1000 iterations were done
+                   75000 SUBiterations were done
+                   512 bytes in one block in one iteration
+                   maximum deserialization time: 0.0045 seconds
+                   minimum deserialization time: 0.0028 seconds
+                   average deserialization time: 0.0029 seconds
+                   average subiteration time:    0.00004 seconds
+
+   Array which contains 1000 hashes:
+       It works slowly than eval:
+
+           $ perl benchmark/ds_vs_eval.pl -n 1000 -b 512 benchmark/tests/02_1000x10
+           355623 bytes were read
+           First deserializing by eval... done
+           First deserializing by Data::DeSerializer... done
+           Check if deserialized objects are same... done
+
+           Starting 1000 iterations for eval... done (43.920 seconds)
+           Starting 1000 iterations for Data::StreamDeserializer... done (71.668 seconds)
+
+           Eval statistic:
+                   1000 iterations were done
+                   maximum deserialization time: 0.0490 seconds
+                   minimum deserialization time: 0.0416 seconds
+                   average deserialization time: 0.0426 seconds
+
+           StreamDeserializer statistic:
+                   1000 iterations were done
+                   689000 SUBiterations were done
+                   512 bytes in one block in one iteration
+                   maximum deserialization time: 0.0773 seconds
+                   minimum deserialization time: 0.0656 seconds
+                   average deserialization time: 0.0690 seconds
+                   average subiteration time:    0.00010 seconds
+
+       You can see, that one block is parsed in a very short time period. So You can increase block_size value to reduce total parsing time.
+
+       If block_size is equal string size the module works two times faster than eval:
+
+           $ perl benchmark/ds_vs_eval.pl -n 1000 -b 355623 benchmark/tests/02_1000x10
+           355623 bytes were read
+           First deserializing by eval... done
+           First deserializing by Data::DeSerializer... done
+           Check if deserialized objects are same... done
+
+           Starting 1000 iterations for eval... done (44.456 seconds)
+           Starting 1000 iterations for Data::StreamDeserializer... done (19.702 seconds)
+
+           Eval statistic:
+                   1000 iterations were done
+                   maximum deserialization time: 0.0474 seconds
+                   minimum deserialization time: 0.0423 seconds
+                   average deserialization time: 0.0431 seconds
+
+           StreamDeserializer statistic:
+                   1000 iterations were done
+                   1000 SUBiterations were done
+                   355623 bytes in one block in one iteration
+                   maximum deserialization time: 0.0179 seconds
+                   minimum deserialization time: 0.0168 seconds
+                   average deserialization time: 0.0171 seconds
+                   average subiteration time:    0.01705 seconds
+
+AUTHOR
+       Dmitry E. Oboukhov, <unera@debian.org>
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2011 by Dmitry E. Oboukhov
+
+       This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself, either Perl version 5.10.1 or, at your option, any later version of Perl 5 you may have
+       available.
+
+VCS
+       The project is placed in my git repo. See here: <http://git.uvw.ru/?p=data-stream-deserializer;a=summary>
+
+perl v5.40.1                                                                                     2025-05-16                                                                   Data::StreamDeserializer(3pm)

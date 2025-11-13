@@ -1,0 +1,1382 @@
+X11::Xlib(3)          User Contributed Perl Documentation         X11::Xlib(3)
+
+
+NAME
+       X11::Xlib - Low-level access to the X11 library
+
+SYNOPSIS
+         # C-style
+
+         use X11::Xlib ':all';
+         my $display = XOpenDisplay($conn_string);
+         XTestFakeMotionEvent($display, undef, 50, 50);
+         XFlush($display);
+
+         # or, Object-Oriented perl style:
+
+         use X11::Xlib;
+         my $display= X11::Xlib->new($conn_string);  # shortcut for X11::Xlib::Display->new
+         $display->fake_motion(undef, 50, 50)
+         $display->flush;
+
+         # Remap Caps_Lock to a Smiley face
+
+         use X11::Xlib;
+         my $display= X11::Xlib->new;
+         my $caps_code= $display->keymap->find_keycode('Caps_lock') // 0x42;
+         $display->keymap->modmap_del_codes(lock => $caps_code);
+         $display->keymap->keymap->[$caps_code]= [("U263A") x 4];
+         $display->keymap->save;
+
+DESCRIPTION
+       This module provides low-level access to Xlib functions.
+
+       This includes access to some X11 extensions like the X11 test library
+       (Xtst).
+
+       If you import the Xlib functions directly, or call them as methods on
+       an instance of X11::Xlib, you get a near-C experience where you are
+       required to manage the lifespan of resources, XIDs are integers instead
+       of objects, and the library doesn't make any attempt to keep you from
+       passing bad data to Xlib.
+
+       If you instead create a X11::Xlib::Display object and call all your
+       methods on that, you get a more friendly wrapper around Xlib that helps
+       you manage resource lifespan, wraps XIDs with perl objects, and does
+       some sanity checking on the state of the library when you call methods.
+
+ATTRIBUTES
+       The X11::Xlib connection is a hashref with a few attributes and methods
+       independent of Xlib.
+
+   autoclose
+       Boolean flag that determines whether the destructor will call
+       "XCloseDisplay".  Defaults to true for connections returned by
+       "XOpenDisplay".
+
+   on_error
+         # Global error handler
+         X11::Xlib::on_error(\&my_callback);
+
+         # Per-connection error handler
+         my $display= X11::Xlib->new;
+         $display->on_error(\&my_callback);
+
+         sub my_callback {
+           my ($display, $event)= @_;
+           ...
+         }
+
+       By default, Xlib aborts the program on a fatal error.  Use this method
+       to install an error-handling callback to gracefully catch and deal with
+       errors.  On non-fatal errors, $event will be the error event from the
+       server.  On fatal errors, $event will be "undef".  You can also install
+       a handler on an individual connection.  On a nonfatal error, both the
+       connection and global error handlers are invoked.  On a fatal error,
+       all error handlers are invoked.
+
+       Setting a value for this attribute automatically installs the Xlib
+       error handler, which isn't enabled by default.
+
+       Note that this callback is called from XS context, so your exceptions
+       will not travel up the stack.  Also note that on Xlib fatal errors, you
+       cannot call any more Xlib functions on the current connection, or on
+       any connection at all once the callback returns.
+
+       Be sure to read notes under "ERROR HANDLING"
+
+FUNCTIONS
+   new
+       This is an alias for "X11::Xlib::Display->new", to help encourage use
+       of the object oriented interface.
+
+XLIB API
+       Most functions can be called as methods on the Xlib connection object,
+       since this is usually the first argument.  Every Xlib function listed
+       below can be exported, and you can grab them all with
+
+         use X11::Xlib ':functions';
+
+   THREADING FUNCTIONS
+       XInitThreads
+
+       Sets up Xlib in a thread-safe manner, which basically means wrapping
+       each Xlib method with a mutex.  After this call, multiple threads may
+       access the same Display connection without application-level
+       synchronization.  If used, this must be the first Xlib call in the
+       whole program, which can be inconvenient if you don't know in advance
+       which other modules you are using.  While perl scripts are typically
+       single-threaded, you might still require this if you call into other
+       libraries that create their own threads and also access Xlib.
+
+       Returns true if multithread initialization succeeded.  If it fails, you
+       probably should abort.  (and then fix your program so that it is the
+       first Xlib function called)
+
+       XLockDisplay
+
+       Assuming XInitThreads succeeded, this will lock the Xlib mutex so you
+       can run multiple calls uninterrupted.
+
+       XUnlockDisplay
+
+       Release the lock taken by "XLockDisplay".
+
+   CONNECTION FUNCTIONS
+       XDisplayName
+
+         my $conn_string= X11::Xlib::XDisplayName();
+         my $conn_string= X11::Xlib::XDisplayName( $str );
+
+       Returns the official connection string Xlib will use if you were to
+       call XOpenDisplay($str).
+
+       XOpenDisplay
+
+         my $display= X11::Xlib::XOpenDisplay($connection_string);
+
+       Instantiate a new (C-level) "Display" instance. This object contains
+       the connection to the X11 display.  This will be an instance of
+       "X11::Xlib".  The X11::Xlib::Display object constructor is recommended
+       instead.
+
+       The $connection_string variable specifies the display string to open.
+       ("host:display.screen", or often ":0" to connect to the only screen of
+       the only display on "localhost") If unset, Xlib uses the $DISPLAY
+       environement variable.
+
+       If the handle goes out of scope, its destructor calls "XCloseDisplay",
+       unless you already called "XCloseDisplay" or the X connection was lost.
+       (Be sure to read the notes on "ERROR HANDLING")
+
+       XCloseDisplay
+
+         XCloseDisplay($display);
+         # or, just:
+         undef $display
+
+       Close a handle returned by "XOpenDisplay".  You do not need to call
+       this method since the handle's destructor does it for you, unless you
+       want to forcibly stop communicating with X and can't track down your
+       references.  Once closed, all further Xlib calls on the handle will die
+       with an exception.
+
+       ConnectionNumber
+
+         my $fh= IO::Handle->new_from_fd( $display->ConnectionNumber, 'w+' );
+
+       Return the file descriptor (integer) of the socket connected to the
+       server.  This is useful for select/poll designs.  (See also:
+       "wait_event" in X11::Xlib::Display)
+
+       XSetCloseDownMode
+
+         XSetCloseDownMode($display, $close_mode)
+
+       Determines what resources are freed upon disconnect.  See X11
+       documentation.
+
+   ATOM FUNCTIONS
+       The X11 server maintains an enumeration of strings, called Atoms.  By
+       enumerating the strings, it allows small integers to be exchanged
+       instead of variable-length identifiers, which makes parsing the
+       protocol more efficient for both sides.  However clients need to look
+       up (or create) the relevant atoms before they can be used.  Be careful
+       when creating atoms; they remain until the server is restarted.
+
+       XInternAtom
+
+         my $atom_value= XInternAtom($display, $atom_name, $only_existing);
+
+       Get the value of a named atom.  If $only_existing is true and the atom
+       does not already exist on the server, this function returns 0.  (which
+       is not a valid atom value)
+
+       XInternAtoms
+
+         my $atoms_array= XInternAtoms($display, \@atom_names, $only_existing);
+
+       Same as above, but look up multiple atoms at once, for round-trip
+       efficiency.  The returned array will always be the same length as
+       @atom_names, but will have 0 for any atom value that didn't exist if
+       $only_existing was true.
+
+       XGetAtomName
+
+         my $name= XGetAtomName($display, $atom_value);
+
+       Return the name of an atom.  If the atom is not defined this generates
+       a protocol error (can be caught by "/on_error" handler) and returns
+       undef.
+
+       XGetAtomNames
+
+         my $names_array= XGetAtomNames($display, \@atom_values);
+
+       Same as above, but look up multiple atoms at once, for round-trip
+       efficiency.  If any atom does not exist, this generates a protocol
+       error, but if you catch the error then this function will return an
+       array the same length as @atom_values with "undef" for each atom that
+       didn't exist.
+
+   COMMUNICATION FUNCTIONS
+       Most of these functions return an "XEvent" by way of an "out" parameter
+       that gets overwritten during the call, in the style of C.  The variable
+       receiving the event does not need to be initialized.
+
+       XQLength
+
+         my $count= XQLength($display);
+
+       Return number of events already in the incoming queue, without trying
+       to read more.
+
+       XPending
+
+         my $count= XPending($display);
+
+       Return number of events in incoming queue after performing a flush and
+       a read.
+
+       XEventsQueued
+
+         my $count= XEventsQueued($display, $mode);
+
+       $mode is one of QueuedAlready, QueuedAfterFlush, or QueuedAfterReading.
+       QueuedAlready simply returns the queue size.  QueuedAfterReading
+       performs a read, then returns the count.  QueuedAfterFlush performs a
+       flush and a read, then returns the count.
+
+       XNextEvent
+
+         XNextEvent($display, my $event_return)
+         ... # event scalar is populated with event
+
+       You probably don't want this.  It blocks forever until an event
+       arrives, even ignoring signals.  I added it for completeness.  See
+       "wait_event" in X11::Xlib::Display for a more perl-ish interface.
+
+       XCheckMaskEvent
+
+       XCheckWindowEvent
+
+       XCheckTypedEvent
+
+       XCheckTypedWindowEvent
+
+         if ( XCheckMaskEvent($display, $event_mask, my $event_return) ) ...
+         if ( XCheckTypedEvent($display, $event_type, my $event_return) ) ...
+         if ( XCheckWindowEvent($display, $event_mask, $window, my $event_return) ) ...
+         if ( XCheckTypedWindowEvent($display, $event_type, $window, my $event_return) ) ...
+
+       Each of these variations checks whether there is a matching event
+       received from the server and not yet extracted form the message queue.
+       If so, it stores the event into $event_return and returns true.  Else
+       it returns false without blocking.
+
+       (Xlib also has another variant that uses a callback to choose which
+       message to
+        extract, but I didn't implement that because it seemed like a pain and
+       probably
+        nobody would use it.)
+
+       XSendEvent
+
+         XSendEvent($display, $window, $propagate, $event_mask, $xevent)
+           or die "Xlib hates us";
+
+       Send an XEvent to the server, to be redispatched however appropriate.
+
+       XPutBackEvent
+
+         XPutBackEvent($display, $xevent)
+
+       Push an XEvent back onto your own incoming queue.  This can presumably
+       put arbitrarily bogus events onto your own queue since it returns void.
+
+       XFlush
+
+         XFlush($display)
+
+       Push any queued messages to the X11 server.  Some Xlib calls perform an
+       implied flush of the queue, while others don't.  If you're wondering
+       why nothing happened when you called an XTest function, this is why.
+
+       XSync
+
+         XSync($display);
+         XSync($display, $discard);
+
+       Force a round trip to the server to process all pending messages and
+       receive the responses (or errors).  A true value for the second
+       argument will wipe your incoming event queue.
+
+       XSelectInput
+
+         XSelectInput($display, $window, $event_mask)
+
+       Change the event mask for a window.  Note that event masks are per-
+       client, so one client can listen to a window with a different mask than
+       a second client listening to the same window.
+
+       XGetErrorText
+
+         my $error_description= XGetErrorText($display, $error_code);
+
+       XGetErrorDatabaseText
+
+         my $msg= XGetErrorDatabaseText($display, $name, $message, $default_string);
+
+       $name indicates what sort of thing to look up. $message is a
+       stringified code of some sort.  Yes this is really weird for a C API.
+
+         my $msg= XGetErrorDatabaseText($display, 'XProtoError', $error_code, $default);
+         my $msg= sprintf(
+           XGetErrorDatabaseText($display, 'XlibMessage', 'MajorCode', "Request Major Code %d"),
+           $event->request_code
+         );
+         my $message= XGetErrorDatabaseText($display, 'XRequest', $request_code);
+
+       Just use "summarize" in X11::Xlib::XEvent on an XErrorEvent and save
+       yourself the trouble.
+
+   SCREEN ATTRIBUTES
+       Xlib provides opaque "Display" and "Screen" structs which have locally-
+       stored attributes, but which you must use method calls to access.  For
+       each attribute of a screen, there are four separate ways to access it:
+
+         DisplayFoo($display, $screen_num);     # C Macro like ->{screens}[$screen_num]{foo}
+         XDisplayFoo($display, $screen_num);    # External linked function from Xlib
+         FooOfScreen($screen_pointer);          # C Macro like ->{foo}
+         XFooOfScreen($screen_pointer);         # External linked function from Xlib
+
+       Since screen pointers become invalid when the Display is closed, I
+       decided not to expose them, and since DisplayFoo and XDisplayFoo are
+       identical I decided to only implement the first since it makes one less
+       symbol to link from Xlib.
+
+       So, if you grab some sample code from somewhere and wonder where those
+       functions went, drop the leading X and do a quick search on this page.
+
+       ScreenCount
+
+         my $n= ScreenCount($display);
+
+       Return number of configured "Screen"s of this display.
+
+       DisplayWidth
+
+       DisplayHeight
+
+         my $w= DisplayWidth($display, $screen);
+         my $h= DisplayHeight($display, $screen);
+         # use instead of WidthOfScreen, HeightOfScreen
+
+       Return the width or height of screen number $screen.  You can omit the
+       $screen paramter to use the default screen of your Display connection.
+
+       DisplayWidthMM
+
+       DisplayHeightMM
+
+         my $w= DisplayWidthMM($display, $screen);
+         my $h= DisplayHeightMM($display, $screen);
+         # use instead of WidthMMOfScreen, HeightMMOfScreen
+
+       Return the physical width or height (in millimeters) of screen number
+       $screen.  You can omit the screen number to use the default screen of
+       the display.
+
+       RootWindow
+
+         my $xid= RootWindow($display, $screen)
+
+       Return the XID of the X11 root window.  $screen is optional, and
+       defaults to the default screen of your connection.  If you want a
+       Window object, call this method on X11::Xlib::Display.
+
+       DefaultVisual
+
+         my $visual= DefaultVisual($display, $screen);
+         # use instead of DefaultVisualOfScreen
+
+       Screen is optional and defaults to the default screen of your
+       connection.  This returns a "Visual", not a "XVisualInfo".
+
+       DefaultDepth
+
+         my $bits_per_pixel= DefaultDepth($display, $screen);
+         # use instead of DefaultDepthOfScreen, DisplayPlanes, PlanesOfScreen
+
+       Return bits-per-pixel of the root window of a screen.  If you omit
+       $screen it uses the default screen.
+
+   VISUAL/COLORMAP FUNCTIONS
+       XMatchVisualInfo
+
+         XMatchVisualInfo($display, $screen, $depth, $class, my $xvisualinfo_return)
+           or die "Don't have one of those";
+
+       Loads the details of a "Visual" into the final argument, which must be
+       an "XVisualInfo" (or undefined, to create one)
+
+       Returns true if it found a matching visual.
+
+       XGetVisualInfo
+
+         my @info_structs= XGetVisualInfo($display, $mask, $xvis_template);
+
+       Returns a list of "XVisualInfo" each describing an available "Visual"
+       which matches the template you provided. (which is also an
+       "XVisualInfo")
+
+       $mask can be any combination of:
+
+         VisualIDMask
+         VisualScreenMask
+         VisualDepthMask
+         VisualClassMask
+         VisualRedMaskMask
+         VisualGreenMaskMask
+         VisualBlueMaskMask
+         VisualColormapSizeMask
+         VisualBitsPerRGBMask
+         VisualAllMask
+
+       each describing a field of X11::Xlib::XVisualInfo which is relevant to
+       your search.
+
+       XVisualIDFromVisual
+
+         my $vis_id= XVisualIDFromVisual($visual);
+         # or, assuming $visual is blessed,
+         my $vis_id= $visual->id;
+
+       Pull the visual ID out of the opaque object $visual.
+
+       If what you wanted was actually the "XVisualInfo" for a $visual, then
+       try:
+
+         my ($vis_info)= GetVisualInfo($display, VisualIDMask, { visualid => $vis_id });
+         # or with Display object:
+         $display->visual_by_id($vis_id);
+
+       XCreateColormap
+
+         my $xid= XCreateColormap($display, $rootwindow, $visual, $alloc_flag);
+         # or 99% of the time
+         my $xid= XCreateColormap($display, RootWindow($display), DefaultVisual($display), AllocNone);
+         # and thus these are the defaults
+         my $xid= XCreateColormap($display);
+
+       Create a "Colormap".  The $visual is a "Visual" object, and the
+       $alloc_flag is either "AllocNone" or "AllocAll".
+
+       XFreeColormap
+
+         XFreeColormap($display, $colormap);
+
+       Delete a "Colormap", and set the colormap to "None" for any window that
+       was using it.
+
+       Colormap TODO
+
+         XInstallColormap XUninstallColormap, XListInstalledColormaps
+         XGetWMColormapWindows XSetWMColormapWindows, XSetWindowColormap
+         XAllocColor XStoreColors XFreeColors XAllocColorPlanes XAllocNamedColor
+         XQueryColors XCopyColormapAndFree
+
+       If anyone actually needs palette graphics anymore, send me a patch :-)
+
+   PIXMAP FUNCTIONS
+       XCreatePixmap
+
+         my $xid= XCreatePixmap($display, $drawable, $width, $height, $depth);
+
+       The $drawable parameter is just used to determine the screen.  You
+       probably want to pass either DefaultRootWindow($display) or the window
+       you're creating the pixmap for.
+
+       XFreePixmap
+
+         XFreePixmap($display, $pixmap);
+
+       XCreateBitmapFromData
+
+         my $pixmap_xid= XCreateBitmapFromData($display, $drawable, $data, $width, $height);
+
+       First, be aware that in X11, a "bitmap" is literally a "Bit" "Map" (1
+       bit per pixel).
+
+       The $drawable determines which screen the pixmap is created for.  The
+       $data is a string of bytes.
+
+       The $data should technically be opaque, written by another X11 function
+       after having rendering graphics to a pixmap or something, but since
+       those aren't implemented here yet, you'll just have to know the format.
+
+       XCreatePixmapFromBitmapData
+
+         my $pixmap_xid= XCreatePixmapFromBitmapData($display, $drawable, $data,
+           $width, $height, $fg, $bg, $depth);
+
+       This function uses a bitmap (1 bit per pixel) and a foreground and
+       background color to build a pixmap of those two colors.  It's basically
+       upscaling color from monochrome to $depth.
+
+   WINDOW FUNCTIONS
+       XCreateWindow
+
+         my $wnd_xid= XCreateWindow(
+           $display,
+           $parent_window,  # such as DefaultRootWindow()
+           $x, $y,
+           $width, $height,
+           $border_width,
+           $color_depth,    # such as $visual_info->depth or DefaultDepth($display)
+           $class,          # InputOutput, InputOnly, or CopyFromParent
+           $visual,         # such as $visual_info->visual or DefaultVisual($display)
+           $attr_mask,      # indicates which fields of \%attrs are initialized
+           \%attrs          # struct XSetWindowAttributes or hashref of its fields
+         );
+
+       The parameters the probably need more explanation are $visual and
+       %attrs.
+
+       $visual is a "Visual".  You probably either want to use the default
+       visual of the screen ("DefaultVisual") or look up your own visual using
+       "XGetVisualInfo" or "XMatchVisualInfo" (which is a "VisualInfo", and
+       has an attribute "->visual").  In the second case, you should also pass
+       "$visual_info->depth" as the $depth parameter, and create a matching
+       "Colormap" which you pass via the "\%attrs" parameter.
+
+       Since this function didn't have nearly enough parameters for the
+       imaginations of the Xlib creators, they added the full
+       X11::Xlib::XSetWindowAttributes structure as a final argument.  But to
+       save you the trouble of setting all those fields, they added an
+       $attr_mask to indicate which fields you are using.  Simply OR together
+       the constants listed in that struct.  If $attr_mask is zero, then
+       "\%attrs" may be "undef".
+
+       The window is initially un-mapped (i.e. hidden).  See "XMapWindow"
+
+       XCreateSimpleWindow
+
+         my $wnd_xid= XCreateSimpleWindow(
+           $display, $parent_window,
+           $x, $y, $width, $height,
+           $border_width, $border_color, $background_color
+         );
+
+       This function basically creates a "child window", clipped to its
+       parent, with all the same visual configuration.
+
+       It is initially unmapped.  See "XMapWindow".
+
+       XMapWindow
+
+         XMapWindow($display, $window);
+
+       Ask the X server to show a window.  This call is asynchronous and you
+       should call "XFlush" if you want it to appear immediately.  The window
+       will only appear if the parent window is also mapped.  The server sends
+       back a MapNotify event if the Window event mask allows it, and if a
+       variety of other conditions are met.  It's really pretty complicated
+       and you should read the offical docs.
+
+       XUnmapWindow
+
+         XUnmapWindow($display, $window);
+
+       Hide a window.
+
+       XGetGeometry
+
+         my ($root, $x, $y, $width, $height, $border_width, $color_depth)
+           = XGetGeometry($display, $drawable)
+           or die "XGetGeometry failed";
+
+       XGetWindowAttributes
+
+         my $bool= XGetWindowAttributes($display, $window, $attrs_out);
+
+       Populate $attrs_out, which should be an undefined variable or a buffer
+       or an instance of X11::Xlib::XWindowAttributes.  If it returns false,
+       $attrs_out remains unchanged.
+
+       XChangeWindowAttributes
+
+         XChangeWindowAttributes($display, $window, $valuemask, \%XSetWindowAttributes)
+
+       Apply one or more fields of the X11::Xlib::XSetWindowAttributes struct
+       to the specified window.  $valuemask is a ORed combination of the flags
+       listed for that struct.
+
+       XSetWindowBackground
+
+         XSetWindowBackground($display, $window, $background_pixel)
+
+       Set the background pixel color (integer) for the window.
+
+       XSetWindowBackgroundPixmap
+
+         XSetWindowBackgroundPixmap($display, $window, $background_pixmap)
+
+       XSetWindowBorder
+
+         XSetWindowBorder($display, $window, $border_pixel)
+
+       XSetWindowBorderPixmap
+
+         XSetWindowBorderPixmap($display, $window, $border_pixmap)
+
+       XSetWindowColormap
+
+         XSetWindowColormap($display, $window, $colormap)
+
+       XDefineCursor
+
+         XDefineCursor($display, $window, $cursor)
+
+       XUndefineCursor
+
+         XUndefineCursor($display, $window)
+
+       XReparentWindow
+
+         XReparentWindow($display, $wnd, $new_parent, $x, $y);
+
+       Unmap, change parent, and remap $wnd to be a child of $parent.  The X
+       and Y arguments set the new location of the window relative to the
+       parent client space.
+
+       XConfigureWindow
+
+         XConfigureWindow($display, $window, $mask, \%XWindowChanges);
+
+       Set the size, position, border, and stacking order of a window.
+       X11::Xlib::XWindowChanges can be passed as an object or plain hashref.
+       $mask is an ORed combination of the constants listed in the
+       documentation for that struct, indicating which fields have been
+       initialized.
+
+       XMoveWindow
+
+         XMoveWindow($display, $window, $x, $y);
+
+       XResizeWindow
+
+         XMoveWindow($display, $window, $width, $height)
+
+       XMoveResizeWindow
+
+         XModeResizeWindow($display, $window, $x, $y, $width, $height)
+
+       XSetWindowBorderWidth
+
+         XSetWindowBorderWidth($display, $window, $border_width)
+
+       XQueryTree
+
+         my ($root, $parent, @children)= XQueryTree($display, $window);
+
+       Return windows related to $window.  Child windows are returned in
+       bottom-to-top stacking order.  Returns an empty list if it fails.
+
+       XRaiseWindow
+
+         XRaiseWindow($display, $window);
+
+       Move window to front of stacking order.
+
+       XLowerWindow
+
+        XLowerWindow($display, $window);
+
+       Move window to back of stacking order.
+
+       XCirculateSubwindows
+
+         XCirculateSubwindows($display, $parent_window, $direction);
+
+       For the child windows of the given window, either bring the back-most
+       to the front ("direction == RaiseLowest"), or the front-most to the
+       back ("direction == LowerHighest").
+
+       (Note: use this instead of XCirculateSubwindowsUp or
+       XCirculateSubwindowsDown)
+
+       XRestackWindows
+
+         XRestackWindows($display, \@windows);
+
+       Reset the stacking order of the specified windows, from front to back.
+
+       XListProperties
+
+         my @prop_atoms= XListProperties($display, $window);
+         print "Window has these properties: ".join(", ", @{ XGetAtomNames($display, \@prop_atoms, 1) });
+
+       Returns an arrayref of all defined properties on the specified window.
+
+       XGetWindowProperty
+
+         my $success= XGetWindowProperty($display, $wnd, $prop_atom, $offset, $length, $delete, $req_type,
+               my $actual_type, my $actual_format, my $nitems, my $bytes_after, my $data);
+
+       Welcome to the wonderful world of X11 Window Properties!  You pick the
+       property using $prop_atom (see "XInternAtom") and then request some
+       range of the bytes that compose it (using $offset*4 and $length*4,
+       which are a count of 4-byte units, not bytes) request to delete it with
+       $delete, request the resource be given to you as $req_type (also an
+       Atom), and then receive all the actual values in the last 5 variables.
+
+       $actual_format is either 8, 16, or 32 indicating the multiplier for
+       $nitems.  But you can just check length($data) to save time.
+
+       The details are complicated enough you should go read the X11 docs, but
+       a quick example is:
+
+         my $netwmname= XInternAtom($display, "_NET_WM_NAME");
+         my $type_utf8= XInternAtom($display, "UTF8_STRING");
+         if (XGetWindowProperty($display, $wnd, $netwmname, 0, 32, 0, $type_utf8,
+               my $actual_type, my $actual_format, my $n, my $remaining, my $data)
+         ) {
+           say $data; # should check $actual_type, but it's probably readable text.
+           say "window title was longer than 128 bytes" if $remaining > 0;
+         }
+
+       XChangeProperty
+
+         XChangeProperty($display, $wnd, $prop_atom, $type_atom, $format, $mode, $data, $nitems);
+
+       $prop_atom determines what property is being written.  $type_atom
+       declares the logical type of the data.  $format is 8, 16, or 32 to
+       determine the word size of the data (used by X server for endian
+       swapping).  $mode is one of: "PropModeReplace", "PropModePrepend",
+       "PropModeAppend".  $data is a scalar that must be at least as long as
+       $nitems * $format bits.
+
+       XDeleteProperty
+
+         XDeleteProperty($display, $window, $prop_atom);
+
+       Deletes the property from the window if it exists.  No error is raised
+       if it doesn't exist.
+
+       XGetWMProtocols
+
+         my @atoms= XGetWMProtocols($display, $wnd);
+
+       Returns a list of protocols (identifiers, represented as atoms) which
+       the owner of this window claims to support.  If a protocol's atom is in
+       this list then you can send that sort of ClientMessage events to this
+       window.
+
+       XSetWMProtocols
+
+         XSetWMProtocols($display, $wnd, \@procol_atoms)
+           or die "Failed to set WM_PROTOCOLS";
+
+       Set the list of protocols you want to respond to for this window.  For
+       example, to advertise support for standard "close" events:
+
+         my $close_atom= XInternAtrom($display, "WM_DELETE_WINDOW", 0);
+         XSetWMProtocols($display, $window, [ $close_atom ]);
+
+       XGetWMNormalHints
+
+         my ($hints_out, $supplied_fields_out);
+         XGetWMNormalHints($display, $window, $hints_out, $supplied_fields_out)
+           or warn "Doesn't have WM hints";
+
+       If a window has Window Manager Normal Hints defined on it, this
+       function will store them into the $hints_out variable (which will
+       become a X11::Xlib::XSizeHints if it wasn't already).  It will also set
+       the bits of $supplied_fields_out to indicate which fields the X11
+       server knows about.  This is different from the bits in
+       "$hints_out->flags" that indicate which individual fields are defined
+       for this window.
+
+       XSetWMNormalHints
+
+         XSetWMNormalHints($display, $window, $hints);
+
+       Set window manager hints for the specified window.  $hints is an
+       instance of X11::Xlib::XSizeHints, or a hashref of its fields.  Note
+       that the "->flags" member of this struct will be initialized for you if
+       you pass a hashref, according to what fields exist in the hashref.
+
+       XDestroyWindow
+
+         XDestroyWindow($display, $window);
+
+       Unmap and destroy a window.
+
+   XTEST INPUT SIMULATION
+       These methods create fake server-wide input events, useful for
+       automated testing.  They are available through the XTest extension.
+       Currently this extension is a mandatory requirement for installing this
+       module, and so these functions are always available.
+
+       Don't forget to call "XFlush" after these methods, if you want the
+       events to happen immediately.
+
+       XTestFakeMotionEvent
+
+         XTestFakeMotionEvent($display, $screen, $x, $y, $EventSendDelay)
+
+       Fake a mouse movement to position $x,$y on screen number $screen.
+
+       The optional $EventSendDelay parameter specifies the number of
+       milliseconds to wait before sending the event. The default is 10
+       milliseconds.
+
+       XTestFakeButtonEvent
+
+         XTestFakeButtonEvent($display, $button, $pressed, $EventSendDelay)
+
+       Simulate an action on mouse button number $button. $pressed indicates
+       whether the button should be pressed (true) or released (false).
+
+       The optional $EventSendDelay parameter specifies the number of
+       milliseconds ro wait before sending the event. The default is 10
+       milliseconds.
+
+       XTestFakeKeyEvent
+
+         XTestFakeKeyEvent($display, $kc, $pressed, $EventSendDelay)
+
+       Simulate a event on any key on the keyboard. $kc is the key code (8 to
+       255), and $pressed indicates if the key was pressed or released.
+
+       The optional $EventSendDelay parameter specifies the number of
+       milliseconds to wait before sending the event. The default is 10
+       milliseconds.
+
+       See "EXAMPLES" in X11::Xlib::Keymap.
+
+   KEYSYM FUNCTIONS
+       These utility functions help identify and convert KeySym values, and do
+       not depend on a connection to an X server.
+
+       XKeysymToString
+
+         my $ident= XKeysymToString($keysym)
+
+       Return the ASCII identifier of the KeySym (as in X11/keysym.h) minus
+       the leading "XK_" prefix, or undef of that fails for some reason.
+
+       "XKeysymToString" is the exact reverse of "XStringToKeysym".
+
+       XStringToKeysym
+
+         my $keysym= XStringToKeysym($string)
+
+       Return the keysym number for the symbolic identifier $string.  (as per
+       X11/keysym.h, minus the XK_ prefix)
+
+       "XStringToKeysym" is the reverse of "XKeysymToString".
+
+       codepoint_to_keysym
+
+         my $keysym= codepoint_to_keysym(ord($char));
+
+       Convert a Unicode codepoint to a KeySym value.  This isn't a true Xlib
+       function, but fills a gap in the API since Xlib is pretty weak on
+       unicode handling.  Every normal unicode codepoint has a keysym value,
+       but if you pass an invalid codepoint you will get "undef".
+
+       keysym_to_codepoint
+
+         my $cp= keysym_to_codepoint($keysym);
+         my $char= defined $cp? chr($cp) : undef;
+
+       Convert a KeySym to a unicode codepoint.  Many KeySyms (like F1,
+       Control, etc) do not have any character associated with them, and will
+       return "undef".  Again, not actually part of Xlib, but provided here
+       for convenience.
+
+       char_to_keysym
+
+       Like "codepoint_to_keysym" example above, but takes a string from which
+       it calls ord() on the first character.  Returns undef if the string
+       doesn't have a first character.
+
+       keysym_to_char
+
+       Like "keysym_to_codepoint" example above, but returns a string if there
+       is a valid codepoint, and "undef" otherwise.
+
+       XConvertCase
+
+         XConvertCase($keysym, $lowercase_out, $uppercase_out);
+
+       Return the lowercase and uppercase KeySym values for $keysym.
+
+       IsFunctionKey
+
+         IsFunctionKey($keysym)
+
+       Return true if $keysym is a function key (F1 .. F35)
+
+       IsKeypadKey
+
+         IsKeypadKey($keysym)
+
+       Return true if $keysym is on numeric keypad.
+
+       IsMiscFunctionKey
+
+         IsMiscFunctionKey($keysym)
+
+       Return true if key is... no clue :/ and not documented anywhere??
+
+       IsModifierKey
+
+         IsModifierKey($keysym)
+
+       Return true if $keysym is a modifier key (Shift, Alt).
+
+       IsPFKey
+
+         IsPFKey($keysym)
+
+       Xlib docs are fun.  No mention of what "PF" might be.
+
+       IsPrivateKeypadKey
+
+         IsPrivateKeypadKey($keysym)
+
+       True for vendor-private key codes.
+
+   INPUT FUNCTIONS
+       XSetInputFocus
+
+         XSetInputFocus($display, $wnd_focus, $revert_to, $time);
+
+       Change input focus and set last-focus-time if $time is after the
+       current last-focus-time and before the current time of the X server.
+
+       $time can be CurrentTime to use the X server's clock.
+
+       $wnd_focus can be None to discard all keyboard input until a new window
+       is focused, or PointerRoot to actively track the root window of
+       whatever screen the pointer moves to.
+
+       Once the target window becomes un-viewable, the $revert_to setting
+       takes effect, and can be "RevertToParent", "RevertToPointerRoot", or
+       "RevertToNone".
+
+       XQueryKeymap
+
+         XQueryKeymap($display)
+
+       Return a list of the key codes currently pressed on the keyboard.
+
+       XGrabKeyboard
+
+         $bool= XGrabKeyboard($display, $window, $owner_events, $pointer_mode, $keyboard_mode, $timestamp)
+
+       Direct foxus to the specified window.  See X11 docs.
+
+       XUngrabKeyboard
+
+         XUngrabKeyboard($display, $timestamp)
+
+       XGrabKey
+
+         XGrabKey($display, $keycode, $modifiers, $window, $owner_events, $pointer_mode, $keyboard_mode)
+
+       Register a window to receive any matching key events, optionally hiding
+       them from the normal target window.
+
+       $keycode is the keyboard scan code to watch for, or "AnyKey".
+       $modifiers is a bit mask combined from "ControlMask", "LockMask",
+       "Mod1Mask", "Mod2Mask", "Mod3Mask", "Mod4Mask", "Mod5Mask",
+       "ShiftMask", or the special mask "AnyModifier" which means any or none
+       of the modifiers.  $window is the XID or X11::Xlib::Window to direct
+       events toward.  $owner_events is a boolean of whether to also let the
+       normal target of the key event receive them.  $pointer_mode and
+       $keyboard_mode are either "GrabModeSync" or "GrabModeAsync".
+
+       XUngrabKey
+
+         XUngrabKey($display, $keycode, $modifiers, $window)
+
+       Cancel a grab registered by "XGrabKey".
+
+       XGrabPointer
+
+         $bool= XGrabPointer($display, $window, $owner_events, $event_mask,
+           $pointer_mode, keyboard_mode, confine_to, cursor, timestamp)
+
+       XUngrabPointer
+
+         XUngrabPointer(dpy, timestamp)
+
+       XGrabButton
+
+         XGrabButton($display, $button, $modifiers, $window, $owner_events,
+           $event_mask, $pointer_mode, $keyboard_mode, $confine_to, $cursor)
+
+       XUngrabButton
+
+         XUngrabButton($display, $button, $modifiers, $window)
+
+       XAllowEvents
+
+         XAllowEvents($display, $event_mode, $timestamp)
+
+       If grab modes used above are "GrabModeSync" then further X11 input
+       processing is halted until you call this function.  See X11 docs.
+
+       XGetKeyboardMapping
+
+         XGetKeyboardMapping($display, $keycode, $count)
+
+       Return an array of KeySym numbers corresponding to $count key codes,
+       starting at $keycode.
+
+       Each position in the per-key array corresponds to a combination of key
+       modifiers (Shift, Lock, Mode).  The X11 server may return a variable
+       number of codes per key, which you can determine by dividing the total
+       number of values returned by this function by the $count.
+
+       For a more perl-friendly interface, see "load_keymap".  For object-
+       oriented access, see X11::Xlib::Keymap.
+
+       XChangeKeyboardMapping
+
+         XChangeKeyboardMapping($display, $first_keycode, $keysym_per_keycode, \@keysyms, $num_codes);
+
+         # Best explained with an example...
+         # KeySym in 0x20..0x7E map directly from Latin1
+         my @keycodes= (
+           ord('a'), ord('A'), ord('a'), ord('A'),  # want to assign these KeySym to KeyCode 38
+           ord('s'), ord('S'), ord('s'), ord('S'),  # and these to KeyCode 39
+         );
+         XChangeKeyboardMapping($display, 38, 4, \@keycodes, scalar @keycodes);
+
+       Update some/all of the KeySyms attached to one or more KeyCodes.  In
+       the example above, only the first 4 KeySyms of each KeyCode will be
+       changed.  Specify a larger number of $keysym_per_keycode to overwrite
+       more of them.
+
+       For a more perl-friendly interface, see "save_keymap".  For object-
+       oriented access, see X11::Xlib::Keymap.
+
+       load_keymap
+
+         my $keymap= load_keymap($display, $symbolic, $min_key, $max_key);
+         my $keymap= load_keymap($display, $symbolic); # all keys
+         my $keymap= load_keymap($display); # all keys, symbolic=2
+
+       This is a wrapper around "XGetKeyboardMapping" which returns an
+       arrayref of arrayrefs, and also translates KeySym values into KeySym
+       names or unicode characters.  If $symbolic is 0, the elements of the
+       arrays are KeySym numbers.  If $symbolic is 1, the elements are the
+       KeySym name (or integers, if a name is not available).  If $symbolic is
+       2, the elements are characters for every KeySym that can be un-
+       ambiguously represented by a character, else KeySym names, else
+       integers.
+
+       The minimum KeyCode of an X server is never below 8.  If you omit
+       $min_key it defaults to 0, and so the returned array will always have
+       at least 8 undef values at the start.  This minor waste allows you to
+       index into the array directly with a KeyCode.
+
+       save_keymap
+
+         save_keymap($display, \@keymap, $min_key, $max_key);
+         save_keymap($display, \@keymap); # to update all keycodes
+
+       This is a wrapper around "XChangeKeyboardMapping" that accepts the same
+       array-of-arrays returned by "load_keymap".  The first element of the
+       array is assumed to be $min_key unless the array is longer than
+       $max_key  in which case the array is assumed to start at 0 and you are
+       requesting that only elements "($min_key .. $max_key)" be sent to the X
+       server.
+
+       Each element of the inner array can be an integer KeySym, or a KeySym
+       name recognized by "XStringToKeysym", or a single unicode character.
+       If the KeySym is an integer, it must be at least two integer digits,
+       which all real KeySyms should be (other than "NoSymbol" which has the
+       value 0, and should be represented by "undef") to avoid ambiguity with
+       the characters of the number keys.  i.e. "4" means "the KeySym for the
+       character 4" rather than the KeySym value 4.
+
+       XGetModifierMapping
+
+         my $mapping= XGetModifierMapping($display);
+
+       Return an arrayref of 8 arrayrefs, one for each modifier group.  The
+       inner arrayrefs can contain a variable number of key codes which belong
+       to the modifier group.  See X11::Xlib::Keymap for an explanation.
+
+       XSetModifierMapping
+
+         XSetModifierMapping($display, \@modifiers);
+
+       @modifiers is an array of 8 arrayrefs, each holding the set of key
+       codes that are part of the modifier.  This is the same format as
+       returned by "XGetModifierMapping".
+
+       XRefreshKeyboardMapping
+
+         XRefreshKeyboardMapping($mapping_event);
+
+       Given a XMappingEvent, reload the internal Xlib cache for the parts of
+       the keymap or modmap which have changed.
+
+       The functions below (using the internal Xlib cache) are an alternative
+       to processing the keymap directly.
+
+       XLookupString
+
+         XLookupString($key_event, $text_out, $keycode_out);
+
+       Given a XKeyEvent, translate the key code and modifiers vs. the
+       internal Xlib cached keymap/modmap and write the text name of the key
+       into $text_out.  This will either be a name of a key, or the character
+       the key normally generates in a Latin-1 environment.  If $keycode_out
+       is given, it will be overwritten with the numeric value of the KeySym.
+
+       (If you want to do more than Latin-1, see X11::Xlib::Keymap for
+       utilities
+        to manipulate the keymap directly.)
+
+       XKeysymToKeycode
+
+         my $keycode= XKeysymToKeycode($display, $keysym)
+
+       Return the key code corresponding to $keysym in the current mapping.
+
+       XBell
+
+         XBell($display, $percent)
+
+       Make the X server emit a sound.
+
+   EXTENSION XCOMPOSITE
+       This is an optional extension.  If you have Xcomposite available when
+       this module was installed, then the following functions will be
+       available.  None of these functions are exportable.
+
+         sudo apt-get install libxcomposite-dev   # Debian/Mint/Ubuntu
+         sudo yum install libXcomposite-devel     # Fedora/RHEL
+
+       XCompositeVersion
+
+         my $version_integer= X11::Xlib::XCompositeVersion()
+           if X11::Xlib->can('XCompositeVersion');
+
+       XCompositeQueryExtension
+
+         my ($event_base, $error_base)= $display->XCompositeQueryExtension
+           if $display->can('XCompositeQueryExtension');
+
+       XCompositeQueryVersion
+
+         my ($major, $minor)= $display->XCompositeQueryVersion
+           if $display->can('XCompositeQueryVersion');
+
+       XCompositeRedirectWindow
+
+         $display->XCompositeRedirectWindow($window, $update);
+
+       XCompositeRedirectSubwindows
+
+         $display->XCompositeRedirectSubwindows($window, $update);
+
+       XCompositeUnredirectWindow
+
+         $display->XCompositeUnredirectWindow($window, $update);
+
+       XCompositeUnredirectSubwindows
+
+         $display->XCompositeUnredirectSubwindows($window, $update);
+
+       XCompositeCreateRegionFromBorderClip
+
+         my $XserverRegion= $display->XCompositeCreateRegionFromBorderClip($window);
+
+       XCompositeNameWindowPixmap
+
+         my $pixmap= $display->XCompositeNameWindowPixmap($window);
+
+       XCompositeGetOverlayWindow
+
+         my $window= $display->XCompositeGetOverlayWindow($window);
+
+       XCompositeReleaseOverlayWindow
+
+         $display->XCompositeReleaseOverlayWindow($window);
+
+   EXTENSION XRENDER
+       This is an optional extension.  If you have Xrender available when this
+       module was installed, then the following functions will be available.
+       None of these functions are exportable.
+
+         sudo apt-get install libxrender-dev   # Debian/Mint/Ubuntu
+         sudo yum install libXrender-devel     # Fedora/RHEL
+
+       XRenderQueryExtension
+
+         my ($event_base, $error_base)= $display->XRenderQueryExtension()
+           if $display->can('XRenderQueryExtension');
+
+       XRenderQueryVersion
+
+         my ($major, $minor)= $display->XRenderQueryVersion()
+           if $display->can('XRenderQueryVersion');
+
+       XRenderFindVisualFormat
+
+         my $pfmt= $display->XRenderFindVisualFormat( $visual );
+
+       Takes a X11::Xlib::Visual, and returns a X11::Xlib::XRenderPictFormat.
+
+STRUCTURES
+       Xlib has a lot of C structs.  Most of them do not have much "depth"
+       (i.e. pointers to further nested structs) and so I chose to represent
+       them as simple blessed scalar refs to a byte string.  This gives you
+       the ability to pack new values into the struct which might not be known
+       by this module, and keeps the object relatively lightweight.  Most also
+       have a "pack" and "unpack" method which convert from/to a hashref.
+       Sometimes however these structs do contain a raw pointer value, and so
+       you should take extreme care if you do modify the bytes.
+
+       Xlib also has a lot of opaque pointers where they just give you a
+       pointer and some methods to access it without any explanation of its
+       inner fields.  I represent these with the matching Perl feature for
+       blessed opaque references, so the only way to interact with the pointer
+       value is through XS code.  In each case, when the object goes out of
+       scope, this library calls any appropriate "Free" function.
+
+       Finally, there are lots of objects which exist on the server, and Xlib
+       just gives you a number ("XID") to refer to them when making future
+       requests.  Windows are the most common example.  Since these are simple
+       integers, and can be shared among any program connected to the same
+       display, this module allows a mix of simple scalar values or blessed
+       objects when calling any function that expects an "XID".  The blessed
+       objects derive from X11::Xlib::XID.
+
+       Most supported structures have their own package with further
+       documentation, but here is a quick list:
+
+   Display
+       Represents a connection to an X11 server.  Xlib provides an opaque
+       pointer "Display*" on which you can call methods.  These are
+       represented by this package, "X11::Xlib".  The X11::Xlib::Display
+       package provides a more perl-ish interface and some helper methods to
+       "DWIM".
+
+   Screen
+       The Xlib "Screen*" is not exported by this module, since most methods
+       that use a "Screen*" have a matching method that uses a "Display*".  If
+       you are using the object-oriented Display you then get Screen objects
+       for convenience, but they are just a wrapper around the Display and
+       screen number instead of screen pointer.
+
+   Visual
+       An opaque pointer describing binary representation of pixels for some
+       mode of the display.  There's probably only one in use on the entire
+       display (i.e. RGBA) but Xlib makes you look it up and pass it around to
+       various functions.
+
+   XVisualInfo
+       A more useful struct describing a Visual.  See X11::Xlib::XVisualInfo.
+
+   XEvent
+       A struct that can hold any sort of message sent to/from the server.
+       The struct is a union of many other structs, which you can read about
+       in X11::Xlib::XEvent.
+
+   Colormap
+       An XID referencing what used to be a palette for 8-bit graphics but
+       which is now mostly a useless appendage to be passed to
+       "XCreateWindow".  When using the object-oriented "Display", these are
+       wrapped by X11::Xlib::Colormap.
+
+   Pixmap
+       An XID referencing a rectangular pixel buffer.  Has dimensions and
+       color depth and is bound to a "Screen".  Can be used for copying
+       images, or tiling.  When using the object-oriented "Display", these are
+       wrapped by X11::Xlib::Pixmap.
+
+   Window
+       An XID referencing a Window.  Used for painting, event/input delivery,
+       and having data tagged to them.  Not abused nearly as much as the Win32
+       API abuses its Window structures.  See X11::Xlib::Window for details.
+
+ERROR HANDLING
+       Error handling in Xlib is pretty bad.  The first problem is that non-
+       fatal errors are reported asynchronously in an API masquerading as if
+       they were synchronous function calls.  This is mildly annoying.  This
+       library eases the pain by giving you a nice XEvent object to work with,
+       and the ability to deliver the errors to a callback on your display or
+       window object.
+
+       The second much larger problem is that fatal errors (like losing the
+       connection to the server) cause a mandatory termination of the host
+       program.  Seriously.  The default behavior of Xlib is to print a
+       message and abort, but even if you install the C error handler to try
+       to gracefully recover, when the error handler returns Xlib still kills
+       your program.  Under normal circumstances you would have to perform all
+       cleanup with your stack tied up through Xlib, but this library cheats
+       by using croak ("longjmp") to escape the callback and let you wrap up
+       your script in a normal manner.  However, after a fatal error Xlib's
+       internal state could be damaged, so it is unsafe to make any more Xlib
+       calls.  This library tries to help enforce that by invalidating all the
+       connection objects.
+
+       If you really need your program to keep running your best bet is to
+       state-dump to shared memory and then exec() a fresh copy of your script
+       and reload the dumped state.  Or use XCB instead of Xlib.
+
+SYSTEM DEPENDENCIES
+       Xlib libraries are found on most graphical Unixes, but you might lack
+       the header files needed for this module.  Try the following:
+
+       Debian (Ubuntu, Mint)
+             sudo apt-get install libxtst-dev
+             # and you probably want the optional deps, too
+             sudo apt-get install libxcomposite-dev libxrender-dev libxfixes-dev
+
+       Fedora
+             sudo yum install libXtst-devel
+             # and you probably want the optional deps, too
+             sudo yum install libXcomposite-devel libXrender-devel libXfixes-devel
+
+SEE ALSO
+       X11::GUITest
+           This module provides a higher-level API for X input simulation and
+           testing.
+
+       Gtk2
+           Functions provided by X11/Xlib are mostly included in the Gtk2
+           binding, but through the GTK API and perl objects.
+
+       X11::Protocol
+           Pure-perl implementation of the X11 protocol.
+
+TODO
+       This module still only covers a fraction of the Xlib API.  Patches are
+       welcome :)
+
+AUTHOR
+       Olivier Thauvin, <nanardon@nanardon.zarb.org>
+
+       Michael Conrad, <mike@nrdvana.net>
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2009-2010 by Olivier Thauvin
+
+       Copyright (C) 2017 by Michael Conrad
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself, either Perl version 5.10.0 or, at
+       your option, any later version of Perl 5 you may have available.
+
+perl v5.40.2                      2018-06-06                      X11::Xlib(3)

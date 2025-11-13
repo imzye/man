@@ -1,0 +1,180 @@
+SFEEDRC(5)                                                                                   File Formats Manual                                                                                 SFEEDRC(5)
+
+NAME
+       sfeedrc — sfeed_update(1) configuration file
+
+DESCRIPTION
+       sfeedrc is the configuration file for sfeed_update(1) and is evaluated as a shellscript.
+
+VARIABLES
+       sfeedpath
+               can be set for the directory to store the TAB-separated feed files.  The default is $HOME/.sfeed/feeds.
+
+       maxjobs
+               can be used to change the amount of concurrent feed() jobs.  The default is 16.
+
+FUNCTIONS
+       feeds()
+               This function is the required "main" entry-point function called from sfeed_update(1).
+
+       feed(name, feedurl, basesiteurl, encoding)
+               Inside the feeds() function feeds can be defined by calling the feed() function.  Its arguments are:
+
+               name    Name  of  the  feed, this is also used as the filename for the TAB-separated feed file.  The feed name cannot contain the '/' character because it is a path separator, they will be
+                       replaced with '_'.  Each name should be unique.
+
+               feedurl
+                       URL to fetch the RSS/Atom data from.  This is usually a HTTP or HTTPS URL.
+
+               [basesiteurl]
+                       Base URL of the feed links.  This argument allows fixing relative item links.
+
+                       According to the RSS and Atom specification, feeds should always have absolute URLs, but this is not always the case in practice.
+
+               [encoding]
+                       Feeds are converted from this encoding to UTF-8.  The encoding should be a usable character-set name for the iconv(1) tool.
+
+OVERRIDE FUNCTIONS
+       Because sfeed_update(1) is a shellscript each function can be overridden to change its behaviour.  Notable functions are:
+
+       fetch(name, url, feedfile)
+               Fetch feed from URL and write the data to stdout.  Its arguments are:
+
+               name    Feed name.
+
+               url     URL to fetch.
+
+               feedfile
+                       Used feedfile (useful for comparing modification times).
+
+               By default the tool curl(1) is used.
+
+       convertencoding(name, from, to)
+               Convert data from stdin from one text-encoding to another and write it to stdout.  Its arguments are:
+
+               name    Feed name.
+
+               from    From text-encoding.
+
+               to      To text-encoding.
+
+               By default the tool iconv(1) is used.
+
+       parse(name, feedurl, basesiteurl)
+               Read RSS/Atom XML data from stdin, convert and write it as sfeed(5) data to stdout.  Its arguments are:
+
+               name    Feed name.
+
+               feedurl
+                       URL of the feed.
+
+               basesiteurl
+                       Base URL of the feed links.  This argument allows to fix relative item links.
+
+       filter(name, url)
+               Filter sfeed(5) data from stdin and write it to stdout.  Its arguments are:
+
+               name    Feed name.
+
+               url     URL of the feed.
+
+       merge(name, oldfile, newfile)
+               Merge sfeed(5) data of oldfile with newfile and write it to stdout.  Its arguments are:
+
+               name    Feed name.
+
+               oldfile
+                       Old file.
+
+               newfile
+                       New file.
+
+       order(name, url)
+               Sort sfeed(5) data from stdin and write it to stdout.  Its arguments are:
+
+               name    Feed name.
+
+               url     URL of the feed.
+
+EXAMPLES
+       An example configuration file is included named sfeedrc.example and also shown below:
+
+           #sfeedpath="$HOME/.sfeed/feeds"
+
+           # list of feeds to fetch:
+           feeds() {
+                   # feed <name> <feedurl> [basesiteurl] [encoding]
+                   feed "codemadness" "https://www.codemadness.org/atom_content.xml"
+                   feed "explosm" "http://feeds.feedburner.com/Explosm"
+                   feed "golang github releases" "https://github.com/golang/go/releases.atom"
+                   feed "linux kernel" "https://www.kernel.org/feeds/kdist.xml" "https://www.kernel.org"
+                   feed "reddit openbsd" "https://old.reddit.com/r/openbsd/.rss"
+                   feed "slashdot" "http://rss.slashdot.org/Slashdot/slashdot" "http://slashdot.org"
+                   feed "tweakers" "http://feeds.feedburner.com/tweakers/mixed" "http://tweakers.net" "iso-8859-1"
+                   # get youtube Atom feed: curl -s -L 'https://www.youtube.com/user/gocoding/videos' | sfeed_web | cut -f 1
+                   feed "youtube golang" "https://www.youtube.com/feeds/videos.xml?channel_id=UCO3LEtymiLrgvpb59cNsb8A"
+                   feed "xkcd" "https://xkcd.com/atom.xml" "https://xkcd.com"
+           }
+
+       To change the default curl(1) options for fetching the data, the fetch() function can be overridden and added at the top of the sfeedrc file, for example:
+
+           # fetch(name, url, feedfile)
+           fetch() {
+                   # allow for 1 redirect, set User-Agent, timeout is 15 seconds.
+                   curl -L --max-redirs 1 -H "User-Agent: 007" -f -s -m 15 \
+                           "$2" 2>/dev/null
+           }
+
+       Caching, incremental data updates and bandwidth saving
+
+       For HTTP servers that support it some bandwidth saving can be done by changing some of the default curl options.  These options can come at a cost of some privacy, because  it  exposes  additional
+       metadata from the previous request.
+
+       •   The curl ETag options (--etag-save and --etag-compare) can be used to store and send the previous ETag header value.  curl version 7.73+ is recommended for it to work properly.
+       •   The  curl -z option can be used to send the modification date of a local file as a HTTP If-Modified-Since request header.  The server can then respond if the data is modified or not or respond
+           with only the incremental data.
+       •   The curl --compressed option can be used to indicate the client supports decompression.  Because RSS/Atom feeds are textual XML data this generally compresses very well.
+       •   The example below also sets the User-Agent to sfeed, because some CDNs block HTTP clients based on the User-Agent request header.
+
+       Example:
+
+           mkdir -p "$HOME/.sfeed/etags" "$HOME/.sfeed/lastmod"
+
+           # fetch(name, url, feedfile)
+           fetch() {
+                   basename="$(basename "$3")"
+                   etag="$HOME/.sfeed/etags/${basename}"
+                   lastmod="$HOME/.sfeed/lastmod/${basename}"
+                   output="${sfeedtmpdir}/feeds/${filename}.xml"
+
+                   curl \
+                           -f -s -m 15 \
+                           -L --max-redirs 0 \
+                           -H "User-Agent: sfeed" \
+                           --compressed \
+                           --etag-save "${etag}" --etag-compare "${etag}" \
+                           -R -o "${output}" \
+                           -z "${lastmod}" \
+                           "$2" 2>/dev/null || return 1
+
+                   # succesful, but no file written: assume it is OK and Not Modified.
+                   [ -e "${output}" ] || return 0
+
+                   # use server timestamp from curl -R to set Last-Modified.
+                   touch -r "${output}" "${lastmod}" 2>/dev/null
+                   cat "${output}" 2>/dev/null
+                   # use write output status, other errors are ignored here.
+                   fetchstatus="$?"
+                   rm -f "${output}" 2>/dev/null
+                   return "${fetchstatus}"
+           }
+
+       The README file has more examples.
+
+SEE ALSO
+       curl(1), iconv(1), sfeed_update(1), sh(1)
+
+AUTHORS
+       Hiltjo Posthuma <hiltjo@codemadness.org>
+
+Debian                                                                                        February 9, 2025                                                                                   SFEEDRC(5)

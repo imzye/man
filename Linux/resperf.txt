@@ -1,0 +1,331 @@
+resperf(1)                                                                                  General Commands Manual                                                                                  resperf(1)
+
+NAME
+       resperf - test the resolution performance of a caching DNS server
+
+SYNOPSIS
+       resperf-report [-a local_addr] [-d datafile] [-R] [-M mode] [-s server_addr] [-p port] [-x local_port] [-t timeout] [-b bufsize] [-f family] [-e] [-D] [-y [alg:]name:secret] [-h] [-i interval]
+       [-m max_qps] [-r rampup_time] [-c constant_traffic_time] [-L max_loss] [-C clients] [-q max_outstanding] [-F fall_behind] [-v] [-W] [-O option=value]
+
+       resperf [-a local_addr] [-d datafile] [-R] [-M mode] [-s server_addr] [-p port] [-x local_port] [-t timeout] [-b bufsize] [-f family] [-e] [-D] [-y [alg:]name:secret] [-h] [-i interval] [-m max_qps]
+       [-P plot_data_file] [-r rampup_time] [-c constant_traffic_time] [-L max_loss] [-C clients] [-q max_outstanding] [-F fall_behind] [-v] [-W] [-O option=value]
+
+DESCRIPTION
+       resperf  is  a  companion tool to dnsperf.  dnsperf was primarily designed for benchmarking authoritative servers, and it does not work well with caching servers that are talking to the live Internet.
+       One reason for this is that dnsperf uses a "self-pacing" approach, which is based on the assumption that you can keep the server 100% busy simply by sending it a small burst of back-to-back queries to
+       fill  up network buffers, and then send a new query whenever you get a response back.  This approach works well for authoritative servers that process queries in order and one at a time; it also works
+       pretty well for a caching server in a closed laboratory environment talking to a simulated Internet that's all on the same LAN.  Unfortunately, it does not work well with a caching server  talking  to
+       the actual Internet, which may need to work on thousands of queries in parallel to achieve its maximum throughput.  There have been numerous attempts to use dnsperf (or its predecessor, queryperf) for
+       benchmarking live caching servers, usually with poor results.  Therefore, a separate tool designed specifically for caching servers is needed.
+
+   How resperf works
+       Unlike the "self-pacing" approach of dnsperf, resperf works by sending DNS queries at a controlled, steadily increasing rate.  By default, resperf will send traffic for 60 seconds, linearly increasing
+       the amount of traffic from zero to 100,000 queries per second (or max_qps).
+
+       During the test, resperf listens for responses from the server and keeps track of response rates, failure rates, and latencies.  It will also continue listening for responses for an additional 40 sec‐
+       onds after it has stopped sending traffic, so that there is time for the server to respond to the last queries sent.  This time period was chosen to be longer than the overall query  timeout  of  both
+       Nominum CacheServe and current versions of BIND.
+
+       If the test is successful, the query rate will at some point exceed the capacity of the server and queries will be dropped, causing the response rate to stop growing or even decrease as the query rate
+       increases.
+
+       The result of the test is a set of measurements of the query rate, response rate, failure response rate, and average query latency as functions of time.
+
+   What you will need
+       Benchmarking a live caching server is serious business.  A fast caching server like Nominum CacheServe, resolving a mix of cacheable and non-cacheable queries typical of ISP customer traffic, is capa‐
+       ble  of  resolving  well over 1,000,000 queries per second.  In the process, it will send more than 40,000 queries per second to authoritative servers on the Internet, and receive responses to most of
+       them.  Assuming an average request size of 50 bytes and a response size of 150 bytes, this amounts to some 1216 Mbps of outgoing and 448 Mbps of incoming traffic.  If your  Internet  connection  can't
+       handle the bandwidth, you will end up measuring the speed of the connection, not the server, and may saturate the connection causing a degradation in service for other users.
+
+       Make  sure there is no stateful firewall between the server and the Internet, because most of them can't handle the amount of UDP traffic the test will generate and will end up dropping packets, skew‐
+       ing the test results.  Some will even lock up or crash.
+
+       You should run resperf on a machine separate from the server under test, on the same LAN.  Preferably, this should be a Gigabit Ethernet network.  The machine running resperf should  be  at  least  as
+       fast as the machine being tested; otherwise, it may end up being the bottleneck.
+
+       There  should  be no other applications running on the machine running resperf.  Performance testing at the traffic levels involved is essentially a hard real-time application - consider the fact that
+       at a query rate of 100,000 queries per second, if resperf gets delayed by just 1/100 of a second, 1000 incoming UDP packets will arrive in the meantime.  This is more than most operating systems  will
+       buffer, which means packets will be dropped.
+
+       Because  the  granularity  of  the timers provided by operating systems is typically too coarse to accurately schedule packet transmissions at sub-millisecond intervals, resperf will busy-wait between
+       packet transmissions, constantly polling for responses in the meantime.  Therefore, it is normal for resperf to consume 100% CPU during the whole test run, even during periods where  query  rates  are
+       relatively low.
+
+       You  will  also  need  a set of test queries in the dnsperf file format.  See the dnsperf man page for instructions on how to construct this query file.  To make the test as realistic as possible, the
+       queries should be derived from recorded production client DNS traffic, without removing duplicate queries or other filtering.  With the default settings, resperf will use up to 3  million  queries  in
+       each test run.
+
+       If the caching server to be tested has a configurable limit on the number of simultaneous resolutions, like the max-recursive-clients statement in Nominum CacheServe or the recursive-clients option in
+       BIND 9, you will probably have to increase it.  As a starting point, we recommend a value of 10000 for Nominum CacheServe and 100000 for BIND 9.  Should the limit be reached, it will show  up  in  the
+       plots as an increase in the number of failure responses.
+
+       The  server  being  tested should be restarted at the beginning of each test to make sure it is starting with an empty cache.  If the cache already contains data from a previous test run that used the
+       same set of queries, almost all queries will be answered from the cache, yielding inflated performance numbers.
+
+       To use the resperf-report script, you need to have gnuplot installed.  Make sure your installed version of gnuplot supports the png terminal driver.  If your gnuplot doesn't support png but does  sup‐
+       port gif, you can change the line saying terminal=png in the resperf-report script to terminal=gif.
+
+   Running the test
+       resperf  is  typically invoked via the resperf-report script, which will run resperf with its output redirected to a file and then automatically generate an illustrated report in HTML format.  Command
+       line arguments given to resperf-report will be passed on unchanged to resperf.
+
+       When running resperf-report, you will need to specify at least the server IP address and the query data file.  A typical invocation will look like
+
+              resperf-report -s 10.0.0.2 -d queryfile
+
+       With default settings, the test run will take at most 100 seconds (60 seconds of ramping up traffic and then 40 seconds of waiting for responses), but in practice, the  60-second  traffic  phase  will
+       usually be cut short.  To be precise, resperf can transition from the traffic-sending phase to the waiting-for-responses phase in three different ways:
+
+       · Running  for  the  full allotted time and successfully reaching the maximum query rate (by default, 60 seconds and 100,000 qps, respectively).  Since this is a very high query rate, this will rarely
+         happen (with today's hardware); one of the other two conditions listed below will usually occur first.
+
+       · Exceeding 65,536 outstanding queries.  This often happens as a result of (successfully) exceeding the capacity of the server being tested, causing the excess queries to be  dropped.   The  limit  of
+         65,536 queries comes from the number of possible values for the ID field in the DNS packet.  resperf needs to allocate a unique ID for each outstanding query, and is therefore unable to send further
+         queries if the set of possible IDs is exhausted.
+
+       · When resperf finds itself unable to send queries fast enough.  resperf will notice if it is falling behind in its scheduled query transmissions, and if this backlog reaches  1000  queries,  it  will
+         print a message like "Fell behind by 1000 queries" (or whatever the actual number is at the time) and stop sending traffic.
+
+       Regardless of which of the above conditions caused the traffic-sending phase of the test to end, you should examine the resulting plots to make sure the server's response rate is flattening out toward
+       the end of the test.  If it is not, then you are not loading the server enough.  If you are getting the "Fell behind" message, make sure that the machine running resperf is fast enough and has no oth‐
+       er applications running.
+
+       You should also monitor the CPU usage of the server under test.  It should reach close to 100% CPU at the point of maximum traffic; if it does not, you most likely have a bottleneck in some other part
+       of your test setup, for example, your external Internet connection.
+
+       The report generated by resperf-report will be stored with a unique file name based on the current date and time, e.g., 20060812-1550.html.  The PNG images of the plots and other auxiliary files  will
+       be stored in separate files beginning with the same date-time string.  To view the report, simply open the .html file in a web browser.
+
+       If  you need to copy the report to a separate machine for viewing, make sure to copy the .png files along with the .html file (or simply copy all the files, e.g., using scp 20060812-1550.* host:direc‐
+       tory/).
+
+   Interpreting the report
+       The .html file produced by resperf-report consists of two sections.  The first section, "Resperf output", contains output from the resperf program such as progress messages, a summary of  the  command
+       line arguments, and summary statistics.  The second section, "Plots", contains two plots generated by gnuplot: "Query/response/failure rate" and "Latency".
+
+       The  "Query/response/failure rate" plot contains three graphs.  The "Queries sent per second" graph shows the amount of traffic being sent to the server; this should be very close to a straight diago‐
+       nal line, reflecting the linear ramp-up of traffic.
+
+       The "Total responses received per second" graph shows how many of the queries received a response from the server.  All responses are counted, whether successful (NOERROR or NXDOMAIN)  or  not  (e.g.,
+       SERVFAIL).
+
+       The "Failure responses received per second" graph shows how many of the queries received a failure response.  A response is considered to be a failure if its RCODE is neither NOERROR nor NXDOMAIN.
+
+       By visually inspecting the graphs, you can get an idea of how the server behaves under increasing load.  The "Total responses received per second" graph will initially closely follow the "Queries sent
+       per second" graph (often rendering it invisible in the plot as the two graphs are plotted on top of one another), but when the load exceeds the server's capacity, the  "Total  responses  received  per
+       second" graph may diverge from the "Queries sent per second" graph and flatten out, indicating that some of the queries are being dropped.
+
+       The  "Failure  responses received per second" graph will normally show a roughly linear ramp close to the bottom of the plot with some random fluctuation, since typical query traffic will contain some
+       small percentage of failing queries randomly interspersed with the successful ones.  As the total traffic increases, the number of failures will increase proportionally.
+
+       If the "Failure responses received per second" graph turns sharply upwards, this can be another indication that the load has exceeded the server's capacity.  This will happen if the server  reacts  to
+       overload  by  sending  SERVFAIL  responses  rather than by dropping queries.  Since Nominum CacheServe and BIND 9 will both respond with SERVFAIL when they exceed their max-recursive-clients or recur‐
+       sive-clients limit, respectively, a sudden increase in the number of failures could mean that the limit needs to be increased.
+
+       The "Latency" plot contains a single graph marked "Average latency".  This shows how the latency varies during the course of the test.  Typically, the latency graph will exhibit a downwards trend  be‐
+       cause  the cache hit rate improves as ever more responses are cached during the test, and the latency for a cache hit is much smaller than for a cache miss.  The latency graph is provided as an aid in
+       determining the point where the server gets overloaded, which can be seen as a sharp upwards turn in the graph.  The latency graph is not intended for making absolute latency measurements  or  compar‐
+       isons  between servers; the latencies shown in the graph are not representative of production latencies due to the initially empty cache and the deliberate overloading of the server towards the end of
+       the test.
+
+       Note that all measurements are displayed on the plot at the horizontal position corresponding to the point in time when the query was sent, not when the response (if any) was received.  This makes  it
+       it  easy  to compare the query and response rates; for example, if no queries are dropped, the query and response graphs will be identical.  As another example, if the plot shows 10% failure responses
+       at t=5 seconds, this means that 10% of the queries sent at t=5 seconds eventually failed, not that 10% of the responses received at t=5 seconds were failures.
+
+   Determining the server's maximum throughput
+       Often, the goal of running resperf is to determine the server's maximum throughput, in other words, the number of queries per second it is capable of handling.  This is not always an  easy  task,  be‐
+       cause  as  a server is driven into overload, the service it provides may deteriorate gradually, and this deterioration can manifest itself either as queries being dropped, as an increase in the number
+       of SERVFAIL responses, or an increase in latency.  The maximum throughput may be defined as the highest level of traffic at which the server still provides an acceptable level  of  service,  but  that
+       means you first need to decide what an acceptable level of service means in terms of packet drop percentage, SERVFAIL percentage, and latency.
+
+       The  summary  statistics in the "Resperf output" section of the report contains a "Maximum throughput" value which by default is determined from the maximum rate at which the server was able to return
+       responses, without regard to the number of queries being dropped or failing at that point.  This method of throughput measurement has the advantage of simplicity, but it may or may not be  appropriate
+       for  your needs; the reported value should always be validated by a visual inspection of the graphs to ensure that service has not already deteriorated unacceptably before the maximum response rate is
+       reached.  It may also be helpful to look at the "Lost at that point" value in the summary statistics; this indicates the percentage of the queries that was being dropped at the point in the test  when
+       the maximum throughput was reached.
+
+       Alternatively,  you can make resperf report the throughput at the point in the test where the percentage of queries dropped exceeds a given limit (or the maximum as above if the limit is never exceed‐
+       ed).  This can be a more realistic indication of how much the server can be loaded while still providing an acceptable level of service.  This is done using the -L command line  option;  for  example,
+       specifying -L 10 makes resperf report the highest throughput reached before the server starts dropping more than 10% of the queries.
+
+       There  is  no  corresponding way of automatically constraining results based on the number of failed queries, because unlike dropped queries, resolution failures will occur even when the the server is
+       not overloaded, and the number of such failures is heavily dependent on the query data and network conditions.  Therefore, the plots should be manually inspected to ensure that there is not an  abnor‐
+       mal number of failures.
+
+GENERATING CONSTANT TRAFFIC
+       In  addition  to ramping up traffic linearly, resperf also has the capability to send a constant stream of traffic.  This can be useful when using resperf for tasks other than performance measurement;
+       for example, it can be used to "soak test" a server by subjecting it to a sustained load for an extended period of time.
+
+       To generate a constant traffic load, use the -c command line option, together with the -m option which specifies the desired constant query rate.  For example, to send 10000 queries per second for  an
+       hour,  use  -m  10000 -c 3600.  This will include the usual 30-second gradual ramp-up of traffic at the beginning, which may be useful to avoid initially overwhelming a server that is starting with an
+       empty cache.  To start the onslaught of traffic instantly, use -m 10000 -c 3600 -r 0.
+
+       To be precise, resperf will do a linear ramp-up of traffic from 0 to -m queries per second over a period of -r seconds, followed by a plateau of steady traffic at -m queries per second lasting for  -c
+       seconds,  followed by waiting for responses for an extra 40 seconds.  Either the ramp-up or the plateau can be suppressed by supplying a duration of zero seconds with -r 0 and -c 0, respectively.  The
+       latter is the default.
+
+       Sending traffic at high rates for hours on end will of course require very large amounts of input data.  Also, a long-running test will generate a large amount of plot data, which is  kept  in  memory
+       for  the  duration  of the test.  To reduce the memory usage and the size of the plot file, consider increasing the interval between measurements from the default of 0.5 seconds using the -i option in
+       long-running tests.
+
+       When using resperf for long-running tests, it is important that the traffic rate specified using the -m is one that both resperf itself and the server under test can sustain.  Otherwise, the  test  is
+       likely to be cut short as a result of either running out of query IDs (because of large numbers of dropped queries) or of resperf falling behind its transmission schedule.
+
+   Using DNS-over-HTTPS
+       When  using  DNS-over-HTTPS you must set the -O doh-uri=... to something that works with the server you're sending to.  Also note that the value for maximum outstanding queries will be used to control
+       the maximum concurrent streams within the HTTP/2 connection.
+
+OPTIONS
+       Because the resperf-report script passes its command line options directly to the resperf programs, they both accept the same set of options, with one exception: resperf-report automatically  adds  an
+       appropriate -P to the resperf command line, and therefore does not itself take a -P option.
+
+       -d datafile
+              Specifies the input data file.  If not specified, resperf will read from standard input.
+
+       -R
+              Reopen the datafile if it runs out of data before the testing is completed.  This allows for long running tests on very small and simple query datafile.
+
+       -M mode
+              Specifies the transport mode to use, "udp", "tcp", "dot" or "doh".  Default is "udp".
+
+       -s server_addr
+              Specifies the name or address of the server to which requests will be sent.  The default is the loopback address, 127.0.0.1.
+
+       -p port
+              Sets the port on which the DNS packets are sent.  If not specified, the standard DNS port (udp/tcp 53, DoT 853, DoH 443) is used.
+
+       -a local_addr
+              Specifies the local address from which to send requests.  The default is the wildcard address.
+
+       -x local_port
+              Specifies the local port from which to send requests.  The default is the wildcard port (0).
+
+              If acting as multiple clients and the wildcard port is used, each client will use a different random port.  If a port is specified, the clients will use a range of ports starting with the spec‐
+              ified one.
+
+       -t timeout
+              Specifies the request timeout value, in seconds.  resperf will no longer wait for a response to a particular request after this many seconds have elapsed.  The default is 45 seconds.
+
+              resperf times out unanswered requests in order to reclaim query IDs so that the query ID space will not be exhausted in a long-running test, such as when "soak testing" a server for an day with
+              -m 10000 -c 86400.  The timeouts and the ability to tune them are of little use in the more typical use case of a performance test lasting only a minute or two.
+
+              The default timeout of 45 seconds was chosen to be longer than the query timeout of current caching servers.  Note that this is longer than the corresponding default in dnsperf, because caching
+              servers can take many orders of magnitude longer to answer a query than authoritative servers do.
+
+              If a short timeout is used, there is a possibility that resperf will receive a response after the corresponding request has timed out; in this case, a message like Warning: Received a  response
+              with an unexpected id: 141 will be printed.
+
+       -b bufsize
+              Sets the size of the socket's send and receive buffers, in kilobytes.  If not specified, the operating system's default is used.
+
+       -f family
+              Specifies  the  address  family  used for sending DNS packets.  The possible values are "inet", "inet6", or "any".  If "any" (the default value) is specified, resperf will use whichever address
+              family is appropriate for the server it is sending packets to.
+
+       -e
+              Enables EDNS0 [RFC2671], by adding an OPT record to all packets sent.
+
+       -D
+              Sets the DO (DNSSEC OK) bit [RFC3225] in all packets sent.  This also enables EDNS0, which is required for DNSSEC.
+
+       -y [alg:]name:secret
+              Add a TSIG record [RFC2845] to all packets sent, using the specified TSIG key algorithm, name and secret, where the algorithm defaults to hmac-md5 and the secret is expressed as a  base-64  en‐
+              coded string.
+
+       -h
+              Print a usage statement and exit.
+
+       -i interval
+              Specifies the time interval between data points in the plot file.  The default is 0.5 seconds.
+
+       -m max_qps
+              Specifies the target maximum query rate (in queries per second).  This should be higher than the expected maximum throughput of the server being tested.  Traffic will be ramped up at a linearly
+              increasing rate until this value is reached, or until one of the other conditions described in the section "Running the test" occurs.  The default is 100000 queries per second.
+
+       -P plot_data_file
+              Specifies the name of the plot data file.  The default is resperf.gnuplot.
+
+       -r rampup_time
+              Specifies the length of time over which traffic will be ramped up.  The default is 60 seconds.
+
+       -c constant_traffic_time
+              Specifies the length of time for which traffic will be sent at a constant rate following the initial ramp-up.  The default is 0 seconds, meaning no sending of traffic at a constant rate will be
+              done.
+
+       -L max_loss
+              Specifies  the  maximum acceptable query loss percentage for purposes of determining the maximum throughput value.  The default is 100%, meaning that resperf will measure the maximum throughput
+              without regard to query loss.
+
+       -C clients
+              Act as multiple clients.  Requests are sent from multiple sockets.  The default is to act as 1 client.
+
+       -q max_outstanding
+              Sets the maximum number of outstanding requests.  resperf will stop ramping up traffic when this many queries are outstanding.  The default is 64k, and the limit is 64k per client.
+
+       -F fall_behind
+              Sets the maximum number of queries that can fall behind being sent.  resperf will stop when this many queries should have been sent and it can be relative easy to hit  if  max_qps  is  set  too
+              high.  The default is 1000 and setting it to zero (0) disables the check.
+
+       -v
+              Enables verbose mode to report about network readiness and congestion.
+
+       -W
+              Log warnings and errors to standard output instead of standard error making it easier for script, test and automation to capture all output.
+
+       -O option=value
+              Set an extended long option for various things to control different aspects of testing or protocol modules, see EXTENDED OPTIONS in dnsperf(1) for list of available options.
+
+THE PLOT DATA FILE
+       The  plot data file is written by the resperf program and contains the data to be plotted using gnuplot.  When running resperf via the resperf-report script, there is no need for the user to deal with
+       this file directly, but its format and contents are documented here for completeness and in case you wish to run resperf directly and use its output for purposes other than viewing it with gnuplot.
+
+       The first line of the file is a comment identifying the fields.  It may be recognized as a comment by its leading hash sign (#).
+
+       Subsequent lines contain the actual plot data.  For purposes of generating the plot data file, the test run is divided into time intervals of 0.5 seconds (or some other length of time  specified  with
+       the -i command line option).  Each line corresponds to one such interval, and contains the following values as floating-point numbers:
+
+       Time
+              The midpoint of this time interval, in seconds since the beginning of the run
+
+       Target queries per second
+              The number of queries per second scheduled to be sent in this time interval
+
+       Actual queries per second
+              The number of queries per second actually sent in this time interval
+
+       Responses per second
+              The number of responses received corresponding to queries sent in this time interval, divided by the length of the interval
+
+       Failures per second
+              The number of responses received corresponding to queries sent in this time interval and having an RCODE other than NOERROR or NXDOMAIN, divided by the length of the interval
+
+       Average latency
+              The average time between sending the query and receiving a response, for queries sent in this time interval
+
+       Connections
+              The number of connections done, including re-connections, during this time interval.  This is only relevant to connection oriented protocols, such as TCP and DoT.
+
+       Average connection latency
+              The average time between starting to connect and having the connection ready for sending queries to, for this time interval.  This is only relevant to connection oriented protocols, such as TCP
+              and DoT.
+
+SEE ALSO
+       dnsperf(1)
+
+AUTHOR
+       Nominum, Inc.
+
+       Maintained by DNS-OARC
+
+              https://www.dns-oarc.net/
+
+BUGS
+       For issues and feature requests please use:
+
+              https://github.com/DNS-OARC/dnsperf/issues
+
+       For question and help please use:
+
+              admin@dns-oarc.net
+
+resperf                                                                                              2.7.1                                                                                           resperf(1)

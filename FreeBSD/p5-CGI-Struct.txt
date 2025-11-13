@@ -1,0 +1,304 @@
+CGI::Struct(3)        User Contributed Perl Documentation       CGI::Struct(3)
+
+
+NAME
+       CGI::Struct - Build structures from CGI data
+
+VERSION
+       Version 1.21
+
+SYNOPSIS
+       This module allows transforming CGI GET/POST data into intricate data
+       structures.  It is reminiscent of PHP's building arrays from form data,
+       but with a perl twist.
+
+         use CGI;
+         use CGI::Struct;
+         my $cgi = CGI->new;
+         my %params = $cgi->Vars;
+         my $struct = build_cgi_struct \%params;
+
+DESCRIPTION
+       CGI::Struct lets you transform CGI data keys that look like perl data
+       structures into actual perl data structures.
+
+       CGI::Struct makes no attempt to actually read in the variables from the
+       request.  You should be using CGI or some equivalent for that.
+       CGI::Struct expects to be handed a reference to a hash containing all
+       the keys/values you care about.  The common way is to use something
+       like "CGI->Vars" or (as the author does)
+       "Plack::Request->parameters->mixed".
+
+       Whatever you use should give you a hash mapping the request variable
+       names (keys) to the values sent in by the users (values).  Any of the
+       major CGIish modules will have such a method; consult the documentation
+       for yours if you don't know it offhand.
+
+       Of course, this isn't necessarily tied strictly to CGI; you could use
+       it to build data structures from any other source with similar syntax.
+       All CGI::Struct does is take one hash (reference) and turn it into
+       another hash (reference).  However, it's aimed at CGI uses, so it may
+       or may not work for something else.
+
+EXAMPLES
+   Basic Usage
+         <form action="request.cgi">
+          Name:    <input type="text" name="uinfo{name}">
+          Address: <input type="text" name="uinfo{addr}">
+          Email:   <input type="text" name="uinfo{email}">
+         </form>
+
+       When filled out and submitted the data will come in to request.cgi,
+       which will use something like "CGI->Vars" to parse it out into a hash
+
+         use CGI;
+         my $cgi = CGI->new;
+         my %params = $cgi->Vars;
+
+       You'll wind up with something like
+
+         %params = (
+             'uinfo{name}'  => 'Bob',
+             'uinfo{addr}'  => '123 Main Street',
+             'uinfo{email}' => 'bob@bob.bob',
+         )
+
+       Now we use CGI::Struct to parse that out
+
+         use CGI::Struct;
+         my $struct = build_cgi_struct \%params;
+
+       and we wind up with a structure that looks more like
+
+         $struct = {
+             'uinfo' => {
+                 name  => 'Bob',
+                 addr  => '123 Main Street',
+                 email => 'bob@bob.bob',
+             }
+         }
+
+       which is much simpler to use in your code.
+
+   Arrays
+       CGI::Struct also has the ability to build out arrays.
+
+        First cousin:  <input type="text" name="cousins[0]">
+        Second cousin: <input type="text" name="cousins[1]">
+        Third cousin:  <input type="text" name="cousins[2]">
+
+       Run it through CGI to get the parameters, run through
+       "build_cgi_struct", and we get
+
+         $struct = {
+             'cousins' => [
+               'Jill',
+               'Joe',
+               'Judy'
+             ]
+         }
+
+       Of course, most CGIish modules will roll that up into an array if you
+       just call it 'cousins' and have multiple inputs.  But this lets you
+       specify the indices.  For instance, you may want to base the array from
+       1 instead of 0:
+
+        First cousin:  <input type="text" name="cousins[1]">
+        Second cousin: <input type="text" name="cousins[2]">
+        Third cousin:  <input type="text" name="cousins[3]">
+
+         $struct = {
+             'cousins' => [
+               undef,
+               'Jill',
+               'Joe',
+               'Judy'
+             ]
+         }
+
+       See also the "Auto-arrays" section.
+
+       NULL delimited multiple values
+
+       When using CGI's "->Vars" and similar, multiple passed values will wind
+       up as a "\0"-delimited string, rather than an array ref.  By default,
+       CGI::Struct will split it out into an array ref.  This behavior can by
+       disabled by using the "nullsplit" config param; see the function doc
+       below.
+
+   Deeper and deeper
+       Specifying arrays explicitly is also useful when building arbitrarily
+       deep structures, since the array doesn't have to be at the end
+
+         <select name="users{bob}{cousins}[5]{firstname}">
+
+       After a quick trip through "build_cgi_struct", that'll turn into
+       "$struct->{users}{bob}{cousins}[5]{firstname}" just like you'd expect.
+
+   Dotted hashes
+       Also supported is dot notation for hash keys.  This saves you a few
+       keystrokes, and can look neater.  Hashes may be specified with either
+       the "." or with "{}".  Arrays can only be written with "[]".
+
+       The above "select" could be written using dots for some or all of the
+       hash keys instead, looking a little Javascript-ish
+
+         <select name="users.bob.cousins[5].firstname">
+         <select name="users.bob{cousins}[5].firstname">
+         <select name="users{bob}.cousins[5]{firstname}">
+
+       of course, you wouldn't really want to mix-and-match in one field in
+       practice; it just looks silly.
+
+       Sometimes, though, you may want to have dots in field names, and you
+       wouldn't want this parsing to happen then.  It can be disabled for a
+       run of "build_cgi_struct" by passing a config param in; see the
+       function doc below.
+
+   Auto-arrays
+       CGI::Struct also builds 'auto-arrays', which is to say it turns
+       parameters ending with an empty "[]" into arrays and pushes things onto
+       them.
+
+         <select multiple="multiple" name="users[]">
+
+       turns into
+
+         $struct->{users} = ['lots', 'of', 'choices'];
+
+       This may seem unnecessary, given the ability of most CGI modules to
+       already build the array just by having multiple "users" params given.
+       Also, since "build_cgi_struct" only sees the data after your CGI module
+       has already parsed it out, it will only ever see a single key in its
+       input hash for any name anyway, since hashes can't have multiple keys
+       with the same name anyway.
+
+       However, there are a few uses for it.  PHP does this, so it makes for
+       an easier transition.  Also, it forces an array, so if you only chose
+       one entry in the list, "build_cgi_struct" would still make that element
+       in the structure a (single-element) array
+
+         $struct->{users} = ['one choice'];
+
+       which makes your code a bit simpler, since you don't have to expect
+       both a scalar and an array in that place (though of course you should
+       make sure it's what you expect for robustness).
+
+FUNCTIONS
+   build_cgi_struct
+         $struct = build_cgi_struct \%params;
+
+         $struct = build_cgi_struct \%params, \@errs;
+
+         $struct = build_cgi_struct \%params, \@errs, \%conf;
+
+       build_cgi_struct() is the only function provided by this module.  It
+       takes as an argument a reference to a hash of parameter name keys and
+       parameter value values.  It returns a reference to a hash with the
+       fully built up structure.  Any keys that can't be figured out are not
+       present in the returned hash.
+
+       An optional array reference can be passed as the second argument, in
+       which case the array will be filled in with any warnings or errors
+       found in trying to build the structure.  This should be taken as a
+       debugging tool for the developer's eyes to parse, not a source of
+       friendly-looking warnings to hand to non-technical users or as strongly
+       formatted strings for automated error mining.
+
+       A hash reference may be supplied as a third argument for passing config
+       parameters.  The currently supported parameters are:
+
+       nodot
+           This allows you to disable processing of "." as a hash element
+           separator.  There may be cases where you want a "." as part of a
+           field name, so this lets you still use "{}" and "[]" structure in
+           those cases.
+
+           The default is false (i.e., do use "." as separator).  Pass a true
+           value (like 1) to not do so.
+
+       nullsplit
+           "CGI->Vars" and compatible functions tend to, in hash form, wind up
+           with a NULL-delimited list rather than an array ref when passed
+           multiple values with the same key.  CGI::Struct will check string
+           values for embedded "\0"'s and, if found, "split" the string on
+           them and create an arrayref.
+
+           The "nullsplit" config param lets you disable this if you want
+           strings with embedded "\0" to pass through unmolested.  Pass a
+           false value (like 0) to disable the splitting.
+
+       dclone
+           By default, CGI::Struct uses Storable's "dclone" to do deep copies
+           of incoming data structures.  This ensures that whatever changes
+           you might make to $struct later on don't change stuff in %params
+           too.  By setting dclone to a false value (like 0) you can disable
+           this, and make it so deeper refs in the data structures point to
+           the same items.
+
+           You probably don't want to do this, unless some data is so huge you
+           don't want to keep 2 copies around, or you really do want to edit
+           the original %params for some reason.
+
+SEE ALSO
+       CGI, CGI::Simple, CGI::Minimal, Plack, and many other choices for
+       handling transforming a browser's request info a data structure
+       suitable for parsing.
+
+       CGI::State is somewhat similar to CGI::Struct, but is extremely tightly
+       coupled to CGI and doesn't have as much flexibility in the structures
+       it can build.
+
+       CGI::Expand also does similar things, but is more closely tied to CGI
+       or a near-equivalent.  It tries to DWIM hashes and arrays using only a
+       single separator.
+
+       The structure building done here is a perlish equivalent to the
+       structure building PHP does with passed-in parameters.
+
+AUTHOR
+       Matthew Fuller, "<fullermd@over-yonder.net>"
+
+BUGS
+       Please report any bugs or feature requests to "bug-cgi-struct at
+       rt.cpan.org", or through the web interface at
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=CGI-Struct>.  I will be
+       notified, and then you'll automatically be notified of progress on your
+       bug as I make changes.
+
+SUPPORTED VERSIONS
+       CGI::Struct should work on perl 5.6 and later.  It includes a
+       comprehensive test suite, so passing that should be an indicator that
+       it works.  If that's not the case, I want to hear about it so the
+       testing can be improved!
+
+SUPPORT
+       You can find documentation for this module with the perldoc command.
+
+           perldoc CGI::Struct
+
+       You can also look for information at:
+
+       •   RT: CPAN's request tracker
+
+           <http://rt.cpan.org/NoAuth/Bugs.html?Dist=CGI-Struct>
+
+       •   AnnoCPAN: Annotated CPAN documentation
+
+           <http://annocpan.org/dist/CGI-Struct>
+
+       •   CPAN Ratings
+
+           <http://cpanratings.perl.org/d/CGI-Struct>
+
+       •   Search CPAN
+
+           <http://search.cpan.org/dist/CGI-Struct/>
+
+LICENSE AND COPYRIGHT
+       Copyright 2010-2012 Matthew Fuller.
+
+       This software is licensed under the 2-clause BSD license.  See the
+       LICENSE file in the distribution for details.
+
+perl v5.40.2                      2012-11-24                    CGI::Struct(3)

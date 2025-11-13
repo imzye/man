@@ -1,0 +1,1343 @@
+Data::Domain(3)       User Contributed Perl Documentation      Data::Domain(3)
+
+
+NAME
+       Data::Domain - Data description and validation
+
+SYNOPSIS
+         use Data::Domain qw/:all/;
+
+         # some basic domains
+         my $int_dom      = Int(-min => -123, -max => 456);
+         my $nat_dom      = Nat(-max => 100, -default => sub {int(rand(100))});
+         my $num_dom      = Num(-min => 3.33, -max => 18.5);
+         my $string_dom   = String(-min_length => 2);
+         my $handle_dom   = Handle;
+         my $enum_dom     = Enum(qw/foo bar buz/);
+         my $int_list_dom = List(-min_size => 1, -all => Int, -default => [1, 2, 3]);
+         my $mixed_list   = List(String, Int(-min => 0), Date, True, Defined);
+         my $struct_dom   = Struct(foo => String, bar => Int(-optional => 1));
+         my $obj_dom      = Obj(-can => 'print');
+         my $class_dom    = Class(-can => 'print');
+
+         # using the domain to check data
+         my $error_messages = $domain->inspect($some_data);
+         reject_form($error_messages) if $error_messages;
+         # or
+         die $domain->stringify_msg($error_messages) if $error_messages;
+
+         # using the domain to get back a tree of validated data
+         my $valid_tree = $domain->validate($initial_tree); # will return a copy with default values inserted;
+                                                            # will die if there are validation errors
+
+         # using the domain for unpacking subroutine arguments
+         my $sig = List(Nat(-max => 20), String(-regex => qr/^hello/), Coderef)->func_signature;
+         sub some_func {
+           my ($i, $s, $code) = &$sig;  # or more verbose: = $sig->(@_);
+           ...
+         }
+
+         # using the domain for unpacking method arguments
+         my $sig = List(Nat(-max => 20), String(-regex => qr/^hello/), Coderef)->meth_signature;
+         sub some_method {
+           my ($self, $i, $s, $code) = &$meth_sig;  # or more verbose: = $meth_sig->(@_);
+           ...
+         }
+
+         # custom name and custom messages (2 different ways)
+         $domain = Int(-name => 'age', -min => 3, -max => 18,
+                       -messages => "only for people aged 3-18");
+         $domain = Int(-name => 'age', -min => 3, -max => 18, -messages => {
+                          TOO_BIG   => "not for old people over %d",
+                          TOO_SMALL => "not for babies under %d",
+                        });
+
+         # examples of subroutines for specialized domains
+         sub Phone         { String(-regex    => qr/^\+?[0-9() ]+$/,
+                                    -messages => "Invalid phone number", @_) }
+         sub Email         { String(-regex    => qr/^[-.\w]+\@[\w.]+$/,
+                                    -messages => "Invalid email", @_) }
+         sub Contact       { Struct(-fields => [name   => String,
+                                                phone  => Phone,
+                                                mobile => Phone(-name => 'Mobile',
+                                                                -optional => 1),
+                                                emails => List(-all => Email)   ], @_) }
+         sub UpdateContact { Contact(-may_ignore => '*', @_) }
+
+         # lazy subdomain
+         $domain = Struct(
+           date_begin => Date(-max => 'today'),
+           date_end   => sub {my $context = shift;
+                              Date(-min => $context->{flat}{date_begin})},
+         );
+
+         # recursive domain
+         my $expr_domain;
+         $expr_domain = One_of(Num, Struct(operator => String(qr(^[-+*/]$)),
+                                           left     => sub {$expr_domain},
+                                           right    => sub {$expr_domain}));
+
+         # constants in deep datastructures
+         $domain = Struct( foo => 123,                     # 123   becomes a domain
+                           bar => List(Int, 'buz', Int) ); # 'buz' becomes a domain
+
+         # list with repetitive structure (here : triples)
+         my $domain = List(-all => [String, Int, Obj(-can => 'print')]);
+
+DESCRIPTION
+       A data domain is a description of a set of values, either scalar or
+       structured (arrays or hashes, possibly nested).  The description can
+       include many constraints, like minimal or maximal values, regular
+       expressions, required fields, forbidden fields, and also contextual
+       dependencies (for ex. one date must be posterior to another date).
+       From that description, one can then invoke the domain's "inspect"
+       method to check if a given value belongs to the domain or not. In case
+       of mismatch, a structured set of error messages is returned, giving
+       detailed explanations about what was wrong.
+
+       The motivation for writing this package was to be able to express in a
+       compact way some possibly complex constraints about structured data.
+       Typically the data is a Perl tree (nested hashrefs or arrayrefs) that
+       may come from XML, JSON, from a database through DBIx::DataModel, or
+       from postprocessing an HTML form through CGI::Expand. "Data::Domain" is
+       a kind of tree parser on that structure, with some facilities for
+       dealing with dependencies within the structure, and with several
+       options to finely tune the error messages returned to the user.
+
+       The main usage for "Data::Domain" is to check input from forms in
+       interactive applications. Structured error messages returned by the
+       domain give detailed information about which fields were rejected and
+       why; this can be used to display a new form to the user, highlighting
+       the wrong inputs.
+
+       A domain can also validate a datatree, instead of inspecting it.
+       Instead of returning error messages, this returns a copy of the input
+       data, where missing components are replaced by default values (if such
+       defaults where specified within the domain). In case of failure, the
+       validation operation dies with a stringified version of the error
+       messages.  This usage is quite similar to type systems like Type::Tiny
+       or Specio, or to parameter validation modules like
+       Params::ValidationCompiler; such systems are more focused on efficiency
+       and on integration with Moose, while the present module is more focused
+       on expressivity for describing constraints on deeply nested structures.
+
+       The validation operation can be encapsulates as a signature, which is a
+       reference to an anonymous function that will unpack arguments passed to
+       a subroutine or to a method, will validate them, and will return them
+       in the form of an array or a hash, as demanded by the context.  This is
+       probably not as fast nor as elegant as the new "signature" feature
+       introduced in Perl 5.20; but it is a convenient way for performing
+       complex validity tests on parameters received from the caller.
+
+       The companion module Test::InDomain uses domains for checking datatrees
+       in the context of automated tests.
+
+       There are several other packages in CPAN doing data validation; these
+       are briefly listed in the "SEE ALSO" section.
+
+COMPATIBILITY WARNING : API CHANGE FOR MESSAGE CODEREFS
+       Starting with version 1.13, the API for calling message coderefs has
+       changed and is now in the form
+
+         $coderef->($domain_name, $msg_id, @args);
+
+       which is incompatible with previous versions of the module.  See
+       section "Backward compatibility for message coderefs" for a workaround.
+
+EXPORTS
+   Domain constructors
+         use Data::Domain qw/:all/;
+         # or
+         use Data::Domain qw/:constructors/;
+         # or
+         use Data::Domain qw/Whatever Empty
+                             Num Int Nat Date Time String
+                             Enum List Struct One_of All_of/;
+
+       Internally, domains are represented as Perl objects; however, it would
+       be tedious to write
+
+         my $domain = Data::Domain::Struct->new(
+           anInt => Data::Domain::Int->new(-min => 3, -max => 18),
+           aDate => Data::Domain::Date->new(-max => 'today'),
+           ...
+         );
+
+       so for each builtin domain constructor, "Data::Domain" exports a plain
+       function that just calls "new" on the appropriate subclass; these
+       functions are all exported in in a group called ":constructors", and
+       allow us to write more compact code :
+
+         my $domain = Struct(
+           anInt => Int(-min => 3, -max => 18),
+           aDate => Date(-max => 'today'),
+           ...
+         );
+
+       The list of available domain constructors is expanded below in "BUILTIN
+       DOMAIN CONSTRUCTORS".
+
+   Shortcuts (domains with predefined options)
+         use Data::Domain qw/:all/;
+         # or
+         use Data::Domain qw/:shortcuts/;
+         # or
+         use Data::Domain qw/True False Defined Undef Blessed Unblessed Regexp Coderef
+                             Obj Class/;
+
+       The ":shortcuts" export group contains a number of convenience
+       functions that call the "Whatever" domain constructor with various pre-
+       built options. Precise definitions for each of these functions are
+       given below in "BUILTIN SHORTCUTS".
+
+   Renaming imported functions
+       Short function names like "Int", "String", "List", "Obj", "True", etc.
+       are convenient but may cause name clashes with other modules. Thanks to
+       the powerful features of Sub::Exporter, these functions can be renamed
+       in various ways. Here is an example :
+
+         use Data::Domain -all => { -prefix => 'dom_' };
+         my $domain = dom_Struct(
+           anInt => dom_Int(-min => 3, -max => 18),
+           aDate => dom_Date(-max => 'today'),
+           ...
+         );
+
+       There are a number of other ways to rename imported functions; see
+       Sub::Exporter and Sub::Exporter::Tutorial.
+
+   Removing symbols from the import list
+       To preserve backwards compatibility with Exporter, the present module
+       also supports exclamation marks to exclude some specific symbols from
+       the import list. For example
+
+         use Data::Domain qw/:all !Date/;
+
+       will import everything except the "Date" function.
+
+METHODS COMMON TO ALL DOMAINS
+   new
+       The "new" method creates a new domain object, from one of the domain
+       constructors listed below ("Num", "Int", "Date", etc.).  The
+       "Data::Domain" class itself has no "new" method, because it is an
+       abstract class.
+
+       This method is seldom called explicitly; it is usually more convenient
+       to use the wrapper subroutines introduced above, i.e. to write
+       Int(@args) instead of "Data::Domain::Int->new(@args)".  All examples
+       below will use this shorter notation.
+
+       Arguments to the "new" method may specify various options for the
+       domain to be constructed.  Option names always start with a dash. If no
+       option name is given, parameters to the "new" method are passed to the
+       default option defined in each constructor subclass. For example the
+       default option in "Data::Domain::List" is "-items", so
+
+          my $domain = List(Int, String, Int);
+
+       is equivalent to
+
+          my $domain = List(-items => [Int, String, Int]);
+
+       So in short, the "default option" is syntactic sugar for using
+       positional parameters instead of named parameters.
+
+       Each domain constructor has its own list of available options; these
+       will be presented with each subclass (for example options for setting
+       minimal/maximal values, regular expressions, string length, etc.).
+       However, there are also some generic options, available in every domain
+       constructor; these are listed here, in several categories.
+
+       Options for customizing the domain behaviour
+
+       "-optional"
+           If true, the domain will accept "undef", without generating an
+           error message.
+
+       "-default"
+           Specifies an default value to be inserted by the "validate" method
+           if the input data is "undef" or nonexistent. For the "inspect"
+           method, this option is equivalent to "-optional".
+
+           If "-default" is a coderef, that subroutine will be called with the
+           current context as parameter (see "Structure of context"); the
+           resulting scalar value is inserted within the tree.
+
+       "-if_absent"
+           Like "-default" except that it will only be applied when a data
+           member does not exist in its parent structure (i.e. a missing field
+           in a hash, or an element outside of the range of an array).
+
+           This is useful for example when passing named arguments to a
+           function, if you want to explicitly allow to pass "undef" to an
+           argument :
+
+              some_func(arg1 => 'foo', arg2 => undef) # arg1 is defined, arg2 is undef but present, arg3 is absent
+
+       "-name"
+           Defines a name for the domain, that will be printed in error
+           messages instead of the subclass name.
+
+       "-messages"
+           Defines ad hoc messages for that domain, instead of the builtin
+           messages. The argument can be a string, a hashref or a coderef, as
+           explained in the  "CUSTOMIZING ERROR MESSAGES" section.
+
+       Options for checking boolean properties
+
+       Options in this category check if the data possesses, or does not
+       possess, a given property; hence, the argument to each option must be a
+       boolean. For example, here is a domain that accepts all blessed objects
+       that are not weak references and are not readonly :
+
+         $domain = Whatever(-blessed => 1, -weak => 0, -readonly => 0);
+
+       Boolean property options are :
+
+       "-true"
+           Checks if the data is true.
+
+       "-blessed"
+           Checks if the data is blessed, according to "blessed" in
+           Scalar::Util.
+
+       "-package"
+           Checks if the data is a package. This is considered true whenever
+           the data is not a reference and satisfies "$data->isa($data)".
+
+       "-ref"
+           Checks if the data is a reference.
+
+       "-isweak"
+           Checks if the data is a weak reference, according to "isweak" in
+           Scalar::Util.
+
+       "-readonly"
+           Checks if the data is readonly, according to "readonly" in
+           Scalar::Util.
+
+       "-tainted"
+           Checks if the data is tainted, according to "tainted" in
+           Scalar::Util.
+
+       Options for checking other general properties
+
+       Options in this category do not take a boolean argument, but a class
+       name, method name, role or smart match operand.
+
+       "-isa"
+           Checks if the data is an object or a subclass of the specified
+           class; this is checked through "eval {$data->isa($class)}".
+
+       "-can"
+           Checks if the data implements the listed methods, supplied either
+           as an arrayref (several methods) or as a scalar (just one method);
+           this is checked through "eval {$data->can($method)}".
+
+       "-does"
+           Checks if the data does the supplied role; this is checked through
+           Scalar::Does. Used for example by the "Regexp" and "Coderef" domain
+           shortcuts.
+
+       "-matches"
+           Was originally designed for the smart match operator in Perl 5.10.
+           Smart mach is now deprecated, so this option is now implemented
+           through match::simple.
+
+       Options for checking return values
+
+       Options in this category call methods or coderefs within the data, and
+       then check the results against the supplied domains. This is somehow
+       contrary to the principle of "domains", because a function call or
+       method call not only inspects the data : it might also alter the data.
+       However, one could also argue that peeking into an object's internals
+       is contrary to the principle of encapsulation, so in this sense, method
+       calls are more appropriate. You decide ...  but beware of side-effects
+       in your data!
+
+       "-has"
+             $domain = Obj(-has => [
+                foo          => String,               # ->foo() must return a String
+                foo          => [-all => String],     # ->foo() in list context must
+                                                      # return a list of Strings
+                [bar => 123] => Obj(-can => 'print'), # ->bar(123) must return a printable obj
+              ]);
+
+           The "-has" option takes an arrayref argument; that arrayref must
+           contain pairs of "($method_spec => $expected_result)", where
+
+           •   $method_spec is either a method name, or an arrayref containing
+               the method name followed by the list of arguments for calling
+               the method.
+
+           •   $expected_result is either a domain, or an arrayref containing
+               arguments for a List(...) domain. In the former case, the
+               method call will be performed in scalar context; in the latter
+               case, it will be performed in list context, and the resulting
+               list will be checked against a "List" domain built from the
+               given arguments.
+
+           Note that this property can be invoked not only on "Obj", but on
+           any domain; hence, it is possible to simultaneously check if an
+           object has some given internal structure, and also answers to some
+           method calls :
+
+             $domain = Struct(              # must be a hashref
+               -fields => {foo => String}   # must have a {foo} key with a String value
+               -has    => [foo => String],  # must have a ->foo method that returns a String
+              );
+
+       "-returns"
+             $domain = Whatever(-returns => [
+                []         => String,
+                [123, 456] => Int,
+              ]);
+
+           The "-returns" option treats the data as a coderef.  It takes an
+           arrayref argument; that arrayref must contain pairs of "($call_spec
+           => $expected_result)", where
+
+           •   $call_spec is an arrayref containing the list of arguments for
+               calling the subroutine.
+
+           •   $expected_result is either a domain, or an arrayref containing
+               arguments for a List(...) domain. In the former case, the
+               method call will be performed in scalar context; in the latter
+               case, it will be performed in list context.
+
+   inspect
+         my $messages = $domain->inspect($some_data);
+
+       This method inspects the supplied data, and returns an error message
+       (or a structured collection of messages) if anything is wrong.  If the
+       data successfully passed all domain tests, the method returns "undef".
+
+       For scalar domains ("Num", "String", etc.), the error message is just a
+       string. For structured domains ("List", "Struct"), the return value is
+       an arrayref or hashref of the same structure, like for example
+
+         {anInt => "smaller than mimimum 3",
+          aDate => "not a valid date",
+          aList => ["message for item 0", undef, undef, "message for item 3"]}
+
+       The client code can then exploit this structure to dispatch error
+       messages to appropriate locations (like for example the form fields
+       from which the data was gathered).
+
+   validate
+         my $valid_data = $domain->validate($some_data);
+
+       This method builds a copy of the supplied data, where missing items are
+       replaced by default values  (if such defaults where specified within
+       the domain).  If the data is invalid, an error is thrown with a
+       stringified version of the error message.
+
+       The returned value is either a scalar or a reference to a nested
+       datastructure (arrayref or hashref).
+
+   func_signature
+         my $sig_list = List(...)->func_signature;
+         sub some_func {
+           my ($x, $y, $z) = &$sig_list; # or $sig_list->(@_);
+           ...
+         }
+
+         my $sig_hash = Struct(...)->func_signature;
+         sub some_other_func {
+           my %args = &$sig_hash; # or $sig_hash->(@_);
+           ...
+         }
+
+       Returns a reference to an anonymous function that can be used for
+       unpacking arguments passed to a subroutine. The arguments array be
+       encapsulated as an arrayref or hashref, depending on what is expected
+       by the domain, and will be passed to the "validate" method; the result
+       is dereferenced and returned as a list, so that it can be used on the
+       right-hand side of a assignment to variables.
+
+       Signatures can be invoked on any list, but in most cases it makes sense
+       to invoke them on the parameters array @_. This can be done either
+       explicitly :
+
+         $sig->(@_);
+
+       or it can be done implicitly through Perl's arcane syntax for function
+       calls
+
+         &$sig; # current @_ is made visible to the $sig subroutine
+
+       Arguments unpacking may not work properly for domains that have varying
+       datastructures, like for example "Any_of(List(...), Struct(...))". Such
+       a domain would accept either an arrayref or a hashref, but this cannot
+       be unpacked deterministically by the "func_signature" method.
+
+   meth_signature
+         my $sig_list = List(...)->meth_signature;
+         sub some_meth {
+           my ($self, $x, $y, $z) = &$sig_list;
+           ...
+         }
+
+       This is like "func_signature", except that the first item in @_ is kept
+       apart, since it is a reference to the invocant object or class, and
+       therefore should not be passed to the domain for validation.
+
+   stringify_msg
+         my $string_msg = $domain->stringify_msg($messages);
+         die $string_msg;
+
+       For clients that need a string instead of a datastructur of error
+       messages, method "stringify_msg" collects all error information into a
+       single string.
+
+   domain stringification
+       When printed, domains stringify to a compact Data::Dumper
+       representation of their internal attributes; these details can be
+       useful for debugging or logging purposes.
+
+BUILTIN DOMAIN CONSTRUCTORS
+   Whatever
+         my $just_anything = Whatever;
+         my $is_defined    = Whatever(-defined => 1);
+         my $is_undef      = Whatever(-defined => 0);
+         my $is_true       = Whatever(-true => 1);
+         my $is_false      = Whatever(-true => 0);
+         my $is_of_class   = Whatever(-isa  => 'Some::Class');
+         my $does_role     = Whatever(-does => 'Some::Role');
+         my $has_methods   = Whatever(-can  => [qw/jump swim dance sing/]);
+         my $is_coderef    = Whatever(-does => 'CODE');
+
+       The "Data::Domain::Whatever" domain can contain any kind of Perl value,
+       including "undef" (actually this is the only domain that contains
+       "undef"). The only specific option is :
+
+       -defined
+           If true, the data must be defined. If false, the data must be
+           undef.
+
+       The "Whatever" domain is mostly used together with some of the general
+       options described above, like "-true", "-does", "-can", etc.  The most
+       common combinations are encapsulated under their own domain names : see
+       "BUILTIN SHORTCUTS".
+
+   Empty
+       The "Data::Domain::Empty" domain always fails when inspecting any data.
+       This is sometimes useful within lazy constructors, like in this example
+       :
+
+         Struct(
+           foo => String,
+           bar => sub {
+             my $context = shift;
+             if (some_condition($context)) {
+               return Empty(-messages => 'your data is wrong')
+             }
+             else {
+               ...
+             }
+           }
+         )
+
+       The "LAZY CONSTRUCTORS" section gives more explanations about lazy
+       domains.
+
+   Num
+         my $domain = Num(-range =>[-3.33, 999], -not_in => [2, 3, 5, 7, 11]);
+
+       Domain for numbers (including floats). Numbers are recognized through
+       "looks_like_number" in Scalar::Util.  Options for the domain are :
+
+       -min
+           The data must be greater or equal to the supplied value.
+
+       -max
+           The data must be smaller or equal to the supplied value.
+
+       -range
+           "-range => [$min, $max]" is equivalent to "-min => $min, -max =>
+           $max".
+
+       -not_in
+           The data must be different from all values in the exclusion set,
+           supplied as an arrayref.
+
+   Int
+         my $domain = Int(-min => -999, -max => 999, -not_in => [2, 3, 5, 7, 11]);
+
+       Domain for integers. Integers are recognized through the regular
+       expression "/^-?\d+$/".  This domain accepts the same options as "Num"
+       and returns the same error messages.
+
+   Nat
+         my $domain = Nat(-max => 999);
+
+       Domain for natural numbers (i.e. positive integers).  Natural numbers
+       are recognized through the regular expression "/^\d+$/".  This domain
+       accepts the same options as "Num" and returns the same error messages.
+
+   Date
+         Data::Domain::Date->parser('EU'); # default
+         my $domain = Date(-min => '01.01.2001',
+                           -max => 'today',
+                           -not_in => ['02.02.2002', '03.03.2003', 'yesterday']);
+
+       Domain for dates, implemented via the Date::Calc module.  By default,
+       dates are parsed according to the European format, i.e. through the
+       Decode_Date_EU method; this can be changed by setting
+
+         Data::Domain::Date->parser('US'); # will use Decode_Date_US
+
+       or
+
+         Data::Domain::Date->parser(\&your_own_date_parsing_function);
+         # that func. should return an array ($year, $month, $day)
+
+       Options to this domain are:
+
+       -min
+           The data must be greater or equal to the supplied value.  That
+           value can be either a regular date, or one of the special keywords
+           "today", "yesterday" or "tomorrow"; these will be replaced by the
+           appropriate date when performing comparisons.
+
+       -max
+           The data must be smaller or equal to the supplied value.  Of course
+           the same special keywords (as for "-min") are also admitted.
+
+       -range
+           "-range => [$min, $max]" is equivalent to "-min => $min, -max =>
+           $max".
+
+       -not_in
+           The data must be different from all values in the exclusion set,
+           supplied as an arrayref.
+
+       When outputting error messages, dates will be printed according to
+       Date::Calc's current language (english by default); see that module's
+       documentation for changing the language.
+
+   Time
+         my $domain = Time(-min => '08:00', -max => 'now');
+
+       Domain for times in format "hh:mm:ss" (minutes and seconds are
+       optional).
+
+       Options to this domain are:
+
+       -min
+           The data must be greater or equal to the supplied value.  The
+           special keyword "now" may be used as a value, and will be replaced
+           by the current local time when performing comparisons.
+
+       -max
+           The data must be smaller or equal to the supplied value.  The
+           special keyword "now" may also be used as a value.
+
+       -range
+           "-range => [$min, $max]" is equivalent to "-min => $min, -max =>
+           $max".
+
+   String
+         my $domain = String(qr/^[A-Za-z0-9_\s]+$/);
+
+         my $domain = String(-regex     => qr/^[A-Za-z0-9_\s]+$/,
+                             -antiregex => qr/$RE{profanity}/,  # see Regexp::Common
+                             -range     => ['AA', 'zz'],
+                             -length    => [1, 20],
+                             -not_in    => [qw/foo bar/]);
+
+       Domain for strings. Things considered as strings are either scalar
+       values, or objects with an overloaded stringification method; by
+       contrast, a hash reference is not considered to be a string, even if it
+       can stringify to something like "HASH(0x3f9fc4)" or
+       "Some::Class=HASH(0x3f9fc4)" through Perl's internal rules.
+
+       Options to this domain are:
+
+       -regex
+           The data must match the supplied compiled regular expression.
+           Don't forget to put "^" and "$" anchors if you want your regex to
+           check the whole string.
+
+           "-regex" is the default option, so you may just pass the regex as a
+           single unnamed argument to String().
+
+       -antiregex
+           The data must not match the supplied regex.
+
+       -min
+           The data must be stringwise greater or equal to the supplied value.
+
+       -max
+           The data must be stringwise smaller or equal to the supplied value.
+
+       -range
+           "-range => [$min, $max]" is equivalent to "-min => $min, -max =>
+           $max".
+
+       -min_length
+           The string length must be greater or equal to the supplied value.
+
+       -max_length
+           The string length must be smaller or equal to the supplied value.
+
+       -length
+           "-length => [$min, $max]" is equivalent to "-min_length => $min,
+           -max_length => $max".
+
+       -not_in
+           The data must be different from all values in the exclusion set,
+           supplied as an arrayref.
+
+   Handle
+         my $domain = Handle();
+
+       Domain for filehandles. This domain has no options.  Domain membership
+       is checked through "openhandle" in Scalar::Util.
+
+   Enum
+         my $domain = Enum(qw/foo bar buz/);
+
+       Domain for a finite set of scalar values.  Options are:
+
+       -values
+           Ref to an array of values admitted in the domain.  This would be
+           called as "Enum(-values => [qw/foo bar buz/])", but since this it
+           is the default option, it can be simply written as "Enum(qw/foo bar
+           buz/)".
+
+           Undefined values are not allowed in the list (use the "-optional"
+           argument instead).
+
+   List
+         my $domain = List(String, Int, String, Num);
+
+         my $domain = List(-items => [String, Int, String, Num]); # same as above
+
+         my $domain = List(-all  => String(qr/^[A-Z]+$/),
+                           -any  => String(-min_length => 3),
+                           -size => [3, 10]);
+
+         my $domain = List(-all => [String, Int, Whatever(-can => 'print')]);
+
+       Domain for lists of values (stored as Perl arrayrefs).  Options are:
+
+       -items
+           Ref to an array of domains; then the first n items in the data must
+           match those domains, in the same order.
+
+           This is the default option, so item domains may be passed directly
+           to the "new" method, without the "-items" keyword.
+
+       -min_size
+           The data must be a ref to an array with at least that number of
+           entries.
+
+       -max_size
+           The data must be a ref to an array with at most that number of
+           entries.
+
+       -size
+           "-size => [$min, $max]" is equivalent to "-min_size => $min,
+           -max_size => $max".
+
+       -all
+           All remaining entries in the array, after the first n entries as
+           specified by the "-items" option (if any), must satisfy the "-all"
+           specification. That specification can be
+
+           •   a single domain : in that case, all remaining items in the data
+               must belong to that domain
+
+           •   an arrayref of domains : in that case, remaining items in the
+               data are grouped into tuples, and each tuple must satisfy the
+               specification.  So the last example above says that the list
+               must contain triples where the first item is a string, the
+               second item is an integer and the third item is an object with
+               a "print" method.
+
+           This can also be used for ensuring that the list will not contain
+           any other items after the required items :
+
+             List(-items => [Int, Bool, String], -all => Empty); # cannot have anything after the third item
+
+       -any
+           At least one remaining entry in the array, after the first n
+           entries as specified by the "-items" option (if any), must satisfy
+           that domain specification. A list domain can have both an "-all"
+           and an "-any" constraint.
+
+           The argument to "-any" can also be an arrayref of domains, as in
+
+              List(-any => [String(qr/^foo/), Num(-range => [1, 10]) ])
+
+           This means that one member of the list must be a string starting
+           with "foo", and one member of the list must be a number between 1
+           and 10.  Note that this is different from
+
+              List(-any => One_of(String(qr/^foo/), Num(-range => [1, 10]))
+
+           which says that one member of the list must be either a string
+           starting with "foo" or a number between 1 and 10.
+
+   Struct
+         my $domain = Struct(foo => Int, bar => String);
+         my $domain = Struct(-fields => {foo => Int, bar => String}); # same as above
+
+         my $domain = Struct(-fields  => [foo => Int, bar => String],
+                             -exclude => '*'); # only 'foo' and 'bar', nothing else
+
+         my $domain = Struct(-fields     => [foo => Int, bar => String],
+                             -may_ignore => '*'); # will not complain for missing fields
+
+         my $domain = Struct(-keys   => List(-all => String(qr/^[abc])),
+                             -values => List(-all => Int));
+
+       Domain for associative structures (stored as Perl hashrefs).  Options
+       are:
+
+       -fields
+           Supplies a list of fields (hash keys) with their associated
+           domains. The list might be given either as a hashref or as an
+           arrayref.  Specifying it as an arrayref is useful for controlling
+           the order in which field checks will be performed; this may make a
+           difference when there are context dependencies (see "LAZY
+           CONSTRUCTORS" below ).
+
+       -exclude
+           Specifies which fields are not allowed in the structure. The
+           exclusion may be specified as an arrayref of field names, as a
+           compiled regular expression, or as the string constant '"*"' or
+           '"all"' (meaning that no hash key will be allowed except those
+           explicitly listed in the "-fields" option. The "Struict" domain
+           described below is syntactic sugar for a "Struct" domain with
+           option "-exclude => '*'" automatically enabled.
+
+       -may_ignore
+           Specifies which fields may be ignored by the domain, i.e. may not
+           exist in the inspected structure. Like for "-exclude", this option
+           can be specified as an arrayref of field names, as a compiled
+           regular expression, or as the string constant '"*"' or '"all"'.
+           Absent fields will not generate errors if their name matches this
+           specification.  This is especially useful when your application
+           needs to distinguish between an INSERT operation, where all fields
+           must be present, and an UPDATE operation, where only a subset of
+           fields are updated -- see the example in the "SYNOPSIS".
+
+           Another way is to use the "-optional" flag in domains associated
+           with fields; but there is a subtle difference : "-optional" accepts
+           both missing keys or keys containing "undef", while "-may_ignore"
+           only accepts missing keys. Consider :
+
+             Struct(
+               -fields     => {a => Int, b => Int(-optional => 1), c => Int, d => Str},
+               -may_ignore => [qw/c d/],
+             )
+
+           In this domain, "a" must always be present, "b" may be absent or
+           may be undef, "c" and "d" may be absent but if present cannot be
+           undef.
+
+       -keys
+           Specifies a List domain, for inspecting the list of keys in the
+           hash.
+
+       -values
+           Specifies a List domain, for inspecting the list of values in the
+           hash.
+
+       In case of errors, the inspect() method returns a hashref. Errors with
+       specific fields are reported under that field's name; errors with the
+       "-exclude", "-keys" or "-values" constraints are reported under the
+       constraint's name. So for example in
+
+         my $dom = Struct(-fields => [age => Int], -exclude => '*');
+         my $err = $dom->inspect({age => 'canonical', foo => 123, bar => 456});
+
+       $err will contain :
+
+         {
+           age      => "Int: invalid number",
+           -exclude => "Struct: contains forbidden field(s): 'bar', 'foo'",
+         }
+
+   Struict
+         my $domain = Struict(foo => Int, bar => String);
+
+       This is a pun for a "strict Struct" domain : it behaves exactly like
+       "/Struct", except that the option "-exclude => '*'" is automatically
+       enabled : therefore the domain is "strict" in the sense that it does
+       not accept any additional key in the input hashref.
+
+   One_of
+         my $domain = One_of($domain1, $domain2, ...);
+
+       Union of domains : successively checks the member domains, until one of
+       them succeeds.  Options are:
+
+       -options
+           List of domains to be checked. This is the default option, so the
+           keyword may be omitted.
+
+   All_of
+         my $domain = All_of($domain1, $domain2, ...);
+
+       Intersection of domains : checks all member domains, and requires that
+       all of them succeed. Options are:
+
+       -options
+           List of domains to be checked. This is the default option, so the
+           keyword may be omitted.
+
+BUILTIN SHORTCUTS
+       Below are the precise definition for the shortcut functions exported in
+       the ":shortcuts" group. Each of these functions sets some initial
+       options, but also accepts further options as arguments, so for example
+       it is possible to write something like "Obj(-does => 'Storable',
+       -optional => 1)", which is equivalent to "Whatever(-blessed => 1, -does
+       => 'Storable', -optional => 1)".
+
+   True
+       "Whatever(-true => 1)"
+
+   False
+       "Whatever(-true => 0)"
+
+   Defined
+       "Whatever(-defined => 1)"
+
+   Undef
+       "Whatever(-defined => 0)"
+
+   Blessed
+       "Whatever(-blessed => 1)"
+
+   Unblessed
+       "Whatever(-blessed => 0)"
+
+   Regexp
+       "Whatever(-does => 'Regexp')"
+
+   Obj
+       "Whatever(-blessed => 1)" (synonym to "Blessed")
+
+   Class
+       "Whatever(-blessed => 0, -isa => 'UNIVERSAL')"
+
+   Coderef
+       "Whatever(-does => 'CODE')"
+
+LAZY CONSTRUCTORS (CONTEXT DEPENDENCIES)
+   Principle
+       If an element of a structured domain ("List" or "Struct") depends on
+       another element, then we need to lazily construct that subdomain.
+       Consider for example a struct in which the value of field "date_end"
+       must be greater than "date_begin" : the subdomain for "date_end" can
+       only be constructed when the argument to "-min" is known, namely when
+       the domain inspects an actual data structure.
+
+       Lazy domain construction is achieved by supplying a subroutine
+       reference instead of a domain object. That subroutine will be called
+       with some context information, and should return the domain object.  So
+       our example becomes :
+
+         my $domain = Struct(
+              date_begin => Date,
+              date_end   => sub {my $context = shift;
+                                 Date(-min => $context->{flat}{date_begin})}
+            );
+
+   Structure of context
+       The supplied context is a hashref containing the following information:
+
+       root
+           the overall root of the inspected data
+
+       path
+           the sequence of keys or array indices that led to the current data
+           node. With that information, the subdomain is able to jump to other
+           ancestor or sibling data nodes within the tree (Data::Reach is your
+           friend for doing that).
+
+       flat
+           a flat hash containing an entry for any hash key met so far while
+           traversing the tree. In case of name clashes, most recent keys
+           (down in the tree) override previous keys.
+
+       list
+           a reference to the last list (arrayref) encountered while
+           traversing the tree.
+
+       To illustrate this, the following code :
+
+         my $domain = Struct(
+            foo => List(Whatever,
+                        Whatever,
+                        Struct(bar => sub {my $context = shift;
+                                           print Dumper($context);
+                                           String;})
+                       )
+            );
+         my $data = {foo => [undef, 99, {bar => "hello, world"}]};
+         $domain->inspect($data);
+
+       will print :
+
+         $VAR1 = {
+           'root' => {'foo' => [undef, 99, {'bar' => 'hello, world'}]},
+           'path' => ['foo', 2, 'bar'],
+           'list' => $VAR1->{'root'}{'foo'},
+           'flat' => {
+             'bar' => 'hello, world',
+             'foo' => $VAR1->{'root'}{'foo'}
+           }
+         };
+
+   Examples of lazy domains
+       Contextual sets
+
+       The domain below accepts hashrefs with a "country" and a "city", but
+       also checks that the city actually belongs to the given country :
+
+         %SOME_CITIES = {
+            Switzerland => [qw/Genève Lausanne Bern Zurich Bellinzona/],
+            France      => [qw/Paris Lyon Marseille Lille Strasbourg/],
+            Italy       => [qw/Milano Genova Livorno Roma Venezia/],
+         };
+         my $domain = Struct(
+            country => Enum(keys %SOME_CITIES),
+            city    => sub {
+               my $context = shift;
+               Enum(-values => $SOME_CITIES{$context->{flat}{country}});
+             });
+
+       Ordered lists
+
+       A domain for ordered lists of integers:
+
+         my $domain = List(-all => sub {
+             my $context = shift;
+             my $index = $context->{path}[-1];
+             return $index == 0 ? Int
+                                : Int(-min => $context->{list}[$index-1]);
+           });
+
+       The subdomain for the first item in the list has no specific
+       constraint; but the next subdomains have a minimal bound that comes
+       from the previous list item.
+
+       Recursive domain
+
+       A domain for expression trees, where leaves are numbers, and
+       intermediate nodes are binary operators on subtrees :
+
+         my $expr_domain;
+         $expr_domain = One_of(Num, Struct(operator => String(qr(^[-+*/]$)),
+                                           left     => sub {$expr_domain},
+                                           right    => sub {$expr_domain}));
+
+       Observe that recursive calls to the domain are encapsulated within "sub
+       {...}" so that they are treated as lazy domains.
+
+WRITING NEW DOMAIN CONSTRUCTORS
+       Implementing new domain constructors is fairly simple : create a
+       subclass of "Data::Domain" and implement a "new" method and an
+       "_inspect" method. See the source code of "Data::Domain::Num" or
+       "Data::Domain::String" for short examples.
+
+       However, before writing such a class, consider whether the existing
+       mechanisms are not enough for your needs. For example, many domains
+       could be expressed as a "String" constrained by a regular expression;
+       therefore it is just a matter of writing a subroutine that wraps a call
+       to the domain constructor, while supplying some of its arguments :
+
+         sub Phone   { String(-regex    => qr/^\+?[0-9() ]+$/,
+                              -messages => "Invalid phone number", @_) }
+         sub Email   { String(-regex    => qr/^[-.\w]+\@[\w.]+$/,
+                              -messages => "Invalid email", @_) }
+         sub Contact { Struct(-fields => [name   => String,
+                                          phone  => Phone,
+                                          mobile => Phone(-optional => 1),
+                                          emails => List(-all => Email)   ], @_) }
+
+       Observe that these examples always pass @_ to the domain call : this is
+       so that the client can still add its own arguments to the call, like
+
+         $domain = Phone(-name     => 'private phone',
+                         -optional => 1,
+                         -not_in   => [ 1234567, 9999999 ]);
+
+CONSTANT SUBDOMAINS
+       For convenience, elements of List() or Struct() may be plain scalar
+       constants, and are automatically translated into constant domains :
+
+         $domain = Struct(foo => 123,
+                          bar => List(Int, 'buz', Int));
+
+       This is exactly equivalent to
+
+         $domain = Struct(foo => Int(-min => 123, -max => 123),
+                          bar => List(Int, String(-min => 'buz', -max => 'buz'), Int));
+
+CUSTOMIZING ERROR MESSAGES
+       Messages returned by validation rules have default values, but can be
+       customized in several ways.
+
+   General structure of error messages
+       Each error message has an internal string identifier, like "TOO_SHORT",
+       "NOT_A_HASH", etc. The section "Message identifiers" below tells which
+       message identifiers may be generated by each domain constructor.
+
+       Message identifiers are then associated with user-friendly strings,
+       either within the domain itself, or via a global table.  Such strings
+       are actually sprintf format strings, with placeholders for printing
+       some specific details about the validation rule : for example the
+       "String" domain defines default messages such as
+
+             TOO_SHORT    => "less than %d characters",
+             SHOULD_MATCH => "should match '%s'",
+
+   The "-messages" option to domain constructors
+       Any domain constructor may receive a "-messages" option to locally
+       override the messages for that domain. The argument may be
+
+       •   a plain string : that string will be returned for any kind of
+           validation error within the domain
+
+       •   a hashref : keys of the hash should be message identifiers, and
+           values should be the associated error strings. Here is an example :
+
+             sub Phone {
+               String(-regex      => qr/^\+?[0-9() ]+$/,
+                      -min_length => 7,
+                      -messages   => {
+                        TOO_SHORT    => "phone number should have at least %d digits",
+                        SHOULD_MATCH => "invalid chars in phone number",
+                       }, @_);
+             }
+
+       •   a coderef : the referenced subroutine is called, and should return
+           the error string. The called subroutine receives as arguments:
+           "($domain_name, $message_id, @optional_domain_args)"
+
+   The "messages" class method
+       Default strings associated with message identifiers are stored in a
+       global table. The "Data::Domain" distribution contains builtin tables
+       for english (the default) and for french : these can be chosen through
+       the "messages" class method :
+
+         Data::Domain->messages('english');  # the default
+         Data::Domain->messages('français');
+
+       The same method can also receive  a custom table.
+
+         my $custom_table = {...};
+         Data::Domain->messages($custom_table);
+
+       This should be a two-level hashref : first-level entries in the hash
+       correspond to "Data::Domain" subclasses (i.e "Num => {...}", "String =>
+       {...}"), or to the constant "Generic"; for each of those, the second-
+       level entries should correspond to message identifiers as specified in
+       the doc for each subclass (for example "TOO_SHORT", "NOT_A_HASH",
+       etc.).  Values should be either strings suitable to be fed to sprintf,
+       or coderefs. Look at $builtin_msgs in the source code to see an
+       example.
+
+       Finally, it is also possible to write your own message generation
+       handler :
+
+         Data::Domain->messages(sub {my ($domain_name, $msg_id, @args) = @_;
+                                     return "you just got it wrong ($msg_id)"});
+
+       What is received in @args depends on which validation rule is involved;
+       it can be for example the minimal or maximal bounds, or the regular
+       expression being checked.
+
+       Clearly this class method has a global side-effect. In most cases this
+       is exactly what is expected. However it is possible to limit the impact
+       by localizing the $msgs class variable :
+
+         { local $Data::Domain::GLOBAL_MSGS;
+           Data::Domain->messages($custom_table);
+
+           check_my_data(...);
+         }
+         # end of block; Data::Domain is back to the original messages table
+
+   Backward compatibility for message coderefs
+       In the current version of this module, message coderefs are called as
+
+         $coderef->($domain_name, $msg_id, @args);
+
+       Versions prior to 1.13 used a different API where the $domain_name was
+       not available :
+
+         $coderef->($msg_id, @args);
+
+       So for clients that were using message coderefs in versions prior to
+       1.13, this is an incompatible change. Backward compatibility can be
+       restored by setting a global variable to a true value :
+
+         $Data::Domain::USE_OLD_MSG_API = 1;
+
+   The "-name" option to domain constructors
+       The name of the domain is prepended in front of error messages. The
+       default name is the subclass of "Data::Domain", so a typical error
+       message for a string would be
+
+         String: less than 7 characters
+
+       However, if a "-name" is supplied to the domain constructor, that name
+       will be printed instead;
+
+         my $dom = String(-min_length => 7, -name => 'Phone');
+         # now error would be: "Phone: less than 7 characters"
+
+   Message identifiers
+       This section lists all possible message identifiers generated by the
+       builtin constructors.
+
+       "Whatever"
+           "MATCH_DEFINED", "MATCH_TRUE", "MATCH_ISA", "MATCH_CAN",
+           "MATCH_DOES", "MATCH_BLESSED", "MATCH_SMART".
+
+       "Num"
+           "INVALID", "TOO_SMALL", "TOO_BIG", "EXCLUSION_SET".
+
+       "Date"
+           "INVALID", "TOO_SMALL", "TOO_BIG", "EXCLUSION_SET".
+
+       "Time"
+           "INVALID", "TOO_SMALL", "TOO_BIG".
+
+       "String"
+           "TOO_SHORT", "TOO_LONG", "TOO_SMALL", "TOO_BIG", "EXCLUSION_SET",
+           "SHOULD_MATCH", "SHOULD_NOT_MATCH".
+
+       "Enum"
+           "NOT_IN_LIST".
+
+       "List"
+           The domain will first check if the supplied array is of appropriate
+           shape; in case of of failure, it will return one of the following
+           scalar messages :  "NOT_A_LIST", "TOO_SHORT", "TOO_LONG".
+
+           Then it will check all items in the supplied array according to the
+           "-items" and "-all" specifications; in case of failure, an arrayref
+           of messages is returned, where message positions correspond to the
+           positions of offending data items.
+
+           Finally, the domain will check the "-any" constraint; in case of
+           failure, it returns an "ANY" scalar message.  Since that message
+           contains the name of the missing domain, it is a good idea to use
+           the "-name" option so that the message is easily comprehensible, as
+           for example in
+
+             List(-any => String(-name => "uppercase word",
+                                 -regex => qr/^[A-Z]$/))
+
+           Here the error message would be : should have at least one
+           uppercase word.
+
+       "Struct"
+           The domain will first check if the supplied hash is of appropriate
+           shape; in case of of failure, it will return one of the following
+           scalar messages :  "NOT_A_HASH", "FORBIDDEN_FIELD".
+
+           Then it will check all entries in the supplied hash according to
+           the "-fields" specification, and return a hashref of messages,
+           where keys correspond to the keys of offending data items.
+
+       "One_of"
+           If all member domains failed to accept the data, an arrayref or
+           error messages is returned, where the order of messages corresponds
+           to the order of the checked domains.
+
+       "All_of"
+           If any member domain failed to accept the data, an arrayref or
+           error messages from all failing subdomains is returned, where the
+           order of messages corresponds to the order of the checked domains.
+
+INTERNALS
+   Variables
+       MAX_DEEP
+
+       In order to avoid infinite loops, the "inspect" method will raise an
+       exception if $MAX_DEEP recursive calls were exceeded.  The default
+       limit is 100, but it can be changed like this :
+
+         local $Data::Domain::MAX_DEEP = 999;
+
+   Methods
+       node_from_path (DEPRECATED)
+
+         my $node = node_from_path($root, @path);
+
+       Convenience function to find a given node in a data tree, starting from
+       the root and following a path (a sequence of hash keys or array
+       indices). Returns "undef" if no such path exists in the tree.  Mainly
+       useful for contextual constraints in lazy constructors.  Now superseded
+       by Data::Reach.
+
+       msg
+
+       Internal utility method for generating an error message.
+
+       subclass
+
+       Method that returns the short name of the subclass of "Data::Domain"
+       (i.e.  returns 'Int' for "Data::Domain::Int").
+
+       name
+
+       Returns the "-name" domain parameter, or, if absent, the subclass.
+
+       _expand_range
+
+       Internal utility method for converting a "range" parameter into "min"
+       and "max" parameters.
+
+       _build_subdomain
+
+       Internal utility method for dynamically converting lazy domains
+       (coderefs) into domains.
+
+SEE ALSO
+       Doc and tutorials on complex Perl data structures: perlref, perldsc,
+       perllol.
+
+       Other CPAN modules doing data validation : Data::FormValidator,
+       CGI::FormBuilder, HTML::Widget::Constraint, Jifty::DBI,
+       Data::Constraint, Declare::Constraints::Simple, Moose::Manual::Types,
+       Smart::Match, Test::Deep, Params::Validate, Validation::Class.
+
+       Among those, "Declare::Constraints::Simple" is the closest to
+       "Data::Domain", because it is also designed to deal with substructures;
+       yet it has a different approach to combinations of constraints and
+       scope dependencies.
+
+       Some inspiration for "Data::Domain" came from the wonderful
+       Parse::RecDescent module, especially the idea of passing a context
+       where individual rules can grab information about neighbour nodes.
+       Ideas for some features were borrowed from Test::Deep and from
+       Moose::Manual::Types.
+
+ACKNOWLEDGEMENTS
+       Thanks to
+
+       •   David Cantrell and Gabor Szabo for their help on issues related to
+           smartmatch deprecation.
+
+       •   David Schmidt (davewood) for suggesting extensions to the Struct()
+           domain.
+
+AUTHOR
+       Laurent Dami, <dami at cpan.org>
+
+COPYRIGHT AND LICENSE
+       Copyright 2006-2024 by Laurent Dami.
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2025-08-09                   Data::Domain(3)

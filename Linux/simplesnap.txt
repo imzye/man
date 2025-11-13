@@ -1,0 +1,390 @@
+SIMPLESNAP(8)                                                                                                                                                                                 SIMPLESNAP(8)
+
+NAME
+       simplesnap - Simple and powerful way to send ZFS snapshots across a    network
+
+SYNOPSIS
+       simplesnap [ --sshcmd COMMAND ] [ --wrapcmd COMMAND ] [ --receivecmd COMMAND ] [ --local ] [ --noreap ] [ --backupdataset DATASET
+        [ --datasetdest DEST ] ] --store STORE --setname NAME --host HOST
+
+       simplesnap --check TIMEFRAME --store STORE --setname NAME [ --host HOST ]
+
+       simplesnap --reaponly --store STORE --setname NAME [ --host HOST ]
+
+DESCRIPTION
+       simplesnap  is  a simple way to send ZFS snapshots across a network.  Although it can serve many purposes, its primary goal is to manage backups from one ZFS filesystem to a backup filesystem also
+       running ZFS, using incremental backups to minimize network traffic and disk usage.
+
+       simplesnap is FLEXIBLE; it is designed to perfectly compliment snapshotting tools, permitting rotating backups with arbitrary retention periods.  It lets multiple machines back up a single target,
+       lets one machine back up multiple targets, and keeps it all straight.
+
+       simplesnap is EASY; there is no configuration file needed.  One ZFS property is available to exclude datasets/filesystems.  ZFS datasets are automatically discovered on machines being backed up.
+
+       simplesnap is designed to maximize SAFETY; it is robust in the face of interrupted transfers, and needs little help to keep running.
+
+       simplesnap is designed to maximize SECURITY; unlike many similar tools, it does not require full root access to the machines being backed up.  It runs only a small wrapper as root, and the wrapper
+       has only three commands it implements.
+
+   FEATURE LIST
+       Besides the above, simplesnap:
+
+       • Does one thing and does it well.  It is designed to be used with a snapshot auto-rotator on both ends (such as zfSnap).  simplesnap will transfer snapshots made by other tools, but will not  de‐
+         stroy them on either end.
+
+       • Requires  ssh public key authorization to the host being backed up, but does not require permission to run arbitrary commands.  It has a wrapper to run on the backup host, written in bash, which
+         accepts only three operations and performs them simply.  It is suitable for a locked-down authorized_keys file.
+
+       • Creates minimal snapshots for its own internal purposes, generally leaving no more than 1 or 2 per dataset, and reaps them automatically without touching others.
+
+       • Optionally supports ZFS bookmarks, preventing backup-related snapshots from consuming space on the system being backed up.
+
+       • Is a small program, easily audited.  In fact, most of the code is devoted to sanity-checking, security, and error checking.
+
+       • Automatically discovers what datasets to back up from the remote.  Uses a user-defined zfs property to exclude filesystems that should not be backed up.
+
+       • Logs copiously to syslog on all hosts involved in backups.
+
+       • Intelligently supports a single machine being backed up by multiple backup hosts, or onto multiple sets of backup media (when, for instance, backup media is cycled into offsite storage)
+
+   METHOD OF OPERATION
+       simplesnap's operation is very simple.
+
+       The simplesnap program runs on the machine that stores the backups -- we'll call it the backuphost.  There is a restricted remote command wrapper called simplesnapwrap that runs on the machine be‐
+       ing backed up -- we'll call it the activehost.  simplesnapwrap is never invoked directly by the end-user; it is always called remotely by simplesnap.
+
+       With simplesnap, the backuphost always connects to the activehost -- never the other way round.
+
+       simplesnap runs in the backuphost, and first connects to the simplesnapwrap on the activehost and asks it for a list of the ZFS datasets ("listfs" operation).  simplesnapwrap responds with a  list
+       of all ZFS datasets that were not flagged for exclusion.
+
+       Next,  simplesnap  connects  back  to  simplesnapwrap once for each dataset to be backed up -- the "sendback" operation.  simplesnap passes along to it only two things: the setname and the dataset
+       (filesystem) name.
+
+       simplesnapwrap looks to see if there is an existing simplesnap snapshot corresponding to that SETNAME.  If not, it creates one and sends it as a full, non-incremental backup.  That  completes  the
+       job for that dataset.
+
+       If  there  is  an  existing snapshot for that SETNAME, simplesnapwrap creates a new one, constructing the snapshot name containing a timestamp and the SETNAME, then sends an incremental, using the
+       oldest snapshot from that setname as the basis for zfs send -I.
+
+       After the backuphost has observed zfs receive exiting without error, it contacts simplesnapwrap once more and requests the "reap" operation.  This cleans up the old snapshots for  the  given  SET‐
+       NAME, leaving only the most recent.  This is a separate operation in simplesnapwrap ensuring that even if the transmission is interrupted, still it will be OK in the end.
+
+       The idea is that some system like zfSnap will be used on both ends to make periodic snapshots and clean them up.  One can use careful prefix names with zfSnap to use different prefixes on each ac‐
+       tivehost, and then implement custom cleanup rules with -F on the holderhost.
+
+QUICK START
+       This section will describe how a first-time simplesnap user can get up and running quickly.  It assumes you already have simplesnap installed and working on your system.  If not, please follow the
+       instructions in the INSTALL.txt file in the source distribution.
+
+       As above, I will refer to the machine storing the backups as the "backuphost" and the machine being backed up as the "activehost".
+
+       First, on the backuphost, as root, generate an ssh keypair that will be used exclusively for simplesnap.
+
+       ssh-keygen -t rsa -f ~/.ssh/id_rsa_simplesnap
+
+       When prompted for a passphrase, leave it empty.
+
+       Now,  on  the activehost, edit or create a file called ~/.ssh/authorized_keys.  Initialize it with the content of ~/.ssh/id_rsa_simplesnap.pub from the backuphost.  (Or, add to the end, if you al‐
+       ready have lines in the file.)  Then, at the beginning of that one very long line, add text like this:
+
+       command="/usr/sbin/simplesnapwrap",from="1.2.3.4",
+       no-port-forwarding,no-X11-forwarding,no-pty
+
+       (I broke that line into two for readability, but this must all be on a single line in your file.)
+
+       The 1.2.3.4 is the IP address that connections from the backuphost will appear to come from.  It may be omitted if the IP is not static, but it affords a little extra security.  The line will wind
+       up looking like:
+
+       command="/usr/sbin/simplesnapwrap",from="1.2.3.4",
+       no-port-forwarding,no-X11-forwarding,no-pty ssh-rsa AAAA....
+
+       (Again, this should all be on one huge line.)
+
+       If there are any ZFS datasets you do not want to be backed up, set org.complete.simplesnap:exclude property on the activehost to on.  For instance:
+
+       zfs set org.complete.simplesnap:exclude=on tank/junkdata
+
+       Now, back on the backuphost, you should be able to run:
+
+       ssh -i ~/.ssh/id_rsa_simplesnap activehost
+
+       say yes when asked if you want to add the key to the known_hosts file.  At this point, you should see output containing:
+
+       "simplesnapwrap: This program is to be run from ssh."
+
+       If you see that, then simplesnapwrap was properly invoked remotely.
+
+       Now, create a ZFS filesystem to hold your backups.  For instance:
+
+       zfs create tank/simplesnap
+
+       I often recommend compression for simplesnap datasets, so:
+
+       zfs set compression=lz4 tank/simplesnap
+
+       (If that gives an error, use compression=on instead.)
+
+       I also recommend disabling the creation of /dev/zvol entries for backed-up filesystems, so:
+
+       zfs set volmode=none tank/simplesnap
+
+       Now, you can run the backup:
+
+       simplesnap --host activehost --setname mainset --store tank/simplesnap --sshcmd "ssh -i /root/.ssh/id_rsa_simplesnap"
+
+       You can monitor progress in /var/log/syslog.  If all goes well, you will see filesystems start to be populated under tank/simplesnap/host.
+
+       Simple!
+
+       Now, go test that you have the data you expected to: look at your STORE filesystems and make sure they have everything expected.  Test repeatedly over time that you can restore as you expect  from
+       your backups.
+
+ADVANCED: SETNAME USAGE
+       Most  people will always use the same SETNAME.  The SETNAME is used to track and name the snapshots on the remote end.  simplesnap tries to always leave one snapshot on the remote, to serve as the
+       base for a future incremental.
+
+       In some situations, you may have multiple bases for incrementals.  The two primary examples are two different backup servers backing up the same machine, or having two sets of backup media and ro‐
+       tating them to offsite storage.  In these situations, you will have to keep different snapshots on the activehost for the different backups, since they will be current to different points in time.
+
+ADVANCED: ZFS BOOKMARKS
+       simplesnap implements a fairly typical ZFS incremental backup strategy.  Newer versions of ZFS support bookmarks.  Bookmarks consume no space on the server, while snapshots keep their space held.
+
+       In practice, this is generally not a problem for backups, since snapshots are frequently transferred and old ones removed.  In some infrequent backup situations, it may be a larger issue, and  for
+       those situations, simplesnap supports bookmarks.
+
+       Please note, however, that bookmark support in simplesnap is not well-used or well-tested; please verify proper operation on non-production data before attempting to use it for anything important.
+
+       One  caveat  with bookmarks is that zfs send -I is not supported with them; instead, simplesnap has to fall back to zfs send -i.  This causes the intermediate snapshots to not be transferred.  You
+       can work around this by snapshotting on the receiving end.
+
+       So, if after all that, you still want to try it, set the org.complete.simplesnap:createbookmarks property to on for any dataset for which you'd like to use bookmarks.
+
+OPTIONS
+       All simplesnap options begin with two dashes (`--').  Most take a parameter, which is to be separated from the option by a space.  The equals sign is not a valid separator for simplesnap.
+
+       The normal simplesnap mode is backing up.  An alternative check mode is available, which requires fewer parameters.  This mode is described below.
+
+       --backupdataset DATASET
+              Normally, simplesnap automatically obtains a list of datasets to back up from the remote, and backs up all of them except those that define the org.complete.simplesnap:exclude=on  property.
+              With  this option, simplesnap does not bother to ask the remote for a list of datasets, and instead backs up only the one precise DATASET given.  For now, ignored when --check is given, but
+              that may change in the future.  It would be best to not specify this option with --check for now.
+
+       --check TIMEFRAME
+              Do not back up, but check existing backups.  If any datasets' newest backup is older than TIMEFRAME, print an error and exit with a nonzero code.  Scans all hosts unless a specific host  is
+              given with --host.  The parameter is in the format given to GNU date(1); for instance, --check "30 days ago".  Remember to enclose it in quotes if it contains spaces.
+
+       --reaponly
+              Do not back up, but perform the reap of old simplesnap-generated snapshots on the local end.  Only useful if --noreap is in use for backups.
+
+       --datasetdest DEST
+              Valid only with --backupdataset, gives a specific destination for the backup, whith may be outside the STORE.  The STORE must still exist, as it is used for storing lockfiles and such.
+
+       --host HOST
+              Gives the name of the host to back up.  This is both passed to ssh and used to name the backup sets.
+
+              In a few situations, one may not wish to use the same name for both.  It is recommend to use the Host and HostName options in ~/.ssh/config to configure aliases in this situation.
+
+       --local
+              Specifies  that the host being backed up is local to the machine.  Do not use ssh to contact it, and invoke the wrapper directly.  You would not need to give --sshcmd in this case.  For in‐
+              stance: simplesnap --local --store /bakfs/simplesnap --host server1 --setname bak1
+
+       --noreap
+              Skips the usual reaping of old simplesnap-generated snapshots on the destination after a successful receive.  Useful when the destination is not actually ZFS, or in conjunction with a later
+              --reaponly.
+
+              This has no impact on the reaping of old simplesnap-generated snapshots on the host being backed up; that reaping will continue as usual.
+
+       --sshcmd COMMAND
+              Gives the command to use to connect to the remote host.  Defaults to "ssh".  It may be used to select an alternative configuration file or keypair.  Remember to quote it per your  shell  if
+              it contains spaces.  For example: --sshcmd "ssh -i /root/.id_rsa_simplesnap".  This command is ignored when --local or --check is given.
+
+       --receivecmd COMMAND
+              Gives the command to use to receive a ZFS dataset; defaults to "/sbin/zfs receive -u -o readonly=on mountpoint".  It is strongly recommended to never access the backed up datasets directly,
+              but rather to use clones.
+
+              This  command  does  not  have  to actually be zfs; for instance, in certain situations, it may be valuable to queue the data or save it off in a file for use on a non-ZFS target.  In those
+              cases, --noreap should also be given.
+
+       --setname SETNAME
+              Gives the backup set name.  Can just be a made-up word if multiple sets are not needed; for instance, the hostname of the backup server.  This is used as part of the snapshot name.
+
+       --store STORE
+              Gives the ZFS dataset name where the data will be stored.  Should not begin with a slash.  The mountpoint will be obtained from the ZFS subsystem.  Always required.
+
+       --wrapcmd COMMAND
+              Gives the path to simplesnapwrap (which must be on the remote machine unless --local is given).  Not usually relevant, since the command parameter in  ~root/.ssh/authorized_keys  gives  the
+              path.  Default: "simplesnapwrap"
+
+BACKUP INTERROGATION
+       Since simplesnap stores backups in standard ZFS datasets, you can use standard ZFS tools to obtain information about backups.  Here are some examples.
+
+   SPACE USED PER HOST
+       Try something like this:
+
+       # zfs list -r -d 1 tank/store
+       NAME               USED  AVAIL  REFER  MOUNTPOINT
+       tank/store         540G   867G    34K  /tank/store
+       tank/store/host1   473G   867G    32K  /tank/store/host1
+       tank/store/host2  54.9G   867G    32K  /tank/store/host2
+       tank/store/host3  12.2G   867G    31K  /tank/store/host3
+
+       Here,  you can see that the total size of the simplesnap data is 540G - the USED value from the top level.  In this example, host1 was using the most space -- 473G -- and host3 the least -- 12.2G.
+       There is 867G available on this zpool for backups.
+
+       The -r parameter to zfs list requests a recursive report, but the -d 1 parameter sets a maximum depth of 1 -- so you can see just the top-level hosts without all their component datasets.
+
+   SPACE USED BY A HOST
+       Let's say that you had the above example, and want to drill down into more detail.  Perhaps, for instance, we continue the above example and drill down into host2:
+
+       # zfs list -r tank/store/host2
+       NAME                                 USED  AVAIL  REFER  MOUNTPOINT
+       tank/store/host2                    54.9G   867G    32K  /tank/...
+       tank/store/host2/tank               49.8G   867G    32K  /tank/...
+       tank/store/host2/tank/home          7.39G   867G  6.93G  /tank/...
+       tank/store/host2/tank/vm            42.4G   867G    30K  /tank/...
+       tank/store/host2/tank/vm/vm1        32.0G   867G  29.7G  -
+       tank/store/host2/tank/vm/vm2        10.4G   867G  10.4G  -
+       tank/store/host2/rpool              5.12G   867G    32K  /tank/...
+       tank/store/host2/rpool/misc          521M   867G   521M  /tank/...
+       tank/store/host2/rpool/host2-1      4.61G   867G    33K  /tank/...
+       tank/store/host2/rpool/host2-1/ROOT  317M   867G   312M  /tank/...
+       tank/store/host2/rpool/host2-1/usr  3.76G   867G  3.76G  /tank/...
+       tank/store/host2/rpool/host2-1/var   554M   867G   401M  /tank/...
+
+       I've trimmed the "mountpoint" column here so it doesn't get too wide for the screen.
+
+       You see here the same 54.9G used as in the previous example, but now you can trace it down.  There were two zpools on host2: tank and rpool.  Most of the backup space -- 49.8G of the 54.9G  --  is
+       used  by  tank,  and only 5.12G by rpool.  And in tank, 42.4G is used by vm.  Tracing it down, of that 42.4G used by vm, 32G is in vm1 and 10.4G in vm2.  Notice how the values at each level of the
+       tree include their descendents.
+
+       So in this example, vm1 and vm2 are zvols corresponding to virtual machines, and clearly take up a lot of space.  Notice how vm1 says it uses 32.0G but in the  refer  column,  it  only  refers  to
+       29.7G?  That means that the latest backup for vm2 used 29.7G, but when you add in the snapshots for that dataset, the total space consumed is 32.0G.
+
+       Let's look at an alternative view that will make the size consumed by snapshots more clear:
+
+       # zfs list -o space -r tank/store/host2
+       NAME                         AVAIL   USED  USEDSNAP  USEDDS  USEDCHILD
+       .../host2                     867G  54.9G         0     32K      54.9G
+       .../host2/tank                867G  49.8G         0     32K      49.8G
+       .../host2/tank/home           867G  7.39G      474M   6.93G          0
+       .../host2/tank/vm             867G  42.4G       50K     30K      42.4G
+       .../host2/tank/vm/vm1         867G  32.0G     2.35G   29.7G          0
+       .../host2/tank/vm/vm1         867G  10.4G       49K   10.4G          0
+       .../host2/rpool               867G  5.12G         0     32K      5.12G
+       .../host2/rpool/misc          867G   521M       51K    521M          0
+       .../host2/rpool/host2-1       867G  4.61G       51K     33K      4.61G
+       .../host2/rpool/host2-1/ROOT  867G   317M     5.44M    312M          0
+       .../host2/rpool/host2-1/usr   867G  3.76G      208K   3.76G          0
+       .../host2/rpool/host2-1/var   867G   554M      153M    401M          0
+
+       (Again, I've trimmed some irrelevant columns from this output.)
+
+       The  AVAIL  and USED columns are the same as before, but now you have a breakdown of what makes up the USED column.  USEDSNAP is the space used by the snapshots of that particular dataset.  USEDDS
+       is the space used by that dataset directly -- the same value as was in REFER before.  And USEDCHILD is the space used by descendents of that dataset.
+
+       The USEDSNAP column is the easiest way to see the impact your retention policies have on your backup space consumption.
+
+   VIEWING SNAPSHOTS OF A DATASET
+       Let's take one example from before -- the 153M of snapshots in host2-1/var, and see what we can find.
+
+       # zfs list -t snap -r tank/store/host2/rpool/host2-1/var
+       NAME                                              USED  AVAIL  REFER
+       ...
+       .../var@host2-hourly-2014-02-11_05.17.02--2d       76K      -   402M
+       .../var@host2-hourly-2014-02-11_06.17.01--2d       77K      -   402M
+       .../var@host2-hourly-2014-02-11_07.17.01--2d     18.8M      -   402M
+       .../var@host2-daily-2014-02-11_07.17.25--1w        79K      -   402M
+       .../var@host2-hourly-2014-02-11_08.17.01--2d      156K      -   402M
+       .../var@host2-monthly-2014-02-11_09.01.36--1m     114K      -   402M
+       ...
+
+       In this output, the REFER column is the amount of data pointed to by that snapshot -- that is, the size of /var at the moment the snapshot is made.  And the USED column is the amount of space that
+       would be freed if just that snapshot were deleted.
+
+       Note this important point: it is normal for the sum of the values in the USED column to be less than the space consumed by the snapshots of the datasets as reported by USEDSNAP in the previous ex‐
+       ample.  The reason is that the USED column is the data unique to that one snapshot.  If, for instance, 100MB of data existed on the system being backed up for three hours yesterday, each  snapshot
+       could  very  well show less than 100KB used, because that 100MB isn't unique to a particular snapshot.  Until, that is, two of the three snapshots referncing the 100MB data are destroyed; then the
+       USED value of the last one referencing it will suddenly jump to 100MB higher because now it references unique data.
+
+       One other point -- an indication that the last backup was successfully transmitted is the presence of a __simplesnap_...__ snapshot at the end of the list.  Do not delete it.
+
+   FINDING WHAT CHANGED OVER TIME
+       The zfs diff command can let you see what changed over time -- either across a single snapshot, or across many.  Let's take a look.
+
+       # zfs diff .../var@host2-hourly-2014-02-11_05.17.02--2d \
+         .../var@host2-hourly-2014-02-11_06.17.01--2d \
+         | sort -k2 | less
+       M    /tank/store/host2/rpool/host2-1/var/log/Xorg.0.log
+       M    /tank/store/host2/rpool/host2-1/var/log/auth.log
+       M    /tank/store/host2/rpool/host2-1/var/log/daemon.log
+       ...
+       M    /tank/store/host2/rpool/host2-1/var/spool/anacron/cron.daily
+       M    /tank/store/host2/rpool/host2-1/var/spool/anacron/cron.monthly
+       M    /tank/store/host2/rpool/host2-1/var/spool/anacron/cron.weekly
+       M    /tank/store/host2/rpool/host2-1/var/tmp
+
+       Here you can see why there was just a few KB of changes in that snapshot: mostly just a little bit of logging was happening on the system.  Now let's inspect the larger snapshot:
+
+       # zfs diff .../var@host2-hourly-2014-02-11_07.17.01--2d \
+          .../var@host2-daily-2014-02-11_07.17.25--1w \
+          | sort -k2 | less
+       M    /tank/store/host2/rpool/host2-1/var/backups
+       +    /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.0
+       -    /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.0
+       +    /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.1.gz
+       R    /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.1.gz -> /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.2.gz
+       R    /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.2.gz -> /tank/store/host2/rpool/host2-1/var/backups/dpkg.status.3.gz
+       ...
+       M    /tank/store/host2/rpool/host2-1/var/cache/apt
+       R    /tank/store/host2/rpool/host2-1/var/cache/apt/pkgcache.bin.KdsMLu -> /tank/store/host2/rpool/host2-1/var/cache/apt/pkgcache.bin
+
+       Here you can see some file rotation going on, and a temporary file being renamed to permanent.  Normal daily activity on a system, but now you know what was taking up space.
+
+WARNINGS, CAUTIONS, AND GOOD PRACTICES
+   IMPORTANCE OF TESTING
+       Any backup scheme should be tested carefully before being relied upon to serve its intended purpose.  This item is not simplesnap-specific, but pertains to every backup solution: test that you are
+       backing up the data you expect to before you need it.
+
+   USE OF ZFS RECEIVE AND SECURITY IMPLICATIONS
+       In order to account for various situations that could lead to divergence of filesystems, including the simple act of mounting them, simplesnap uses zfs receive -u -o readonly=on.
+
+       You are strongly encouraged to import your backuphost zpool with -R, or at least -N, to prevent a malicious mountpoint property on the sending side from causing unexpected  effects  on  the  back‐
+       uphost.  Further, accessing the backed-up data should always be done via clone.
+
+   EXTRANEOUS SNAPSHOT BUILDUP
+       Since  simplesnap  sends  all  snapshots,  it  is possible that locally-created snapshots made outside of your rotation scheme will also be sent to your backuphost.  These may not be automatically
+       reaped there, and may stick around.  An example at the end of the cron.daily.simplesnap.backuphost file included with simplesnap is one way to check for these.  They could automatically be  reaped
+       with zfs destroy as well, but this must be carefully tuned to local requirements, so an example of doing that is intentionally not supplied with the distribution.
+
+   INTERNAL SIMPLESNAP SNAPSHOTS
+       simplesnap creates snapshots beginning with __simplesnap_ followed by your SETNAME.  Do not create, remove, or alter these snapshots in any way, either on the activehost or the backuphost.   Doing
+       so may lead to unpredictable side-effects.
+
+BUGS
+       Ordinarily, an interrupted transfer is no problem for simplesnap.  However, the very first transfer of a dataset poses a bit of a problem, since the simplesnap wrapper can't detect failure in this
+       one special case.  If your first transfer gets interrupted, simply zfs destroy the __simplesnap_...__ snapshot on the activehost and rerun.  NEVER DESTROY __simplesnap SNAPSHOTS IN ANY OTHER SITU‐
+       ATION!
+
+       If,  by  way  of  the  org.complete.simplesnap:exclude property or the --backupdataset or --datasetdest parameters, you do not request a parent dataset to be backed up, but do request a descendent
+       dataset to be backed up, you may get an error on the first backup because the dataset tree leading to the destination location for that dataset has not yet been created.  simplesnap performs  only
+       the narrow actions you request.  Running an appropriate zfs create command will rectify the situation.
+
+SEE ALSO
+       zfSnap (1), zfs (8).
+
+       The simplesnap homepage:  <URL:https://github.com/jgoerzen/simplesnap>
+
+       The examples included with the simplesnap distribution, or on its homepage.
+
+       The zfSnap package compliments simplesnap perfectly.  Find it at
+        <URL:https://github.com/graudeejs/zfSnap>.
+
+AUTHOR
+       This  software and manual page was written by John Goerzen <jgoerzen@complete.org>.  Permission is granted to copy, distribute and/or modify this document under the terms of the GNU General Public
+       License, Version 3 any later version published by the Free Software Foundation.  The complete text of the GNU General Public License is included in the file COPYING in the source distribution.
+
+       THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY APPLICABLE LAW.  EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES PROVIDE  THE  PROGRAM  "AS  IS"
+       WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.  THE ENTIRE RISK AS TO THE
+       QUALITY AND PERFORMANCE OF THE PROGRAM IS WITH YOU.  SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
+
+                                                                                              13 January 2021                                                                                 SIMPLESNAP(8)

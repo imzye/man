@@ -1,0 +1,145 @@
+POEx::Role::Streaming(3)                   User Contributed Perl Documentation
+
+
+NAME
+       POEx::Role::Streaming - Provides behavior for streaming from one
+       filehandle to another
+
+VERSION
+       version 1.102610
+
+SYNOPSIS
+           class MyStreamer with POEx::Role::Streaming {
+               ...
+           }
+
+           my $streamer = MyStreamer->new
+           (
+               input_handle => $some_handle,
+               output_handle => $some_other_handle.
+           );
+
+           POE::Kernel->run();
+
+DESCRIPTION
+       POEx::Role::Streaming provides a common idiom for streaming data from
+       one filehandle to another. It accomplishes this by making good use of
+       sysread and POE::Wheel::ReadWrite. This Role errs on the side of doing
+       as many blocking reads of the "input_handle" as possible up front
+       (until the high water mark is hit on the Wheel). If this default isn't
+       suitable for the consumer, simply override
+       "get_data_from_input_handle". After Streamer has exhausted the source,
+       and flushed the last of the output, it will clean up after itself by
+       closing the wheel, the handles, and sending all of them out of scope.
+       If an exception happens, it will clean up after itself, and let the DIE
+       signal propagate.
+
+PUBLIC_ATTRIBUTES
+   input_handle
+           is: ro, isa: FileHandle, required: 1
+
+       This is the handle the consumer wants to read
+
+   output_handle
+           is: ro, isa: FileHandle, required: 1
+
+       This is the handle to which the consumer wants to write
+
+   maximum_buffer_threshold
+           is: ro, isa: Int, default: 524288
+
+       This is used as the HighMark on the Wheel. Provide a smaller value if
+       the consumer needs to do smaller slurps from the "input_handle"
+
+   minimum_buffer_threshold
+           is: ro, isa: Int, default: 32768
+
+       This is used as the LowMark on the Wheel. Provide a larger value if the
+       consumer needs to stave off jitter.
+
+PROTECTED_ATTRIBUTES
+   filter
+           is: ro, isa: Filter, lazy_build: 1
+
+       This is the default filter used in the output. It defaults to
+       POE::Filter::Stream. Override _build_filter to provide a different
+       Filter if needed
+
+   wheel
+           is: ro, isa: Wheel, lazy_build: 1, handles: qw/ put shutdown_output flush /
+
+       wheel stores the constructed wheel for the "output_handle". A few
+       handles are provided as sugar. _build_wheel gathers up "output_handle",
+       a clone of "filter", "maximum_buffer_threshold" and
+       "minimum_buffer_threshold" and constructs a POE::Wheel::ReadWrite.
+       Override this method if more customization is required.
+
+PRIVATE_ATTRIBUTES
+   reading_complete
+           is: rw, isa: Bool, default: 0
+
+       reading_complete is an indicator set during
+       "get_data_from_input_handle" if EOF is reached. This helps
+       "handle_output_flushed" figure out if "read_more_input" should be
+       executed or if it is time to tear everthing down
+
+PROTECTED_METHODS
+   after _start
+           is Event
+
+       _start is advised to spin up the wheel, fill its buffer with initial
+       data, and setup the signal handler for 'DIE' signals (exceptions)
+
+   read_more_input
+           is Event
+
+       read_more_input fills the "wheel"'s buffer until the HighMark is hit.
+       It does this by looping over "get_data_from_input_handle" until it
+       returns undef
+
+   handle_output_flushed
+           is Event
+
+       This event is called when the "wheel"'s buffer is empty. If
+       "reading_complete" is set, clean up happens via "done_writing".
+       Otherwise more data is slurped via "read_more_input"
+
+   get_data_from_input_handle
+       get_data_from_input_handle is the actual implementation for reading
+       from "input_handle". By default, it uses sysread to return a 4k chunk.
+       If EOF is reached, "reading_complete" is set and "done_reading" is
+       executed. If
+
+   done_writing
+       done_writing is called when the last of the output is flushed and there
+       is nothing left to read. It clears the "wheel", closes the
+       "output_handle", and sends them out of scope
+
+   done_reading
+       done_reading is called when EOF is reached. It closes the
+       "input_handle" and sends it out of scope.
+
+   handle_output_error
+           (Str $action, Int $code, Str $message, WheelID $id) is Event
+
+       handle_output_error is an event the "wheel" will call when there is
+       some kind of problem writing. By default it simply dies with the passed
+       information
+
+   die_signal
+           (Str $signal, HashRef $ex) is Event
+
+       die_signal is our exception handler to which POE delivers DIE signals.
+       By default, it calls "done_reading" and "done_writing". Please note
+       that the signal is not handled and will be propogated.
+
+AUTHOR
+       Nicholas Perez <nperez@cpan.org>
+
+COPYRIGHT AND LICENSE
+       This software is copyright (c) 2010 by Infinity Interactive.
+
+       This is free software; you can redistribute it and/or modify it under
+       the same terms as the Perl 5 programming language system itself.
+
+perl v5.40.2                      2010-09-18          POEx::Role::Streaming(3)

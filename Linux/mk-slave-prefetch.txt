@@ -1,0 +1,467 @@
+MK-SLAVE-PREFETCH(1)                                                                  User Contributed Perl Documentation                                                                  MK-SLAVE-PREFETCH(1)
+
+NAME
+       mk-slave-prefetch - Pipeline relay logs on a MySQL slave to pre-warm caches.
+
+SYNOPSIS
+       Usage: mk-slave-prefetch [OPTION...] [FILE]
+
+       mk-slave-prefetch pipelines relay logs to pre-warm the slave's caches.
+
+       Example:
+
+         mk-slave-prefetch
+
+         mk-slave-prefetch --statistics > /path/to/saved/statistics
+
+         mk-slave-prefetch /path/to/saved/statistics
+
+RISKS
+       The following section is included to inform users about the potential risks, whether known or unknown, of using this tool.  The two main categories of risks are those created by the nature of the tool
+       (e.g. read-only tools vs. read-write tools) and those created by bugs.
+
+       mk-slave-prefetch is read-only by default, and is generally low-risk.  It does execute SQL statements, but these should be SELECT only.  Despite this, it might be a good idea to make it connect to
+       MySQL with a user account that has minimal privileges.  Here is an example of how to grant the necessary privileges:
+
+          GRANT SELECT, REPLICATION CLIENT, REPLICATION SLAVE ON *.*
+             TO 'prefetch'@'%' IDENTIFIED BY 'sp33dmeup!';
+
+       At the time of this release, we know of no bugs that could cause serious harm to users.
+
+       The authoritative source for updated information is always the online issue tracking system.  Issues that affect this tool will be marked as such.  You can see a list of such issues at the following
+       URL: <http://www.maatkit.org/bugs/mk-slave-prefetch>.
+
+       See also "BUGS" for more information on filing bugs and getting help.
+
+DESCRIPTION
+       mk-slave-prefetch reads the slave's relay log slightly ahead of where the slave's SQL thread is reading, converts statements into "SELECT", and executes them.  In theory, this should help alleviate
+       the effects of the slave's single-threaded SQL execution.  It will help take advantage of multiple CPUs and disks by pre-reading the data from disk, so the data is already in the cache when the slave
+       SQL thread executes the un-modified version of the statement.
+
+       "mk-slave-prefetch" learns how long it takes statements to execute, and doesn't try to execute those that take a very long time.  You can ask it to print what it has learned after it executes.  You
+       can also specify a filename on the command line.  The file should contain the statistics printed by a previous run.  These will be used to pre-populate the statistics so it doesn't have to re-learn.
+
+       This program is based on concepts I heard Paul Tuckfield explain at the November 2006 MySQL Camp un-conference.  However, the code is my own work.  I have not seen any other implementation of Paul's
+       idea.
+
+DOES IT WORK?
+       Does it work?  Does it actually speed up the slave?
+
+       That depends on your workload, hardware, and other factors.  It might work when the following are true:
+
+       •   The slave's data is much larger than memory, and the workload is mostly randomly scattered small (single-row is ideal) changes.
+
+       •   There are lots of high-concurrency "UPDATE" and "DELETE" statements on the master.
+
+       •   The slave SQL thread is I/O-bound, but the slave overall has plenty of spare I/O capacity (definitely more than one disk spindle).
+
+       •   The slave uses InnoDB or another storage engine with row-level locking.
+
+       It does not speed up replication on my slaves, which mostly have large queries like "INSERT .. SELECT .. GROUP BY".  In my benchmarks it seemed to make no difference at all, positive or negative.
+
+       On the wrong workload or slave configuration, this technique might actually make the slaves slower.  Your mileage will vary.
+
+       User-contributed benchmarks are welcome.
+
+OPTIONS
+       Specify at least one of "--print", "--execute" or "--stop".
+
+       This tool accepts additional command-line arguments.  Refer to the "SYNOPSIS" and usage information for details.
+
+       --ask-pass
+           Prompt for a password when connecting to MySQL.
+
+       --charset
+           short form: -A; type: string
+
+           Default character set.  If the value is utf8, sets Perl's binmode on STDOUT to utf8, passes the mysql_enable_utf8 option to DBD::mysql, and runs SET NAMES UTF8 after connecting to MySQL.  Any
+           other value sets binmode on STDOUT without the utf8 layer, and runs SET NAMES after connecting to MySQL.
+
+       --check-interval
+           type: Array; default: 16,1,1024
+
+           How often to check the slave: init,min,max.  This many relay log events should pass before checking the output of "SHOW SLAVE STATUS".  The syntax is a three-number range: initial, minimum, and
+           maximum.  You should be able to leave this at the defaults.
+
+           "mk-slave-prefetch" varies the check interval in powers of two, depending on whether it decides the check was necessary.
+
+       --config
+           type: Array
+
+           Read this comma-separated list of config files; if specified, this must be the first option on the command line.
+
+       --[no]continue-on-error
+           default: yes
+
+           Continue parsing even if there is an error.
+
+       --daemonize
+           Fork to the background and detach from the shell.  POSIX operating systems only.
+
+       --database
+           short form: -D; type: string
+
+           The database to use for the connection.  The initial connection will be to this database, but mk-slave-prefetch will issue "USE" statements as required by the binary log events.
+
+           This database is also used as the default database for "--secondary-indexes" if the database cannot automatically be determined from the query.
+
+       --defaults-file
+           short form: -F; type: string
+
+           Only read mysql options from the given file.  You must give an absolute pathname.
+
+       --dry-run
+           Ignore replication checks and just read and rewrite the relay log events.
+
+           This option make mk-slave-prefetch ignore all relay log related checks for position, slave lag, etc. and simply causes the tool to read and rewrite all the events in the relay log.  A connection
+           to the slave server is still required.
+
+       --errors
+           cumulative: yes
+
+           Print queries that caused errors.  If specified once, at exit; if twice, in realtime.
+
+           If you specify this option once, you will see a report at the end of the script execution, showing the normalized queries and the number of times they were seen.  If you specify this option twice,
+           you will see the errors printed out as they occur, but no normalized report at the end of execution.
+
+       --execute
+           Execute the transformed queries to warm the caches.
+
+       --help
+           Show help and exit.
+
+       --host
+           short form: -h; type: string
+
+           Connect to host.
+
+       --[no]inject-columns
+           default: yes
+
+           Inject "(columns)" into INSERT/REPLACE that don't specify them.
+
+           Normally this query cannot be rewritten because mk-slave-prefetch doesn't know which columns the values refer to: "INSERT INTO tbl VALUES (1,2)".  This option causes mk-slave-prefetch to "SHOW
+           CREATE TABLE" the table from the query, get its columns and inject these columns into the query, like: "INSERT INTO tbl (`col1`,`col2`) VALUES (1,2)".  This allows the query to be written as a
+           SELECT and prefetched.
+
+           Columns for each unique database.table are cached, so this operation may fail if an "ALTER TABLE" statement changes the order or name of any columns.
+
+       --io-lag
+           type: size; default: 1k
+
+           How many bytes to lag the slave I/O thread.  This helps avoid "mysqlbinlog" reading right off the end of the relay log file.
+
+       --log
+           type: string
+
+           Print all output to this file when daemonized.
+
+       --max-query-time
+           type: float; default: 1
+
+           Do not run queries longer than this many seconds; fractions allowed.  If "mk-slave-prefetch" predicts the query will take longer to execute, it will skip the query.  This is based on the theory
+           that pre-warming the cache is most beneficial for short queries.
+
+           "mk-slave-prefetch" learns how long queries require to execute.  It keeps an average over the last "--query-sample-size" samples of each query.  The averages are based on an abstracted version of
+           the query, with specific parameters replaced by placeholders.  The result is a sort of "fingerprint" for the query, not executable SQL.  You can see the learned statistics with the "--statistics"
+           option.
+
+           You can pre-load query fingerprints, and average execution times, from a file.  This way you don't have to wait for "mk-slave-prefetch" to learn all over every time you start it.  Just specify the
+           file on the command line.  The format should be the same as the output from "--statistics".
+
+           You might also want to filter out some statements completely, or let only some statements through.  See the "--reject-regexp" and "--permit-regexp" options.
+
+           If "mk-slave-prefetch" hasn't seen a query's fingerprint before, and thus doesn't know how long it will take to execute, it wraps it in a subquery, like this:
+
+              SELECT 1 FROM ( <query> ) AS X LIMIT 1;
+
+           This helps avoid fetching a lot of data back to the client when a query is very large.  It requires a version of MySQL that supports subqueries (version 4.1 and newer).  If yours doesn't, the
+           subquery trick can't be used, so the query might fetch a lot of data back to the client.
+
+           Once a query's fingerprint has been seen, so it's known that the query isn't enormously slow, "mk-slave-prefetch" just rewrites the "SELECT" list for efficiency.  (Avoiding the subquery reduces
+           the query's overhead for short queries).  The rewritten query will then look like the following;
+
+              SELECT ISNULL(COALESCE(<columns>)) FROM ...
+
+       --num-prefix
+           Abstract away numeric table name prefixes.  This causes the following two queries to "fingerprint" to the same thing:
+
+             select from 1_2_users;
+             select from 2_3_users;
+
+       --offset
+           type: size; default: 128
+
+           How many bytes "mk-slave-prefetch" will try to stay in front of the slave SQL thread.  It will not execute log events it doesn't think are at least this far ahead of the SQL thread.  See also
+           "--window".
+
+       --password
+           short form: -p; type: string
+
+           Password to use when connecting.
+
+       --permit-regexp
+           type: string
+
+           Permit queries matching this Perl regexp.  This is a filter for log events.  The regular expression is matched against the raw log event, before any transformations are applied.  If specified,
+           this option will permit only log events matching the regular expression.
+
+       --pid
+           type: string
+
+           Create the given PID file when daemonized.  The file contains the process ID of the daemonized instance.  The PID file is removed when the daemonized instance exits.  The program checks for the
+           existence of the PID file when starting; if it exists and the process with the matching PID exists, the program exits.
+
+       --port
+           short form: -P; type: int
+
+           Port number to use for connection.
+
+       --print
+           Print the transformed relay log events to standard output.
+
+       --print-nonrewritten
+           Print queries that could not be transformed into "SELECT".
+
+       --progress
+           type: int
+
+           Print progress information every X events.  The information is the current log file and position, plus a summary of the statistics gathered.
+
+       --query-sample-size
+           type: int; default: 4
+
+           Average query exec time over this many queries.  The last "N" queries with a given fingerprint are averaged together to get the average query execution time (see "--max-query-time").
+
+       --reject-regexp
+           type: string
+
+           Reject queries matching this Perl regexp.  Similar to "--permit-regexp", but has the opposite effect: log events must not match the regular expression.
+
+       --relay-log
+           type: string
+
+           Read only the specified relay log file; - to read from STDIN.
+
+           By default mk-slave-prefetch reads the "Relay_Log_File" reported by "SHOW SLAVE STATUS".  This option allows you to specify a relay log file that has already be converted to text by "mysqlbinlog".
+           The tool will exit after reading and parsing this file.
+
+           This option is useful with "--dry-run" and "--print" if you want to see how the tool would rewrite the relay log's events without executing them or having to wait for a lagged slave.
+
+       --relay-log-dir
+           type: string
+
+           Open the slave's "Relay_Log_File" relative to this directory.
+
+           Unless this option is specified, mk-slave-prefetch automatically determines the directory that relay logs are in by first looking at the "relay_log" system variable to see if it specifies a path.
+           If it does, this path is used; if it does not, then the "datadir" variable value is used.
+
+           This option is ignored if an explicit "--relay-log" is specified.
+
+       --run-time
+           type: time
+
+           How long "mk-slave-prefetch" should run before exiting.  The default is to run forever.
+
+       --secondary-indexes
+           Prefetch secondary indexes for pipelined queries.
+
+       --sentinel
+           type: string; default: /tmp/mk-slave-prefetch-sentinel
+
+           Exit if this file exists.
+
+       --set-vars
+           type: string; default: wait_timeout=10000
+
+           Set these MySQL variables.  Immediately after connecting to MySQL, this string will be appended to SET and executed.
+
+       --sleep
+           type: time; default: 1s
+
+           Sleep time before checking for new events.
+
+           When mk-slave-prefetch is done reading all the events in a relay log, it sleeps this amount of time before checking for new events.
+
+           This option is automatically set to zero if both "--relay-log" and "--dry-run" are specified.
+
+       --socket
+           short form: -S; type: string
+
+           Socket file to use for connection.
+
+       --statistics
+           Print execution statistics after exiting.  The statistics are in two sections: counters, and queries.  The counters simply count the number of times events occur.  You may see the following
+           counters:
+
+              NAME                    MEANING
+              ======================  =======================================
+              mysqlbinlog             Executed mysqlbinlog to read log events.
+              events                  The total number of relay log events.
+              not_far_enough_ahead    An event was not at least L<"--offset">
+                                      bytes ahead of the SQL thread.
+              too_far_ahead           An event was more than L<"--offset">
+                                      + L<"--window"> bytes ahead of the SQL thread.
+              too_close_to_io_thread  An event was less than L<"--io-lag"> bytes
+                                      away from the I/O thread's position.
+              event_not_allowed       An event wasn't a SET, USE, INSERT,
+                                      UPDATE, DELETE or REPLACE query.
+              event_filtered_out      An event was filtered out because of
+                                      L<"--permit-regexp"> or L<"--reject-regexp">.
+              same_timestamp          A SET TIMESTAMP event was ignored because
+                                      it had the same timestamp as the last one.
+              do_query                A transformed event was executed
+                                      or printed.
+              query_error             An executed query had an error.
+              query_too_long          An event was not executed because its
+                                      average query length exceeded
+                                      L<"--max-query-time">.
+              query_not_rewritten     A query could not be rewritten to a
+                                      SELECT.
+              master_pos_wait         The tool waited for the SQL thread to
+                                      catch up.
+              show_slave_status       The tool queried SHOW SLAVE STATUS.
+              load_data_infile        The tool found a LOAD DATA INFILE query
+                                      and unlinked (deleted) the temp file.
+              could_not_unlink        The tool failed to unlink a temp file.
+              sleep                   The tool slept for a second because the
+                                      slave's SQL thread was not running, or
+                                      because it read past the end of the log.
+
+           After the counters, "mk-slave-prefetch" prints information about each query fingerprint it has seen, two lines per fingerprint.  The first line contains the query's fingerprint.  The second line
+           contains the number of times the fingerprint was seen, number of times executed, the sum of the execution times, and the average execution time over the last "--query-sample-size" samples.
+
+       --stop
+           Stop running instances by creating the "--sentinel" file.
+
+       --threads
+           type: int; default: 2
+
+           Number of concurrent threads to use for pipelining queries.
+
+       --tmpdir
+           type: string; default: /dev/null
+
+           Where to create temp files for "LOAD DATA INFILE" queries.  The default will cause "mysqlbinlog" to skip the file and the associated "LOAD DATA INFILE" command entirely.
+
+           If "mk-slave-prefetch" sees a "LOAD DATA INFILE" command (which it won't if this is left at the default), it will try to remove the temporary file, then skip the event.
+
+       --user
+           short form: -u; type: string
+
+           User for login if not current user.
+
+       --version
+           Show version and exit.
+
+       --window
+           type: size; default: 4k
+
+           The max bytes ahead of the slave "mk-slave-prefetch" should get.  Defines the window within which "mk-slave-prefetch" considers a query OK to execute.  The window begins at the slave SQL thread's
+           last known position plus "--offset" bytes, and extends for the specified number of bytes.
+
+           If "mk-slave-prefetch" sees a log event that is too far in the future, it will increment the "too_far_ahead" counter and wait for the slave SQL thread to catch up (which increments the
+           "master_pos_wait" counter).  If an event isn't far enough ahead of the SQL thread, it will be discarded and the "not_far_enough_ahead" counter increments.
+
+           Watching the mentioned statistics can help you understand how to tune the window.  You want "mk-slave-prefetch" to run just ahead of the SQL thread, not throwing out a lot of events for being too
+           far ahead or not far enough ahead.
+
+DSN OPTIONS
+       These DSN options are used to create a DSN.  Each option is given like "option=value".  The options are case-sensitive, so P and p are not the same option.  There cannot be whitespace before or after
+       the "=" and if the value contains whitespace it must be quoted.  DSN options are comma-separated.  See the maatkit manpage for full details.
+
+       •   A
+
+           dsn: charset; copy: yes
+
+           Default character set.
+
+       •   D
+
+           dsn: database; copy: yes
+
+           Default database.
+
+       •   F
+
+           dsn: mysql_read_default_file; copy: yes
+
+           Only read default options from the given file
+
+       •   h
+
+           dsn: host; copy: yes
+
+           Connect to host.
+
+       •   p
+
+           dsn: password; copy: yes
+
+           Password to use when connecting.
+
+       •   P
+
+           dsn: port; copy: yes
+
+           Port number to use for connection.
+
+       •   S
+
+           dsn: mysql_socket; copy: yes
+
+           Socket file to use for connection.
+
+       •   u
+
+           dsn: user; copy: yes
+
+           User for login if not current user.
+
+DOWNLOADING
+       You can download Maatkit from Google Code at <http://code.google.com/p/maatkit/>, or you can get any of the tools easily with a command like the following:
+
+          wget http://www.maatkit.org/get/toolname
+          or
+          wget http://www.maatkit.org/trunk/toolname
+
+       Where "toolname" can be replaced with the name (or fragment of a name) of any of the Maatkit tools.  Once downloaded, they're ready to run; no installation is needed.  The first URL gets the latest
+       released version of the tool, and the second gets the latest trunk code from Subversion.
+
+ENVIRONMENT
+       The environment variable "MKDEBUG" enables verbose debugging output in all of the Maatkit tools:
+
+          MKDEBUG=1 mk-....
+
+SYSTEM REQUIREMENTS
+       You need Perl, DBI, DBD::mysql, and some core packages that ought to be installed in any reasonably new version of Perl.
+
+BUGS
+       For a list of known bugs see <http://www.maatkit.org/bugs/mk-slave-prefetch>.
+
+       Please use Google Code Issues and Groups to report bugs or request support: <http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to discuss Maatkit.
+
+       Please include the complete command-line used to reproduce the problem you are seeing, the version of all MySQL servers involved, the complete output of the tool when run with "--version", and if
+       possible, debugging output produced by running with the "MKDEBUG=1" environment variable.
+
+COPYRIGHT, LICENSE AND WARRANTY
+       This program is copyright 2007-2011 Baron Schwartz.  Feedback and improvements are welcome.
+
+       THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+       This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2; OR the Perl Artistic
+       License.  On UNIX and similar systems, you can issue `man perlgpl' or `man perlartistic' to read these licenses.
+
+       You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA.
+
+AUTHOR
+       Baron Schwartz, Daniel Nichter
+
+ABOUT MAATKIT
+       This tool is part of Maatkit, a toolkit for power users of MySQL.  Maatkit was created by Baron Schwartz; Baron and Daniel Nichter are the primary code contributors.  Both are employed by Percona.
+       Financial support for Maatkit development is primarily provided by Percona and its clients.
+
+VERSION
+       This manual page documents Ver 1.0.21 Distrib 7540 $Revision: 7531 $.
+
+perl v5.34.0                                                                                       2021-07-22                                                                              MK-SLAVE-PREFETCH(1)

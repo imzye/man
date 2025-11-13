@@ -1,0 +1,887 @@
+DBIWrapper(3)         User Contributed Perl Documentation        DBIWrapper(3)
+
+
+NAME
+       DBIWrapper - Perl extension for generic DBI database access.
+
+SYNOPSIS
+         use DBIWrapper;
+         my $db = DBIWrapper->new(dbType => "Pg",
+                                  dbName => "test_db",
+                                  dbHost => "localhost",
+                                  dbUser => "nobody",
+                                  dbPasswd => "",
+                                  dbPort => "5432",
+                                  predefinedDSN => "",
+                                  printError => 1,
+                                  raiseError => 1,
+                                  autoCommit => 0);
+         if ($db->error())
+         {
+           die $db->errorMessage();
+         }
+
+         my $sth = $db->read("SELECT * FROM test_tb");
+         my $result = $db->write(sql => "INSERT INTO test_tb (name, value) VALUES (?, ?)",
+           plug => [ $name, $value ]);
+         # this used DBI's substitution features to plugin the name and value.
+
+         $db->close();  # close down the database connection.  Any read()'s
+         # or write()'s will no longer be valid with this object until a new() is
+         # issued again.
+
+DESCRIPTION
+       DBIWrapper is the generic database Object for accessing the DBI
+       database interface.  It provides the lowest level of functionality
+       needed by any program wanting to access databases via the DBI.
+       Currently, DBIWrapper is only aware of Pg (PostgreSQL), mysql (MySQL),
+       Sybase and ODBC DBD modules and how to work with them correctly.
+
+       Support for transactions on MySQL is now checked for and if found to be
+       available, the AutoCommit flag is turned off so that transactions will
+       be used.
+
+       The substitution array (if used) will cause each ##?1##, ##?2##, etc.
+       string in the sql string to be substituted for the corresponding value
+       in the substitution array.  It must start at ?1.  It is up to the user
+       to pass in the correct number of elements for both the plug and
+       substitution arrays.  The plug array is used to pass in the values for
+       DBI to replace in the sql string of ? which is standard DBI notation.
+
+DATABASE VERSION INFO The version info for the database in use, if
+       determinable, is now stored as: serverVersion = complete version string
+       Ex: on Debian, PostgreSQL returns 8.1.0 MySQL returns
+       4.1.11-Debian_4sarge5-log
+       serverVerMajor = The Major release number From the previous examples,
+       PostgreSQL would be 8, MySQL would be 4.
+
+       serverVerMinor = The Minor release number From the previous examples,
+       PostgreSQL would be 1, MySQL would be 1.
+
+       serverVerRelease = The Point release number.  This does not include any
+       text after the point release value that may be included by the distro.
+       From the previous examples, PostgreSQL would be 0, MySQL would be 11.
+
+       The stored database version info is used to determine if we can still
+       do oid based lastID lookups in PostgreSQL or if we have to do something
+       that doesn't depend on the oid since PostgreSQL 8.1 no longer enables
+       oids by default.
+
+Sybase NOTES
+       The getDataArray(), getDataArrayHeader(), getDataHash(),
+       getDataHashHeader(), readXML(), readHTML() methods all properly handle
+       multiple result sets being returned from Sybase.  This could be the
+       result of multiple select statements or a compute clause.  In the case
+       of the Header() methods, the header row is based on the first returned
+       select statement, which may not be correct for the following statements
+       or compute blocks.
+
+Deadlock Detection NOTES
+       Initial support for detecting a deadlock scenario when using Sybase is
+       now implemented.  The code will attempt to retry the sql in question,
+       either a read or write call, upto deadlockNumTries tries and sleeping
+       for deadlockSleep seconds between tries.  If deadlockRampSleep is
+       enabled, which it is not by default, then we multiply the deadlockSleep
+       by the current try #, if > 1, thus sleeping in multiples of
+       deadlockSleep seconds.
+
+       There are currently no helper methods to change the values, but you can
+       just assign new values to the dbObj instance you create as they are
+       encapsulated within the object.  The only thing that is not
+       encapsulated is the deadlockEncountered global variable, due to the way
+       the DBI error handler is defined.  You should not have to touch this
+       variable unless you wanted to know if a deadlock had been detected in
+       your last read()/write() command.  It is reset to false whenever a
+       read()/write() is issued.
+
+Long Running SQL Detection NOTES
+       You can now define read and write thresholds (in seconds) that if a
+       read() or write() ran for >= the threshold then it will be logged to
+       the long running log file you specified or
+       '/var/log/dbiwrapper-long-running-sql.log'.
+
+       By default the longRunningRead and longRunningWrite thresholds are 10
+       seconds.
+
+       The format of the logged entries is: $0|$$|start timestamp
+       (formatted)|end timestamp (formatted)|# seconds ran|read or
+       write|deadlock Encountered|numTries|server or dbHost|dbName|sql
+       statement|plug arguments|uniqueID
+
+         See Logging Notes below for timestamp and duration changes.
+
+       sql statement has all newlines turned into spaces so it will fit on a
+       single line.  plug arguments is a comma delimited list.
+
+Logging SQL statements NOTES
+       LOG FORMAT CHANGES: timestamps are now using DateTime::HiRes and
+       include milliseconds.
+
+       logDateFormat is now ignored and will be removed in a future version.
+       Date format is hardcoded as YYYY-MM-DD HH:MM:SS.milliseconds (0 to
+       999).
+
+       specify myTimeZone if you want something other than 'America/Phoenix'.
+
+       A hopefully unique ID will be generated that consists of SHA1'ing the
+       concatenation of: $0 . $$ . timestamp formatted . action . sql
+       statement (newlines replaced) I'll store the hexified SHA1 value for
+       the uniqueID.
+
+       -------------
+
+       All sql statements will now default to being logged to
+       /var/log/dbiwrapper-sql-statements.log.
+
+       This can be turned off and an alternate log file specified.
+
+       Log file format is:
+
+       $0|$$|timestamp (formatted)|read or write|server or dbHost|dbName|sql
+       statement|plug arguments|uniqueID
+
+       sql statement has all newlines turned into spaces so it will fit on a
+       single line.  plug arguments is a comma delimited list.
+
+       Specify sqlNewlineReplacement if you want a different \n replacement in
+       the sql statement log.  Specify sqlPlugNewlineReplacement if you want a
+       different \n replacement in the plug arguments.
+
+       sqlNewlineReplacement = ' ' sqlPlugNewlineReplacement = '\\n'
+
+       All |'s are \ escaped in the sql and plug strings that are logged to
+       disk.
+
+       2 additional log files will be created to track the start/stop and
+       duration of the executing sql.
+
+       I take the sqlStatementLog and insert -start and -stop before the .log
+       extension.
+
+       Start SQL file format is:
+
+       uniqueID|$0|$$|start_timestamp (formatted)|first 20 chars of sql
+       statement|length of sql statement|plug arguments
+
+       Stop SQL file format is:
+
+       uniqueID|$0|$$|start_timestamp (formatted)|stop_timestamp
+       (formatted)|duration.milliseconds|first 20 chars of sql
+       statement|length of sql statement|plug arguments|deadlock
+       Encountered|numTries
+
+       duration.milliseconds is the duration in whole seconds plus the # of
+       milliseconds difference.  It is not a fractional value.
+
+Exported FUNCTIONS
+       NOTE: bool = 1(true), 0(false)
+
+       scalar new(dbType, dbName, dbHost, dbUser, dbPasswd, dbPort,
+       printError, raiseError, autoCommit, predefinedDSN, setDateStyle,
+       logLevel, server, interfaces, longRunningRead, longRunningWrite,
+       longRunningLog, logSQLStatements, sqlStatementLog, logSQLDurations,
+       myTimeZone)
+            Creates a new instance of the DBIWrapper object and opens
+            a connection to the specified database.  If predefinedDSN is
+            specified then it is used instead of the dbName, dbHost, dbPort
+            values.  This is mainly to support ODBC easier.
+            If setDateStyle is 1 (default) and dbType = Pg, then the datestyle
+            for PostgreSQL is set to US (MM/DD/YYYY).
+            logLevel defaults to 0.  There are 4 levels 0, 1, 2 and 3 which log
+            the following items when an error occurs:
+            0) Nothing is output
+            1) dbType, dbHost, dbName, printError, raiseError, autoCommit,
+              setDateStyle, supportsTransactions, transactionType, server,
+              interfaces
+            2) all of 1 plus dbUser, dbPort, predefinedDSN
+            3) all of 2 plus dbPasswd
+
+            Sybase specific:
+            server allows you to specify the database server to connect to by name
+              and must be defined in your interfaces file.
+            interfaces allows you to specify the Sybase interfaces file needed
+              to properly connect to the Sybase database.
+
+            If you do not specify server and interfaces, then dbHost and dbPort
+            will be used.
+
+       void validate_and_connect()
+       bool isValid()
+            Returns 1 if the DBI object is valid, else 0 if invalid.
+
+       void changeSQLLogFiles(sqlStatementLog, longRunningLog)
+           Changes the internal variables and re-computes the -start and -stop
+           log file names.
+
+       void close()
+             Closes the connection to the database.
+
+       bool error(errorString)
+            This method will set the error condition if an argument is
+            specified.
+
+            The current error state is returned, regardless of if we are
+            setting an error or not.
+
+            A \n is appended to the errorString so you don't have to provide it.
+            errorString is prefixed with the caller's full method name followed
+            by the errorPhrase string.
+
+            You can either specify the errorString value by name:
+
+            $self->error(errorString => "This is an error!");
+
+            or by value:
+
+            $self->error("This is an error!");
+
+            If you specify multiple arguments (in pass by value mode), then
+            we check to see if the first argument contains %'s that are not
+            \ escaped and are not %%.  If this is the case, then the incoming
+            arguments will be passed through sprintf() for formatting, else we
+            just join them with a space ' ' and append them to the current
+            errorString.
+
+
+            To see if an error happened:
+
+            if ($self->error) { die "Error: " . $self->errorMessage; }
+
+       void setError(errorString)
+            DEPRECATED: see error()
+
+            optional: errorString
+            returns: nothing
+            Sets error = 1 and errorString = string passed in.
+            The errorString is prefixed with the caller's full
+            method name followed by the errorPhrase string.
+
+            You can either call as
+            setError(errorString => $string)
+            or setError($string)
+
+            If you do not specify anything, we blow an error
+            telling you to specify errorString.
+
+            \n is appended to the contents of the errorString
+            passed in.
+
+       void prefixError(errorString)
+            optional: errorString
+            returns: nothing
+            Sets error = 1 and prefixes errorString with string passed in.
+            The errorString is prefixed with the caller's full
+            method name followed by the errorPhrase string.
+
+            You can either specify the errorString value by name:
+
+            $self->prefixError(errorString => "This is an error!");
+
+            or by value:
+
+            $self->prefixError("This is an error!");
+
+            If you specify multiple arguments (in pass by value mode), then
+            we check to see if the first argument contains %'s that are not
+            \ escaped and are not %%.  If this is the case, then the incoming
+            arguments will be passed through sprintf() for formatting, else we
+            just join them with a space ' ' and append them to the current
+            errorString.
+
+
+            If you don't specify anything then
+              If you have a previous error, we prefix the caller info to
+                that error message.
+
+       scalar didErrorOccur(void)
+            DEPRECATED: see error()
+
+            Returns the value of error.
+
+       scalar errorMessage(void)
+            Returns the value of errorString.
+
+       scalar errorStr(void)
+            Returns the value of errorString.
+
+            Alternative to errorMessage().
+
+       void resetError(void)
+            Resets the error condition flag and string.
+
+       void commit()
+            causes the database to commit the current transaction.  Only works
+            if AutoCommit is set to 0 and the database supports Transactions.
+
+       void rollback()
+            causes the database to rollback the current transaction.  Only
+            works if AutoCommit is set to 0 and the database supports
+            Transactions.
+
+       ref read(sql => "", plug => [], substitute => [])
+            (This function should only be called for SELECT statements).
+            executes the specified sql statement passing in any values in plug
+            to the execute method after doing any substitutions that are in
+            substitute.  The resulting sql data is passed back to the user as a
+            reference for them to do with as they please.
+
+       $ getCurrTime()
+           Returns the current time as a DBIWrapper::Time::Now::HiRes
+           instance.
+
+       $ getCurrTimeFormatted(offset, showMillisecond)
+           offset must be specified and is the number of seconds from now that
+           the time should be computed for.
+
+           If showMillisecond is defined then I output the .mmm part.
+
+           Returns a formatted timestamp as YYYY-MM-DD HH:MM:SS.mmm.
+
+           Normal usage is getCurrTimeFormatted(0, 1).
+
+           NOTE: offset is currently being ignored and is deprecated.
+
+       $ getCurrTimeFormattedFromObj(dt, showMillisecond)
+           dt must be specified and is the DBIWrapper::Time::Now::HiRes object
+           to work with.
+
+           If showMillisecond is defined then I output the .mmm part.
+
+           Returns a formatted timestamp as YYYY-MM-DD HH:MM:SS.mmm.
+
+           Normal usage is getCurrTimeFormattedFromObj($dt, 1).
+
+       $ getCurrTimeFormattedFromEpoch(epoch, showMillisecond)
+           epoch must be specified and is the epoch timestamp to work with.
+
+           If showMillisecond is defined then I output the .mmm part.
+
+           Returns a formatted timestamp as YYYY-MM-DD HH:MM:SS.mmm.
+
+           Normal usage is getCurrTimeFormattedFromEpoch($timestampEpoch, 1).
+
+       $ computeDuration(startTime, endTime)
+           Required:
+
+           startTime - DBIWrapper::Time::Now::HiRes object
+
+           Optional:
+
+           endTime - DBIWrapper::Time::Now::HiRes object
+
+           Computes the duration between the given timestamps, down to the
+           millisecond level, and displays as the # of seconds it took.
+
+           Returns a string containing the duration.
+
+       void checkLongRunningSQL(method, timerStart, numTries, sql, plug)
+           Compares $self->getCurrTime() - timerStart against the
+           longRunningRead/Write threshold and if it's >= then logs to
+           longRunningLog.
+
+           Doesn't return anything.
+
+       void logSQLStatement(method, timerStart, sql, plug)
+           Logs the sql being run.
+
+           Doesn't return anything.
+
+       @ getDataArray(sql, plug, substitute)
+            requires: sql
+            optional: plug, substitute
+            returns: array of arrayrefs as the result of
+              $sth->fetchall_arrayref
+
+            See read() for argument info.
+
+       @ getDataHash(sql, plug, substitute, case)
+            requires: sql
+            optional: plug, substitute, case
+            returns: array of hashrefs where the column names are
+              case preserved if case = 1, or lowercased if case = 0.
+
+            case defaults to 0 (lowercase).
+
+            See read() for argument info.
+
+       @ getDataArrayHeader(sql, plug, substitute, case)
+            requires: sql
+            optional: plug, substitute, case
+            returns: array of arrayrefs
+
+              The first row of the array is an array containing the
+              column names in the order returned by the database.
+              The column names are case preserved if case = 1, or
+              lowercased if case = 0.
+
+              NOTE:
+              If 0 rows were returned, we still return an array with
+              1 row in it, which is the header row.
+
+            case defaults to 0 (lowercase).
+
+            See read() for argument info.
+
+       @ getDataHashHeader(sql, plug, substitute, case)
+            requires: sql
+            optional: plug, substitute, case
+            returns: array of hashrefs where the column names are
+              case preserved if case = 1, or lowercased if case = 0.
+
+              The first row of the array is an array containing the
+              column names in the order returned by the database.
+              The column names respect the case flag.
+
+              NOTE:
+              If 0 rows were returned, we still return an array with
+              1 row in it, which is the header row.
+
+            case defaults to 0 (lowercase).
+
+            See read() for argument info.
+
+       scalar readXML(sql, plug, substitute, columns, displayNULLAs,
+       ignoreTags, sequence, displaySQL)
+            requires: sql
+            optional: plug, substitute, columns = 0, displayNULLAs, ignoreTags,
+                      sequence, displaySQL = 1
+            returns:  valid XML document describing the data selected from the
+             database.  Uses getDataHashHeader() to actually validate the data and
+             execute the SELECT statement.  The resulting XML document
+             will either have an error condition set (if read() signaled
+             an error occured) or will be the result of traversing the
+             data returned from getDataHashHeader().
+
+             If displaySQL = 0, then we do not output the <select />
+             tag in the xml, thus allowing you to send the xml to a web browser
+             without potentially giving out sensitive information.
+
+             Any undefined values (NULL) will be output using the displayNULLAs
+             variable which defaults to 'NULL'.
+
+             All values are run through the formEncodeString() method to
+             make sure that any html/xml tags are properly encoded.  If you
+             do not want certain tags encoded, use the ignoreTags and/or
+             sequence arguments to affect how the formEncodeString() method
+             fixes up the value.  See the formEncodeString() documentation for
+             more details.
+
+             If columns = 0, then all info will be returned in the <row>
+             tag as attributes where the column name = column value.
+             Ex.  <row name="test" value="testing" other="something else"/>
+             When the column names were name, value and other.
+
+             If columns = 1, then all info will be returned in <column>
+             tags which are children of the <row> tag.  A column tag has
+             attributes name and value.  name = column name and value =
+             column value.
+             Ex.
+             <row>
+               <column name="name" value="test"/>
+               <column name="value" value="testing"/>
+             </row>
+
+             If columns = 2, then each row has tags defined named after the
+             column with the contents being the value.  They are output in the
+             order that the database returned them in.  The column value is not
+             encoded, but is wrapped in <![CDATA[ ]]> tags so that any html/xml
+             tags are safely ignored without having to be encoded.
+             Ex:
+             <row>
+               <name><![CDATA[test]]></name>
+               <value><![CDATA[testing]]></value>
+             </row>
+
+             Where there were 2 columns returned with names of name and value, in
+             that order.
+
+             The XML format is as follows:
+             <?xml version="1.0" encoding="ISO-8859-1"?>
+             <resultset version="1.2">
+               <select sql="" plug=""/>
+               <status result="" error=""/>
+               <rows numRows="" columns="0|1|2">
+                 <row/>
+               </rows>
+             </resultset>
+
+             If the XML document is an error document, then:
+             <status result="Error" error="Error message"/>
+             else
+             <status result="Ok" error=""/>
+
+             In <select> tag, sql = The sql SELECT string, plug = the
+             string made when joining all the plug array entries
+             together and comma seperating them.  The entries are
+             single quoted.  Ex. plug="''" would represent no plug
+             entries used.  plug="'x', 'y'" would mean that 2 entries
+             were passed in: x, y.
+
+             In <rows> numRows will be equal to the number of rows
+             being returned or 0 if an error had occured.
+
+             The <row> tag will depend on the value of columns.
+
+       scalar fixupAttributes(string)
+           Attempts to make sure that the given string can be a valid
+           attribute in an xml document.
+
+           Converts (, ), -, \, /, =, >, <, & to _ Deletes ', ", \n
+
+       scalar readHTML(sql, plug, substitute, tableClass, alternateRows,
+       displayNumRows, displayNULLAs, ignoreTags, sequence, headers, footer)
+            requires: sql
+            optional: plug, substitute, tableClass, alternateRows,
+             displayNumRows, displayNULLAs, ignoreTags, sequence, headers, footer
+            returns:  valid HTML <table> describing the data selected from the
+             database.  Uses getDataHashHeader() to actually validate the data and
+             execute the SELECT statement.  The resulting HTML <table>
+             will either have the error displayed (if read() signaled
+             an error occured) or will be the result of traversing the
+             data returned from getDataHashHeader().
+
+             Any undefined values (NULL) will be output using the displayNULLAs
+             variable which defaults to 'NULL'.
+
+             All values are run through the formEncodeString() method to
+             make sure that any html/xml tags are properly encoded.  If you
+             do not want certain tags encoded, use the ignoreTags and/or
+             sequence arguments to affect how the formEncodeString() method
+             fixes up the value.  See the formEncodeString() documentation for
+             more details.
+
+            If an error occured, then the generated tr and td will have
+            class="sqlError" assigned to them so you can change the way the
+            sql Error row is displayed.  The error output will also be
+            wrapped in a <span class="sqlError"></span> so you can change
+            the display behaviour.
+
+            tableClass defines the class to assign to this table so it knows
+            how to display itself.  Defaults to "".  This allows you to have
+            different readHTML generated tables on the same page and let them
+            look different (border, width, cellspacing, cellpadding, etc.).
+
+            alternateRows (boolean) lets the caller indicate they want to
+            possibly have different row characteristics on every other row.
+            Defaults to 1.
+
+            displayNumRows (boolean) lets the caller indicate they want a <div>
+            above the generated table that tells the user how many rows were
+            returned.  Defaults to 1.  The generated div has
+            class="sqlNumRows" assigned to it so the caller can affect the
+            characteristics of the output and the NumRows statement is wrapped
+            in a <span class="sqlNumRows"></span>.
+
+            The table header will be made up from the returned columns in the
+            sql statement.  Each <th> will have the css class="column_name"
+            defined so that the callers style can have th.column_name defined
+            to dictate how the <th> is to be displayed.  The <tr> for the table
+            header will have class="sqlHeader" assigned to it.  **
+
+            The headings can be specified by passing in a reference to a hash
+            called headers.  If you wish to use special characters and/or
+            simply change the label for a column that was used in the SQL assign
+            it to the hash entry with the column as key.
+              $headers{column1} = "Some other text";
+              readHTML(headers => \%headers);
+            Any columns not specified in the hash will default to the name used
+            in the sql query.
+
+            The footer flag is boolean (0|1) and defaults to 0.  If set to 1 the
+            heading row will be duplicated as a footer row inside of <tfoot> tags.
+
+            Each <tr> will have class="sqlRow" assigned, unless alternateRows
+            is enabled, which then causes the even rows to have
+            class="sqlRow sqlEven" and the odd rows to have class="sqlRow sqlOdd"
+            assigned. Each <td> will have the css class="column_name" defined so
+            the callers style can have td.column_name defined to dictate how the
+            <td> is to be displayed. The contents of the <td> entry will be
+            wrapped in <span class="column_name"></span> to allow even more
+            display control.  **
+
+            ** The column_name is run through the fixupAttributes()
+            method to remove any bad values and convert all illegal css
+            characters in a name to _.  You should run your column names
+            through the fixupAttributes() method to have the same class
+            name to work with.
+
+       scalar readCSV(sql =>, plug =>, quote =>, quoteAll =>, delimeter =>,
+       sep =>, header =>, computeRowHeader =>, case => ) or readCSV('SELECT
+       foo FROM bar')
+             This returns the data selected in sql query in comma separated value
+             format.  Returns undef if an error occured.
+
+             Optional parameters:
+             sep - defaults to ', ', but can be whatever you want to seperate fields
+               with.
+             header - (boolean) defaults to 0.  If 1 (true), then we output the
+               column names as the first line of the output.  If using Sybase and
+               COMPUTE rows, then at each detected compute row, we output the
+               compute rows headers before the compute rows data and prefix the
+               compute row headers with '(!!COMPUTE ROW!!)'.  This is so scripts
+               can detect a compute row and handle accordingly.
+             computeRowHeader - (boolean) defaults to 1. determines if the string
+               '(!!COMPUTE ROW!!)' should be prefixed to compute row headers
+               if using Sybase and header => 1.
+             case - (boolean) defaults to 0.  If 1 then we preserve the case for
+               column names in the header row.  If 0 then we lowercase all column
+               names in the header row.
+             quote - defaults to single quotes.  will escape any found in data with
+               backslash.
+             quoteAll - (boolean) defaults to 1.  If 1 (true), then all data is
+               quoted using the quote value.  If 0 (false), then only those fields
+               detected to be non-numeric are quoted.
+             delimeter - defaults to newline (\n).  Will escape any found in data
+               with backslash (\\n)
+
+       @ readSpreadSheet(sql =>, plug =>, case =>, sheetName =>, formats =>
+       {}, returnFile =>, workbook => )
+       @ readSpreadSheet('SELECT foo FROM bar')
+             This returns the data selected in sql query in a Excel(R) SpreadSheet.
+             NOTE:  You must call binmode() on whatever file handle you are
+             planning on printing the results to.  This is an IO::Scalar instance.
+
+             The returned array contains the following entries:
+               [0] = excel spreadsheet or the Spreadsheet::WriteExcel object
+               [1] = # rows of data processed
+               [2] = # rows changed by callback handler
+               [3] = # compute rows encountered
+               [4] = # compute rows changed by callback handler
+
+             Returns undef if an error occured.
+
+             Optional parameters:
+             returnFile - (boolean) defaults to 1.  If 1, then we return the
+               spreadsheet data ready to be written to a file.
+               If 0, then we return the Spreadsheet::WriteExcel object to allow
+               the caller to continue modifying things or to pass back into us
+               for another sheets worth of data.
+             workbook - Spreadsheet::WriteExcel object to work with.
+               Defaults to undef.
+             case - (boolean) defaults to 0.  If 1 then we preserve the case for
+               column names in the header row.  If 0 then we lowercase all column
+               names in the header row.
+             sheetName - defaults to "Sheet1".  Specify the name of the sheet
+               being created.  If you specify workbook, then I check to make sure
+               that the given sheetName has not already been created.  If it has,
+               then I let the module pick the next valid name, else I use the
+               name you specified.
+             formats - (hash ref) defaults to {}.  Define the name of the format
+               and then the attributes you want it to have, where each format
+               is a hashref containing the attributes.
+               Ex:  { header => { bold => 1, align => "center" },
+                      date => { num_format => "yyyy-mm-dd", align => "right" }
+                    }
+               If you define an entry called 'header', it will be used as the
+               format when displaying the header row and outputting the
+               column headers, otherwise no formatting will be done.
+             headers - (hash ref) defaults to {}.  Allows you to override the
+               displayed name for each data column.
+               Ex:  { start_date => "Start Date" }
+             columnWidths - (hash ref) defaults to {}.  Allows you to specify
+               which columns need a specific width set.  Only those columns
+               that have an index value defined, will have their width set.
+               The index value is based on the column name returned by the
+               result set using the case flag to determine if it is all
+               lowercase or left alone.  This allows you to re-order your
+               output and still have the correct column widths defined.
+               Ex:  { start_date => 35, num_users => 12, whatever => 15 }
+             types - (hash ref) defaults to {}.  Allows you to specify the
+               type of each column, indexed by the column name.  If you
+               don't specify a type for a column, then it defaults to 'string'.
+               See columnWidths for a description of the column name index.
+               The possible types are:
+                 string, date, time, date_time, number, url, 0number
+
+               0number displays this field as a string, thus keeping any leading 0's.
+
+               date appends the "T" required by excel to indicate there is no time part.
+
+               time prepends the "T" required by excel to indicate there is no date part.
+
+               date_time assumes you have inserted the "T" between the date and time parts,
+               with no surrounding spaces, otherwise it won't display properly.
+
+               You must also specify a format so that your date and/or time values
+               display properly.
+
+               Ex:  { start_date => "date", num_users => "number",
+                      whatever => "string" }
+
+             Callback handlers:
+
+               rowHandler - anonymous sub that will be called and passed in
+                 a hashref that contains the following entries:
+                   data - array ref with each columns value indexed from 0
+                   format - array ref with each columns format to be applied
+                   type - array ref with each columns default type
+                   row - int containing the current excel row # being processed.
+                 You can delete, modify or insert entries into each of the arrays.
+                 Make sure you also delete or insert the appropriate entries from
+                 the format and type arrays so they stay in sync with the data
+                 array.
+                 If you make changes, return the hashref, else return undef to
+                 indicate we should use the original values.
+
+               computeRowHandler - callback handler that handles compute rows.
+                 See rowHandler for details on the input and output handling.
+
+             CAVEATS
+               If you want to run multiple sql queries and generate a seperate
+               sheet per query, you must instantiate your own instance of the
+               Spreadsheet::WriteExcel module and pass it in, specifying
+               returnFile => 0.  You then must close() the workbook before
+               trying to work with the result, otherwise you won't get any
+               output as desired.
+
+               Example:
+
+               # instantiate my workbook instance.
+               my $workbook;
+               unless ($workbook = new Spreadsheet::WriteExcel("test.xls"))
+               {
+                 die "Failed to instantiate Spreadsheet::WriteExcel instance!  $!";
+               }
+
+               # do a loop that passes in the workbook and turns off returnFile.
+               .
+               .
+               .
+
+               $workbook->close();
+
+       int write(sql => "", plug => [], substitute => [])
+            (This function should be called for any sql statement other than
+            SELECT).
+            executes the specified sql statement passing in any values in plug
+            to the execute method after doing any substitutions that are in
+            substitute.
+
+            Returns the number of rows affected.
+
+            If the sql to execute is an INSERT statement, then the oid or
+            insertid (Postgresql or MySQL) values will be stored in the
+            oid value in this object, for later access by getID().
+
+       scalar getID("table.column")
+           This method will attempt to return the ID value of the just
+           INSERTed statement as implemented by MySQL, Sybase and PostgreSQL.
+           This is assuming that you just used the write() method and that is
+           was able to update the oid value.
+
+           This method requires a string value specifying the table.column
+           that is the ID field for the INSERT statement that just executed,
+           if you are using a PostgreSQL backend.
+
+           If using PostgreSQL <= 8.0, then the old oid lookup code will be
+           run, otherwise the ID has already been looked-up in the write()
+           method and will be returned.
+
+           If using MySQL, you do not need to specify the table.column value,
+           but your table must have an AUTO_INCREMENT field defined.
+
+           If using Sybase, you do not need to specify the table.column value,
+           but you may not get a valid ID back if you used ? substitution or
+           the INSERT was in a stored procedure.  See the DBD::Sybase man-page
+           for more information.
+
+           UPDATE:  At this point, I can't reliably get this to work with
+           Sybase, so it will always return a value of 0 until I can get this
+           figured out.  Sorry if this causes an issue.
+
+           If the database type is unsupported or an error happened, a value
+           of 0 will be returned.
+
+       string debugMessage()
+            Returns the string that contains all the info that is to be logged
+            at the current logLevel level.  If logLevel is not 0, 1, 2 or 3
+            then a default of 3 is used.
+
+       int getLogLevel()
+            returns the current logLevel value.
+
+       int setLogLevel(logLevel => 1)
+            sets the logLevel value.  If the value is not specified then it
+            defaults to logLevel 1.
+
+            Returns 1 on Success, 0 on Error.
+
+            We validate that the logLevel is 1, 2 or 3.
+
+       string boolToDBI(string)
+            Takes the string and returns a 1 for 1|t|true,
+            returns a 0 for anything else.
+
+            This method basically will output a true or false
+            value that any database should recognize based upon
+            the input string.
+
+       string dbiToBool(string)
+            Takes the 1 or 0 from the DBI and returns
+            true or false.
+
+       scalar formEncodeString(string, ignoreTags, sequence)
+       scalar formEncodeString(scalar)
+            In scalar mode, takes the incoming string and encodes it to
+            escape all <, > values as &lt;, &gt; unless they are \ escaped.
+
+            To have the \ showup, you will have to do a \\ when defining this
+            in perl, otherwise perl interprets the \whatever internally.
+
+            In non-scalar mode, you specify the arguments by name.
+
+            optional:
+              string - string to encode all &, <, > characters to their html
+                equivalents of &amp;, &lt;, &gt;.
+              ignoreTags - string of pipe (|) seperated tag names that should not
+                be encoded.  Ex:  ignoreTags => "b|i|u|span" would ignore all
+                <b>, </b>, <i>, </i>, <u>, </u>, <span>, </span> tags that were
+                not \ escaped.
+              sequence - a named set of ignoreTags values that you want used.
+                If both sequence and ignoreTags are specified, the ignoreTags
+                value is used.  If you want to apply multiple sequences, specify
+                them in a comma delimited format.
+                Ex: sequence => 'formatting,seperator'
+
+                available sequences are:
+                  formatting - "b|i|u|span|sub|sup|big|code|font|h1|h2|h3|h4|h5|h6|pre|small|strike|strong"
+                  block - "p|div|form"
+                  tables - "table|tr|td|th|tbody|tfoot|thead"
+                  seperator - "br|hr"
+                  formItems - "input|textarea|select|option"
+                  grouping - "ol|ul|li"
+
+            returns: form encoded string ignoring those entries defined in
+              ignoreTags or sequence and where the &, <, > was not \ escaped.
+
+              Any &, <, > that were \ escaped will have the \ removed on output.
+
+       bool sybaseErrorHandler()
+           returns 0 if the "error" is an informational error from sybase that
+           we can safely ignore.  Currently ignores the Text conversion errors
+           that are causing the connect to fail.
+
+           returns 1 for all other errors to cause DBI to process them.
+
+NOTE:
+        All data fields are accessible by specifying the object and
+        variable as follows:
+        Ex.  $value = $obj->variable;
+
+        Any methods where it is possible to specify just a single
+        argument and still have it be valid, you can now specify
+        the argument without having to name it first.
+
+        Ex:  calling read() without using the substitute or plug
+        options can be done as $dbi->read("SELECT * from test");
+
+        Methods updated to support this:
+        setError, read, readXML, write, setLogLevel
+
+AUTHOR
+       James A. Pattie, james at pcxperience dot com
+
+SEE ALSO
+       perl(1), DBI(3), DBIWrapper::XMLParser(3), DBIWrapper::ResultSet(3)
+
+perl v5.40.2                      2017-05-17                     DBIWrapper(3)

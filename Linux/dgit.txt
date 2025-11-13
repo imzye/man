@@ -1,0 +1,226 @@
+dgit-user(7)                                                                                        dgit                                                                                       dgit-user(7)
+
+NAAM
+       dgit-user - maken en delen van wijzigingen aan Debian-pakketten, met git
+
+INLEIDING
+       dgit laat u toe de broncode van elk pakket op uw systeem op te halen alsof uw distributie gebruik maakte van git om die allemaal te onderhouden.
+
+       U kunt deze broncode dan bewerken, bijgewerkte binaire pakketten (.deb's) bouwen en ze installeren en uitvoeren. U kunt uw werk ook delen met anderen.
+
+       Deze handleiding geeft hiervoor enkele procedures en suggesties. Ze gaat ervan uit dat u beschikt over basale noties van git. Ze veronderstelt niet dat u enigszins vertrouwd bent met de processen
+       van pakketbeheer van Debian.
+
+       Indien u een pakketonderhouder bent binnen Debian, een Onderhouder (DM -Debian Maintainer) of Ontwikkelaar (DD - Debian Developper) van Debian, en/of iemand wiens werk gesponsord wordt, dan is
+       deze handleiding niet voor u. Raadpleeg in dat geval dgit-nmu-simple(7), dgit-maint-*(7), of dgit(1) en dgit(7).
+
+SAMENVATTING
+       (Deze runen worden later besproken.)
+
+           % dgit clone glibc bookworm,-security
+           % cd glibc
+           % curl 'https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=28250;mbox=yes;msg=89' | patch -p1 -u
+           % git commit -a -m 'Fix libc lost output bug'
+           % gbp dch -S --since=dgit/dgit/sid --ignore-branch --commit
+           % sudo apt-get build-dep .
+           % dpkg-buildpackage -uc -b
+           % sudo dpkg -i ../libc6_*.deb
+
+       Sporadisch:
+
+           % git clean -xdf
+           % git reset --hard
+
+       Later:
+
+           % cd glibc
+           % dgit pull bookworm,-security
+           % gbp dch -S --since=dgit/dgit/sid --ignore-branch --commit
+           % dpkg-buildpackage -uc -b
+           % sudo dpkg -i ../libc6_*.deb
+
+DE JUISTE BRONCODE VINDEN - DGIT CLONE
+           % dgit clone glibc bookworm,-security
+           % cd glibc
+
+       Aan dgit clone moet de naam van het broncodepakket opgegeven worden (die kan verschillen van de naam van het binaire pakket; het was deze laatste naam die u opgaf aan "apt-get install") en de
+       codenaam of de alias van de Debian-release (welke men de "suite" noemt)
+
+   De naam van het broncodepakket te weten komen
+       Bij veel pakketten is de naam van het broncodepakket voor de hand liggend. Anders kunt u hem opzoeken met dpkg, indien u een bestand kent dat in het pakket zit:
+
+           % dpkg -S /lib/i386-linux-gnu/libc.so.6
+           libc6:i386: /lib/i386-linux-gnu/libc.so.6
+           % dpkg -s libc6:i386
+           Package (Pakket): libc6
+           Status (Toestand): install ok installed (geïnstalleerd)
+           ...
+           Source (Bron): glibc
+
+       (In dit voorbeeld is libc6 een pakket van het type "multi-arch: allowed", hetgeen betekent dat het voorkomt in verschillende andere vormen/compilaties voor verschillende architecturen. Daarvandaan
+       komt ":i386".)
+
+   De Debian-release (de "suite") te weten komen
+       Internally, Debian (and derived) distros normally refer to their releases by codenames.  Debian also has aliases which refer to the current stable release etc.  So for example, at the time of
+       writing Debian "bookworm" (Debian 12) is Debian "stable"; and the current version of Ubuntu is "plucky" (Plucky Puffin, 25.04).  You can specify either the codename "bookworm" or the alias
+       "stable".  If you don't say, you get "sid", which is Debian "unstable" - the main work-in progress branch.
+
+       If you don't know what you're running, please refer to your apt configuration in /etc/apt/sources* or in /etc/debian_version
+
+       For Debian, you should add ",-security" to the end of the suite name, unless you're on unstable or testing.  Hence, in our example "bookworm" becomes "bookworm,-security".  (Yes, with a comma.)
+
+WAT DGIT CLONE AANMAAKT
+   Welke takken er zijn
+       dgit clone will give you a new working tree, and arrange for you to be on a branch named like "dgit/bookworm,-security" (yes, with a comma in the branch name).
+
+       For each release (like "bookworm")  there is a tracking branch for the contents of the archive, called "remotes/dgit/dgit/bookworm" (and similarly for other suites).  This can be updated with
+       "dgit fetch bookworm".  This, the remote suite branch, is synthesized by your local copy of dgit.  It is fast forwarding.
+
+       Debian separates out the security updates, into "*-security".  Telling dgit "bookworm,-security" means that it should include any updates available in "bookworm-security".  The comma notation is a
+       request to dgit to track bookworm, or bookworm-security if there is an update for the package there.
+
+       (U kunt ook het commando dgit fetch gebruiken in een mappenboom die niet door git clone aangemaakt werd. Indien daarin geen "debian/changelog" aanwezig is, zult u met dgit fetch de optie
+       "-p"pakket moeten gebruiken.)
+
+   Welk soort broncodeboom u verkrijgt
+       Indien het Debian-pakket gebaseerd is op een release van een toeleveraar, dan zal de indeling van de broncode eruit zien als die van de versie van de toeleveraar. U kunt zich laten helpen door
+       "git grep" om uit te zoeken waar u met bewerken wilt beginnen.
+
+       De metagegevens van Debian over het pakket en de scripts voor het bouwen van de binaire pakketten bevinden zich in "debian/". Aanknopingspunten zijn "debian/control", "debian/changelog" en
+       "debian/rules". In het beleidshandboek van Debian vindt u meestal de nodige diepgaande technische informatie.
+
+       Bij veel Debian-pakketten zijn ook zaken te vinden in "debian/patches/". U kunt deze best negeren. Voor zover deze relevant zijn, zullen deze toegepast zijn in de eigenlijke bestanden,
+       vermoedelijk via feitelijke vastleggingen in de git-geschiedenis. Wanneer binaire pakketten gebouwd worden vanuit met dgit verkregen git-takken, wordt de inhoud van debian/patches genegeerd.
+
+       (Voor Debian-ingewijden: de git-boomstructuren die met dgit verkregen worden zijn "verpakkingstakken met toegepaste patches, maar zonder .pc-map".)
+
+   Welk soort geschiedenis u verkrijgt
+       Indien u geluk heeft, zal de geschiedenis een versie zijn van, of gebaseerd zijn op de eigen git-geschiedenis van de pakketonderhouder van Debian, of van de git-geschiedenis van de toeleveraar.
+
+       Maar van veel pakketten bestaat geen echte git-geschiedenis of werd die niet in een dgit-achtige vorm gepubliceerd. Het is dus mogelijk dat u vaststelt dat de geschiedenis eerder kort is en door
+       dgit bedacht.
+
+       dgit histories often contain automatically-generated commits, including commits which make no changes but just serve to make a rebasing branch fast-forward.  This is particularly true of combining
+       branches like "bookworm,-security".
+
+       Indien de pakketonderhouder gebruik maakt van git, dan kunt u na een dgit clone een handig "vcs-git" remote opmerken, wat verwijst naar het git-archief waarvan de pakketonderhouder gebruik maakt
+       voor het pakket. U kunt zien wat zich daar bevindt met "git fetch vcs-git". Maar gebruik wat u daar vindt met zorg: de git-archieven van onderhouders van Debian bevatten vaak zaken die erg
+       verwarrend en zonderling kunnen zijn. In het bijzonder zult u mogelijk handmatig de patches moeten toepassen die zich in debian/patches bevinden voor u iets anders doet!
+
+BOUWPROCES
+   Leg steeds veranderingen vast (N.v.d.V.: "commit" in git-terminologie) voor u begint te bouwen
+           % wget 'https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=28250;mbox=yes;msg=89' | patch -p1 -u
+           % git commit -a -m 'Reparatie van libc-bug waarbij verlies van uitvoer optreedt'
+
+       Het bouwproces van een Debian-pakket verloopt vaak erg rommelig: het kan bestanden wijzigen die ook vastgelegd zijn in git of uitvoer en tijdelijke bestanden achterlaten die niet door ".gitignore"
+       afgedekt zijn.
+
+       Indien u steeds een vastlegging doet, kunt u gebruik maken van
+
+           % git clean -xdf
+           % git reset --hard
+
+       om na het bouwproces een opruimactie te doen. (Indien u vergat vast te leggen, gebruik dan deze commando's niet; in de plaats kunt u misschien "git add -p" gebruiken om te helpen vastleggen wat u
+       werkelijk wenst te bewaren.)
+
+       Dit zijn verwoestende commando's die alle nieuwe bestanden wissen (dus moet u eraan denken om "git add") uit te voeren) en elke aanpassing aan een bestand weggooien (u moet er dus aan denken om
+       een vastlegging uit te voeren).
+
+   Werk het bestand changelog (minstens eenmaal) bij voor u bouwt
+           % gbp dch -S --since=dgit/dgit/sid --ignore-branch --commit
+
+       De binaire pakketten welke u bouwt zullen een versienummer hebben dat uiteindelijk afkomstig is uit het bestand "debian/changelog". U wilt toch uw binaire pakketten kunnen onderscheiden van die
+       van uw distributie.
+
+       En dus moet u "debian/changelog" bijwerken en er bovenaan een item toevoegen voor u de bouw uitvoert.
+
+       Deze rune geeft een makkelijke manier om dit te doen. Het voegt een nieuw item toe aan changelog met een niet-informatieve mededeling en een plausibel versienummer (dat een stukje van het id van
+       uw vastlegging bevat).
+
+       Indien u een meer gesofisticeerde manier wilt, biedt het pakket "dpkg-dev-el" een goede Emacs-modus voor het bewerken van changelogs. U kunt anders de changelog ook bewerken met een andere
+       teksteditor, of "dch" of "gbp dch" uitvoeren met verschillende opties. Het kiezen van een goed versienummer is een beetje een netelige kwestie en een volledige behandeling van dit onderwerp valt
+       buiten het bestek van deze handleiding.
+
+   Het eigenlijke bouwen
+           % sudo apt-get build-dep .
+           % dpkg-buildpackage -uc -b
+
+       dpkg-buildpackage is het belangrijkste gereedschap voor het bouwen van een Debian-broncodepakket. "-uc" betekent: geen pgp-ondertekening toevoegen aan de resultaten. "-b" betekent: alle binaire
+       pakketten bouwen, maar geen broncodepakket.
+
+   Gebruik maken van sbuild
+       In plaats van in uw hoofdomgeving, kunt u de bouw uitvoeren in een "schroot chroot" met sbuild (sbuild wordt door de build-achtergronddiensten van Debian gebruikt.)
+
+           % git clean -xdf
+           % sbuild -d trixie -A --no-clean-source \
+                    --dpkg-source-opts='-Zgzip -z1 --format=1.0 -sn'
+
+       Merk op dat dit een "broncodepakket" (.dsc en .tar.gz) lijkt achter te laten in de bovenliggende map, maar u moet dit broncodepakket niet gebruiken. Waarschijnlijk is het defect. Zie voor
+       bijkomende informatie Debian-bug #868527.
+
+INSTALLEREN
+           % sudo apt install ../libc6_*.deb
+
+       U kunt "dpkg -i" gebruiken om de .deb-bestanden te installeren die uit uw pakket voortkwamen.
+
+       Indien de vereisten niet geïnstalleerd zijn, zult u een foutmelding krijgen die gewoonlijk gerepareerd kan worden met "apt-get -f install".
+
+Multiarch
+       Indien u aan een bibliotheekpakket werkt en op uw systeem multi-architectuurondersteuning geactiveerd is, krijgt u mogelijk iets te zien als dit:
+
+           dpkg: fout bij verwerken van pakket libpcre3-dev:amd64 (--configure):
+            pakket libpcre3-dev:amd64 2:8.39-3~3.gbp8f25f5 kan niet geconfigureerd worden omdat libpcre3-dev:i386 een andere versie (2:8.39-2) heeft
+
+       Het multi-architectuursysteem dat door Debian toegepast wordt, vereist dat elk pakket dat voor meerdere architecturen aanwezig is, exact hetzelfde is bij alle architecturen waarvoor het
+       geïnstalleerd is.
+
+       De geëigende oplossing is om het pakket te bouwen voor alle architecturen die u geactiveerd heeft. U zult een chroot nodig hebben voor elk van de secundaire architecturen. Dit is enigszins
+       vermoeiend, ook al beschikt Debian over uitstekende hulpmiddelen voor het beheren van chroots. Goede aanknopingspunten zijn "sbuild-debian-developer-setup" uit het pakket met dezelfde naam en
+       "sbuild-createchroot" uit het pakket "sbuild".
+
+       Een andere mogelijkheid is dat u de betreffende pakketten bij de andere architecturen de-installeert met iets zoals "dpkg --remove libpcre3:i386".
+
+       Indien geen van beide mogelijkheden een optie is, dan is een mogelijke laatste wanhoopsdaad, voor uw eigen pakket hetzelfde versienummer gebruiken als van het officiële pakket. Dit is niet ideaal
+       omdat dit het moeilijk maakt om te weten wat geïnstalleerd is, en omdat het apt zal misleiden en in de war brengen.
+
+       Met de "hetzelfde-nummer"-benadering kunt u nog steeds foutmeldingen krijgen zoals
+
+           poging tot overschrijven van gedeelde '/usr/include/pcreposix.h', welke verschilt van andere exemplaren van pakket libpcre3-dev
+
+       maar de optie "--force-overwrite" meegeven aan dpkg zal helpen - in de veronderstelling dat u weet wat u doet.
+
+UW WERK DELEN
+       The "dgit/bookworm,-security" branch (or whatever) is a normal git branch. You can use "git push" to publish it on any suitable git server.
+
+       Iedereen die deze git-tak van u krijgt, zal in staat zijn om binaire pakketten (.deb) te bouwen, zoals u het deed.
+
+       Indien u uw wijzigingen terug wilt bijdragen aan Debian, dan zult u ze wellicht als bijlage bij een e-mail moeten sturen naar het Debian Bugvolgsysteem <https://bugs.debian.org/> (ofwel als
+       opvolging van een bestaande bug, of als een nieuwe bug). Patches in de indeling "git-format-patch" zijn gewoonlijk erg welkom.
+
+   Broncodepakketten
+       De git-tak volstaat niet om een broncodepakket te bouwen volgens de manier van Debian. Broncodepakketten zijn wat lastig om ermee te werken. Vele aannemelijke git-geschiedenissen of git-bomen
+       kunnen namelijk niet omgezet worden naar een geschikt broncodepakket. Dus beveel ik aan om in de plaats daarvan uw git-tak te delen.
+
+       Indien een git-tak niet voldoende is en u een broncodepakket moet aanleveren, maar het formaat/de indeling ervan niet van belang is (bijvoorbeeld omdat u bepaalde software heeft die met
+       broncodepakketten werkt en niet met git-geschiedenissen), kunt u deze methode gebruiken om een broncodepakket van het type "3.0 (native)" te genereren. Dit is niet meer dan een tar-archief met een
+       bijhorend .dsc-metadatabestand:
+
+           % echo '3.0 (native)' >debian/source/format
+           % git commit -m 'overgang naar de broncode-indeling native' debian/source/format
+           % dgit -wgf build-source
+
+       Indien u een goed ogend broncodepakket moet aanleveren, dan zult u bereid moeten zijn er heel wat meer werk in te investeren. U zult heel wat meer moeten lezen, misschien te beginnen bij
+       dgit-nmu-simple(7), dgit-sponsorship(7) of dgit-maint-*(7)
+
+NIEUWERE DGIT INSTALLEREN OP OUDERE DISTRIBUTIES
+       Als dgit niet werkt met het bronpakket waarmee u werkt, kan dit te wijten zijn aan een bug. Deze kan worden verholpen door een upgrade.
+
+       U kunt waarschijnlijk rechtstreeks de nieuwste versie van dgit.deb installeren via "apt install" vanuit Debian stable of Debian testing.
+
+       Versies van dgit vanaf Debian 13 (trixie) documenteren hun installeerbaarheid op oude releases in de manpagina. Zie bijvoorbeeld <https://manpages.debian.org/testing/dgit/dgit.1.en.html> voor het
+       huidige Debian testing en kijk in de sectie ONDERSTEUNING OP OUDE DISTRIBUTIES..
+
+ZIE OOK
+       dgit(1), dgit(7)
+
+Debian Project                                                                              dgit+tag2upload team                                                                               dgit-user(7)

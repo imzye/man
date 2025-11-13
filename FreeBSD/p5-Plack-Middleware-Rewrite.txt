@@ -1,0 +1,175 @@
+Plack::Middleware::Rewrite(3)              User Contributed Perl Documentation
+
+
+NAME
+       Plack::Middleware::Rewrite - mod_rewrite for Plack
+
+SYNOPSIS
+        # in app.psgi
+        use Plack::Builder;
+
+        builder {
+            enable 'Rewrite', request => sub {
+                s{^/here(?=/|$)}{/there};
+
+                return [303]
+                    if s{^/foo/?$}{/bar/}
+                    or s{^/baz/?$}{/quux/};
+
+                return [301, [ Location => 'http://example.org/' ], []]
+                    if m{^/example/?$};
+
+                return [201] if $_ eq '/favicon.ico';
+
+                return [503] if -e '/path/to/app/maintenance.lock';
+
+                return [200, [qw(Content-Type text/plain)], ['You found it!']]
+                    if $_ eq '/easter-egg';
+            },
+            response => sub {
+                $_->status( 303 )
+                    if $_->status eq 201 and $_->get( 'Location' );
+
+                $_->set( 'Content-Type', 'application/xhtml+xml' )
+                    if ( $_[0]{'HTTP_ACCEPT'} || '' ) =~ m{application/xhtml\+xml(?!\s*;\s*q=0)};
+            };
+            $app;
+        };
+
+DESCRIPTION
+       This middleware provides a convenient way to modify requests in flight
+       in Plack apps. Rewrite rules are simply written in Perl, which means
+       everything that can be done with mod_rewrite can be done with this
+       middleware much more intuitively (if in syntactically wordier ways).
+       Its primary purpose is rewriting paths, but almost anything is possible
+       very easily.
+
+CONFIGURATION OPTIONS
+   "request"
+       Takes a reference to a function that will be called in scalar context
+       for each request. On call, $_ will be aliased to "PATH_INFO", so that
+       you can easily use regexp matches and subtitutions to examine and
+       modify it. The PSGI environment will be passed to the function as its
+       first and only argument.
+
+       The function may return three kinds of valid value:
+
+       A plain scalar
+           Ignored. The value will be thrown away and any path rewriting (or
+           any other modifications of the PSGI environment) will take effect
+           during the current request cycle, invisibly to the client user
+           agent.
+
+       An array reference
+           A PSGI array response to return immediately without invoking the
+           wrapped PSGI application.
+
+           The array may have fewer than 3 elements, in which case it will be
+           filled to 3 elements by pushing the default values: an empty body
+           array, empty headers array, and a 303 status code.
+
+           If the "Location" header is missing from a redirect response (i.e.
+           one with 3xx status code), it will be filled in automatically from
+           the value left in "PATH_INFO" by your callback. (Note that this
+           only allows you to redirect to URLs with the same hostname. To
+           redirect the client to a different host, you will have to supply a
+           "Location" header manually.)
+
+       A code reference
+           A PSGI application which will be called to process the request.
+           This prevents the wrapped application from being called.
+
+       Any other kind of reference
+           Error. An exception will be thrown.
+
+   "response"
+       Takes a reference to a function that will be called after the request
+       has been processed and the response is ready to be returned.
+
+       On call, $_ will be aliased to a specially extended a
+       "Plack::Util::headers" object for the response, for convenient
+       alteration of headers.  The extension is a "status" method, which
+       allows you to inspect and modify the response status code.
+
+       Just as in ""request"", the PSGI environment is passed as first and
+       only argument.
+
+       Any return value from this function will be ignored unless it is a code
+       reference. In that case it will be used to filter the response body, as
+       documented in "RESPONSE CALLBACK" in Plack::Middleware:
+
+        return sub {
+            my $chunk = shift;
+            return unless defined $chunk;
+            $chunk =~ s/Foo/Bar/g;
+            return $chunk;
+        };
+
+           The callback takes one argument $chunk and your callback is
+           expected to return the updated chunk. If the given $chunk is undef,
+           it means the stream has reached the end, so your callback should
+           also return undef, or return the final chunk and return undef when
+           called next time.
+
+LEGACY INTERFACE
+       The old interface uses a single attribute, "rules", instead of the
+       "request" and "response" pair, with a more complex set of return
+       values, containing an ambiguity. It is also less expressive than the
+       new interface.
+
+       The old interface is documented here for the purposes of maintaining
+       old code; its use in new code is discouraged. In the far future it may
+       get removed entirely, and in the meantime it will not gain new
+       features.
+
+       The return value of the "rules" callback is interpreted as follows:
+
+       An array reference (with at least one element)
+           A regular PSGI response, except that you may omit either or both
+           the headers and body elements. You may not omit the status.
+
+       A scalar value that looks like an HTTP status
+           Like returning a reference to a one-element.
+
+           Beware: every subroutine in Perl has a return value, even if you do
+           not return anything explicitly. To avoid ambiguities you must
+           return one-element arrays instead of plain values and use an
+           explicit "return" at the end of your rules:
+
+            return [201] if $_ eq '/favicon.ico';
+            s{^/here(?=/|$)}{/there};
+            return;
+
+       A code reference
+           Equivalent to the ""response"" callback in the new interface, with
+           the same arguments and return values.
+
+       Any other kind of value
+           Internal rewrite.
+
+   Porting from the old to the new interface
+       There are two major incompatibilities between the interfaces:
+
+       1.  You can no longer return status codes as plain scalars, as in
+           "return 301".  You must now "return [301]" (which you could before,
+           but didn't have to).
+
+       2.  Rewriting the response is no longer done by returning a "sub".
+           Instead you must use the "response" attribute.
+
+           This may be inconvient if the function was closing over variables
+           from the "rules" callback; in that case you now have to explicitly
+           pass that state from one callback to the other through the
+           environment hash. However, such code is rare, and in all other
+           cases your code will be more readable under the new interface.
+
+AUTHOR
+       Aristotle Pagaltzis <pagaltzis@gmx.de>
+
+COPYRIGHT AND LICENSE
+       This software is copyright (c) 2022 by Aristotle Pagaltzis.
+
+       This is free software; you can redistribute it and/or modify it under
+       the same terms as the Perl 5 programming language system itself.
+
+perl v5.40.2                      2022-09-04     Plack::Middleware::Rewrite(3)

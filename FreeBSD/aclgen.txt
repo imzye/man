@@ -1,0 +1,214 @@
+ACLGEN(1)               FreeBSD General Commands Manual              ACLGEN(1)
+
+NAME
+       aclgen - create optimized access lists
+
+
+SYNOPSIS
+       aclgen [-h] [-p] [-i] [-m permit,deny] [-f format-string]
+       [-t trace-flags] [input_file]
+
+
+DESCRIPTION
+       aclgen builds optimized IP access lists. It is primarily intended for
+       use in large scripts that generate access lists, network lists, or
+       series of static routes from various input sources, e.g. RIPE database
+       route or inetnum objects.
+
+       aclgen reads a series of IP address specifications, then computes the
+       most compact classless notation of listed address ranges.  The input
+       address expressions may be inclusive or exclusive.  Meanwhile the
+       program reads the input it builds internally a binary tree representing
+       the whole address space. After reading the input data, aclgen makes
+       several optimizations on the tree on order to generate the smallest
+       possible graph corresponding to the input address expresions.
+
+       Each input line may contain one address expression or a comment.  The
+       program accepts wide variety of input formats.
+
+       address/prefix
+              address is the usual dotted decimal representation, prefix is
+              the number of significant bits between 0 and 32.
+
+       address mask
+              Similar to the above form but the signifcant bits are
+              represented by the dotted decimal mask. Contiguous netmasks only
+              are allowed. However no matter if zero and one bits are left or
+              right. So 255.255.192.0 is equal to 0.0.63.255.  No difference
+              between "mask" and "wildcard" specification.  So there is a
+              minor ambiguity with mask 0.0.0.0 (say 255.255.255.255).  In
+              that case the program assumes 32 significant bits, if the
+              address is not 0.0.0.0, and thinks 0.0.0.0/0 otherwise.  (That
+              means, that the address expression 0.0.0.0/32 has no eqivalent
+              `address mask' form. However this is probably not a serious
+              restriction.)
+
+
+       address-address
+              Inclusive range of addresses. The dash may be surrounded by any
+              number of spaces and/or tabulators.
+
+       address
+              The old classful address. However if the address does'n meet his
+              "natural" netmask, i.e. "host part" is not zero, the program
+              treats the input expression as host address (address/32).
+
+       Address specifications may be preceded by a modifier.  Modifiers may be
+       positive or negative. The default modifier is positive. The acceptable
+       input modifiers are
+
+              positive   negative
+              -------------------
+              +          -
+              permit     deny
+              yes        no
+
+       Modifiers are case insensitive, the default is positive.
+
+       The input address list is preceded by an implicit
+          deny 0.0.0.0/32
+       expression. In other words the generated filter list will discard the
+       unspecified part of the address space unless you override it with an
+       explicit
+          permit 0.0.0.0/32
+       line in the input file. This behaviour is not affected by the -i
+       option. (See below.)
+
+       Empty lines, leading/trailing spaces and any characters from `#' to the
+       end of line are ignored as well as unparseable lines.
+
+       If the input line begins with `*' aclgen prints the currents state of
+       the binary tree of the address space.  This is for debugging purposes
+       only.
+
+       The input is read from infile or from the standard input if no input
+       file specified.  `-' means stdin too.
+
+
+OPTIONS
+       -h     Print version and usage then exit.
+
+       -s     Silent mode. Warnings are supressed.
+
+       -i     Invert modifiers of all input lines. It does'n affect the
+              implicit `deny 0.0.0.0/0' statement. (See above.)
+
+       -p     Force "positive" output. If -p is specified, the output contains
+              no `deny' specifications.  Useful when generating routing tables
+              or network lists.
+
+       -d level
+              Switch on diagnostics. `level' is the sum of one or more trace
+              flags:
+                  1  show input parsing
+                  2  print raw tree
+                  4  print optimized tree
+                 16  debug optimization step 1
+                 32  debug optimization step 2
+                 64  debug optimization step 3
+                128  debug optimization step 4
+
+       -f format-string
+              Format-string is a printf(3) like format specification of output
+              lines.  The recognized conversion specifications are:
+
+              %a  address (dotted decimal)
+              %k  mask (dotted decimal)
+              %w  wildcard bits (dotted decimal, binary complement of %k)
+              %p  prefix
+              %m  modifier (permit/deny by default)
+              %%  the `%' itself
+
+              The default format string is "%m %a %w".  If you specify a
+              format string without %m, the program automatically turns on the
+              -p option.
+
+       -m permit-string,deny-string
+              Change the modifiers. The default modifiers are 'permit' for
+              addresses to accept and 'deny  ' for addresses to reject.
+
+EXAMPLES
+       The examples below follow the syntax of Cisco IOS configuration
+       commands.
+
+       Basic functionality
+         % aclgen -f "access-list 83 %m %a %w" << END
+         > 192.168.10.0-192.168.15.0    # range of 6 C classes
+         > 192.168.16.0/23              # classless
+         > 192.168.18.0                 # classful
+         > 192.168.19.0                 # classful
+         > 192.168.32.0 255.255.224.0   # masked
+         > 192.168.32.5                 # host
+         > 192.168.80.7                 # host
+         > END
+         access-list 83 deny   192.168.8.0 0.0.1.255
+         access-list 83 permit 192.168.8.0 0.0.7.255
+         access-list 83 permit 192.168.16.0 0.0.3.255
+         access-list 83 permit 192.168.32.0 0.0.31.255
+         access-list 83 permit 192.168.80.7 0.0.0.0
+         access-list 83 deny   0.0.0.0 255.255.255.255
+         %
+
+       The same list but inverted
+         % aclgen -f "access-list 83 %m %a %w" -m "deny  ,permit" << END
+         > 192.168.10.0-192.168.15.0    # range of 6 C classes
+         > 192.168.16.0/23              # classless
+         > 192.168.18.0                 # classful
+         > 192.168.19.0                 # classful
+         > 192.168.32.0 255.255.224.0   # masked
+         > 192.168.32.5                 # host
+         > 192.168.80.7                 # host
+         > END
+         access-list 83 permit 192.168.8.0 0.0.1.255
+         access-list 83 deny   192.168.8.0 0.0.7.255
+         access-list 83 deny   192.168.16.0 0.0.3.255
+         access-list 83 deny   192.168.32.0 0.0.31.255
+         access-list 83 deny   192.168.80.7 0.0.0.0
+         access-list 83 permit 0.0.0.0 255.255.255.255
+         %
+
+       Classless BGP announcements
+         % aclgen -p -f "network %a %k" <<END
+         > 192.168.10.0-192.168.15.0    # range of 6 C classes
+         > 192.168.16.0/23              # classless
+         > 192.168.18.0                 # classful
+         > 192.168.19.0                 # classful
+         > 192.168.32.0 255.255.224.0   # masked
+         > 192.168.32.5                 # host
+         > 192.168.80.7                 # host
+         END
+         network 192.168.10.0 255.255.254.0
+         network 192.168.12.0 255.255.252.0
+         network 192.168.16.0 255.255.252.0
+         network 192.168.32.0 255.255.224.0
+         network 192.168.80.7 255.255.255.255
+         %
+
+       Static routes
+         % aclgen -p -f "ip route %a %k 10.0.3.2" <<END
+         > 192.168.10.0-192.168.15.0    # range of 6 C classes
+         > no 192.168.13.128/26         # hole in the block above
+         > 192.168.16.0/23              # classless
+         > 192.168.18.0                 # classful
+         > 192.168.19.0                 # classful
+         > 192.168.32.0 255.255.224.0   # masked
+         > END
+         ip route 192.168.10.0 255.255.254.0 10.0.3.2
+         ip route 192.168.12.0 255.255.255.0 10.0.3.2
+         ip route 192.168.13.0 255.255.255.128 10.0.3.2
+         ip route 192.168.13.192 255.255.255.192 10.0.3.2
+         ip route 192.168.14.0 255.255.254.0 10.0.3.2
+         ip route 192.168.16.0 255.255.252.0 10.0.3.2
+         ip route 192.168.32.0 255.255.224.0 10.0.3.2
+         %
+
+
+BUGS
+       This manpage is written in "Hunglish". ;-)
+
+
+AUTHOR
+       Written by Gabor Kiss <kissg@sztaki.hu>
+
+
+4th Berkeley Distribution        June 21, 1997                       ACLGEN(1)

@@ -1,0 +1,314 @@
+Data::Sah::Coerce(3)  User Contributed Perl Documentation Data::Sah::Coerce(3)
+
+
+NAME
+       Data::Sah::Coerce - Coercion rules for Data::Sah
+
+VERSION
+       This document describes version 0.054 of Data::Sah::Coerce (from Perl
+       distribution Data-Sah-Coerce), released on 2023-10-24.
+
+SYNOPSIS
+        use Data::Sah::Coerce qw(gen_coercer);
+
+        # a utility routine: gen_coercer
+        my $c = gen_coercer(
+            type               => 'date',
+            coerce_to          => 'DateTime',
+            coerce_rules       => ['From_str::natural'],  # explicitly enable a rule, etc. See Data::Sah::CoerceCommon's get_coerce_rules() for detailed syntax
+            # return_type      => 'str+val',              # default is 'val'
+        );
+
+        my $val = $c->(123);          # unchanged, 123
+        my $val = $c->(1463307881);   # becomes a DateTime object
+        my $val = $c->("2016-05-15"); # becomes a DateTime object
+        my $val = $c->("2016foo");    # unchanged, "2016foo"
+
+DESCRIPTION
+       This distribution contains a standard set of coercion rules for
+       Data::Sah. It is separated from the "Data-Sah" distribution and can be
+       used independently.
+
+       A coercion rule is put in
+       "Data::Sah::Coerce::$COMPILER::To_$TARGET_TYPE::From_$SOURCE_TYPE::DESCRIPTION"
+       module, for example:
+       Data::Sah::Coerce::perl::To_date::From_float::epoch for converting date
+       from integer (Unix epoch) or
+       Data::Sah::Coerce::perl::To_date::From_str::iso8601 for converting date
+       from ISO8601 strings like "2016-05-15".
+
+       Basically, a coercion rule will provide an expression ("expr_match")
+       that evaluates to true when data can be coerced, and an expression
+       ("expr_coerce") to actually coerce/convert data to the target type.
+       This rule can be combined with other rules to form the final coercion
+       code.
+
+       The module must contain "meta" subroutine which must return a hashref
+       that has the following keys ("*" marks that the key is required):
+
+       •   v* => int (default: 1)
+
+           Metadata specification version. From DefHash. Currently at 4.
+
+           History: bumped from 3 to 4 to remove "enable_by_default" property.
+           Now the list of standard (enabled-by-default) coercion rules is
+           maintained in Data::Sah::Coerce itself. This allows us to skip
+           scanning all Data::Sah::Coerce::* coercion modules installed on the
+           system. Data::Sah::Coerce still accepts version 3; it just ignores
+           the "enable_by_default" property.
+
+           History: bumped from 2 to 3 to allow coercion expression to return
+           error message explaining why coercion fails. The "might_die"
+           metadata property is replaced with "might_fail". When "might_fail"
+           is set to true, "expr_coerce" must return array containing error
+           message and coerced data, instead of just coerced data.
+
+           History: Bumped from 1 to 2 to exclude old module names.
+
+       •   summary => str
+
+           From DefHash.
+
+       •   might_fail => bool (default: 0)
+
+           Whether coercion might fail, e.g. because of invalid input. If set
+           to 1, "expr_coerce" key that the coerce() routine returns must be
+           an expression that returns an array (envelope) of "(error_msg,
+           data)" instead of just coerced data. Error message should be a
+           string that is set when coercion fails and explains why. Otherwise,
+           if coercion succeeds, the error message string should be set to
+           undefined value.
+
+           An example of a rule like this is coercing from string in the form
+           of "YYYY-MM-DD" to a DateTime object. The rule might match any
+           string in the form of "/\A(\d{4})-(\d{2})-(\d{2})\z/" while it
+           might not be a valid date.
+
+           This is used for coercion rules that act as a data checker.
+
+       •   prio => int (0-100, default: 50)
+
+           This is to regulate the ordering of rules. The higher the number,
+           the lower the priority (meaning the rule will be put further back).
+           Rules that are computationally more expensive and/or match more
+           broadly in general should be put further back (lower priority,
+           higher number).
+
+       •   precludes => array of (str|re)
+
+           List the other rules or rule patterns that are precluded by this
+           rule. Rules that are mutually exclusive or pure alternatives to one
+           another (e.g. date coercien rules From_str::natural vs
+           From_str::flexible both parse natural language date string; there
+           is usually little to none of usefulness in using both; besides,
+           both rules match all string and dies when failing to parse the
+           string. So in "From_str::natural" rule, you'll find this metadata:
+
+            precludes => [qr/\A(From_str::alami(_.+)?|From_str::natural)\z/]
+
+           and in "From_str::flexible" rule you'll find this metadata:
+
+            precludes => [qr/\A(From_str::alami(_.+)?|From_str::flexible)\z/]
+
+           Also note that rules which are specifically requested to be used
+           (e.g. using "x.perl.coerce_rules" attribute in Sah schema) will
+           still be precluded.
+
+       The module must also contain "coerce" subroutine which must generate
+       the code for coercion. The subroutine must accept a hash of arguments
+       ("*" indicates required arguments):
+
+       •   data_term => str
+
+       •   coerce_to => str
+
+           Some Sah types are "abstract" and can be represented using a choice
+           of several actual types in the target programming language. For
+           example, "date" can be represented in Perl as an integer (Unix
+           epoch value), or a DateTime object, or a Time::Moment object.
+
+           Not all target Sah types will need this argument.
+
+       The "coerce" subroutine must return a hashref with the following keys
+       ("*" indicates required keys):
+
+       •   expr_match => str
+
+           Expression in the target language to test whether the data can be
+           coerced. For example, in
+           "Data::Sah::Coerce::perl::To_date::From_float::epoch", only
+           integers ranging from 10^8 to 2^31 are converted into date. Non-
+           integers or integers outside this range are not coerced.
+
+       •   expr_coerce => str
+
+           Expression in the target language to actually convert data to the
+           target type.
+
+       •   modules => hash
+
+           A list of modules required by the expressions.
+
+       Basically, the "coerce" subroutine must generates a code that accepts a
+       non-undef data and must convert this data to the desired type/format
+       under the right condition. The code to match the right condition must
+       be put in "expr_match" and the code to convert data must be put in
+       "expr_coerce".
+
+       Program/library that uses Data::Sah::Coerce can collect rules from the
+       rule modules then compose them into the final code, something like (in
+       pseudocode):
+
+        if (data is undef) {
+          return undef;
+        } elsif (data matches expr-match-from-rule1) {
+          return expr-coerce-from-rule1;
+        } elsif (data matches expr-match-from-rule2) {
+          return expr-coerce-from-rule1;
+        ...
+        } else {
+          # does not match any expr-match
+          return original data;
+        }
+
+VARIABLES
+   $Log_Coercer_Code => bool (default: from ENV or 0)
+       If set to true, will log the generated coercer code (currently using
+       Log::ger at trace level). To see the log message, e.g. to the screen,
+       you can use something like:
+
+        % TRACE=1 perl -MLog::ger::LevelFromEnv -MLog::ger::Output=Screen \
+            -MData::Sah::Coerce=gen_coercer -E'my $c = gen_coercer(...)'
+
+FUNCTIONS
+   gen_coercer
+       Usage:
+
+        gen_coercer(%args) -> any
+
+       Generate coercer code.
+
+       This is mostly for testing. Normally the coercion rules will be used
+       from Data::Sah.
+
+       This function is not exported by default, but exportable.
+
+       Arguments ('*' denotes required arguments):
+
+       •   coerce_rules => array[str]
+
+           A specification of coercion rules to use (or avoid).
+
+           This setting is used to specify which coercion rules to use (or
+           avoid) in a flexible way. Each element is a string, in the form of
+           either "NAME" to mean specifically include a rule, or "!NAME" to
+           exclude a rule.
+
+           Some coercion modules are used by default, unless explicitly
+           avoided using the '!NAME' rule.
+
+           To not use any rules:
+
+           To use the default rules plus R1 and R2:
+
+            ['R1', 'R2']
+
+           To use the default rules but not R1 and R2:
+
+            ['!R1', '!R2']
+
+       •   coerce_to => str
+
+           Some Sah types, like "date", can be represented in a choice of
+           types in the target language. For example, in Perl you can store it
+           as a floating number a.k.a. float(epoch), or as a DateTime object,
+           or Time::Moment object. Storing in DateTime can be convenient for
+           date manipulation but requires an overhead of loading the module
+           and storing in a bulky format. The choice is yours to make, via
+           this setting.
+
+       •   return_type => str (default: "val")
+
+           "val" means the coercer will return the input (possibly) coerced or
+           undef if coercion fails.
+
+           "bool_coerced+val" means the coercer will return a 2-element array.
+           The first element is a bool value set to 1 if coercion has been
+           performed or 0 if otherwise. The second element is the (possibly)
+           coerced input.
+
+           "bool_coerced+str_errmsg+val" means the coercer will return a
+           3-element array.  The first element is a bool value set to 1 if
+           coercion has been performed or 0 if otherwise. The second element
+           is the error message string which will be set if there is a failure
+           in coercion (or undef if coercion is successful). The third element
+           is the (possibly) coerced input.
+
+       •   source => bool
+
+           If set to true, will return coercer source code string instead of
+           compiled code.
+
+       •   type* => sah::type_name
+
+           (No description)
+
+       Return value:  (any)
+
+ENVIRONMENT
+   LOG_SAH_COERCER_CODE => bool
+       Set default for $Log_Coercer_Code.
+
+HOMEPAGE
+       Please visit the project's homepage at
+       <https://metacpan.org/release/Data-Sah-Coerce>.
+
+SOURCE
+       Source repository is at
+       <https://github.com/perlancar/perl-Data-Sah-Coerce>.
+
+SEE ALSO
+       Data::Sah::CoerceCommon for detailed syntax of coerce rules (explicitly
+       including/excluding rules etc).
+
+       Data::Sah
+
+       Data::Sah::CoerceJS
+
+       App::SahUtils, including coerce-with-sah to conveniently test coercion
+       from the command-line.
+
+AUTHOR
+       perlancar <perlancar@cpan.org>
+
+CONTRIBUTING
+       To contribute, you can send patches by email/via RT, or send pull
+       requests on GitHub.
+
+       Most of the time, you don't need to build the distribution yourself.
+       You can simply modify the code, then test via:
+
+        % prove -l
+
+       If you want to build the distribution (e.g. to try to install it
+       locally on your system), you can install Dist::Zilla,
+       Dist::Zilla::PluginBundle::Author::PERLANCAR,
+       Pod::Weaver::PluginBundle::Author::PERLANCAR, and sometimes one or two
+       other Dist::Zilla- and/or Pod::Weaver plugins. Any additional steps
+       required beyond that are considered a bug and can be reported to me.
+
+COPYRIGHT AND LICENSE
+       This software is copyright (c) 2023, 2022, 2021, 2020, 2019, 2018,
+       2017, 2016 by perlancar <perlancar@cpan.org>.
+
+       This is free software; you can redistribute it and/or modify it under
+       the same terms as the Perl 5 programming language system itself.
+
+BUGS
+       Please report any bugs or feature requests on the bugtracker website
+       <https://rt.cpan.org/Public/Dist/Display.html?Name=Data-Sah-Coerce>
+
+       When submitting a bug or request, please include a test-file or a patch
+       to an existing test-file that illustrates the bug or desired feature.
+
+perl v5.40.2                      2023-10-24              Data::Sah::Coerce(3)

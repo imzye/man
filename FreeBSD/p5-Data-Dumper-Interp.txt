@@ -1,0 +1,542 @@
+Data::Dumper::Interp(3)                    User Contributed Perl Documentation
+
+
+NAME
+       Data::Dumper::Interp - interpolate Data::Dumper output into strings for
+       human consumption
+
+SYNOPSIS
+         use open IO => ':locale';
+         use Data::Dumper::Interp;
+
+         @ARGV = ('-i', '/file/path');
+         my %hash = (abc => [1,2,3,4,5], def => undef);
+         my $href = \%hash;
+         my $coderef = \&mysub;
+         my $obj = bless {}, "Foo::Bar";
+
+         # Interpolate variables in strings with Data::Dumper output
+         say ivis 'FYI ref is $href\nThat hash is: %hash\nArgs are @ARGV';
+
+           # -->FYI ref is {abc => [1,2,3,4,5], def => undef}
+           #    That hash is: (abc => [1,2,3,4,5], def => undef)
+           #    Args are ("-i","/file/path")
+
+         # Label interpolated values with "expr="
+         say dvis '$coderef  $href\nand @ARGV';
+
+           #-->coderef=\&main::mysub  href={abc => [1,2,3,4,5], def => undef}
+           #   and @ARGV=("-i","/file/path")
+
+         # Functions to format one thing
+         say vis $href;     # {abc => [1,2,3,4,5], def => undef}
+         say vis \@ARGV;    # ["-i", "/file/path"]  # any scalar
+         say avis @ARGV;    # ("-i", "/file/path")
+         say hvis %hash;    # (abc => [1,2,3,4,5], def => undef)
+
+         # Format a reference with abbreviated referent address
+         say visr $href;     # HASH<457:1c9>{abc => [1,2,3,4,5], ...}
+
+         # Just abbreviate a referent address or arbitrary number
+         say addrvis refaddr($href);  # 457:1c9
+         say addrvis $href;           # HASH<457:1c9>
+         say addrvis $obj;            # Foo::Bar<984:ef8>
+
+         # Stringify objects
+         { use bigint;
+           my $struct = { debt => 999_999_999_999_999_999.02 };
+           say vis $struct;
+             # --> {debt => (Math::BigFloat)999999999999999999.02}
+
+           # But if you do want to see object internals...
+           #
+           say visnew->viso($struct);
+             # --> {debt => bless({...lots of stuff...},'Math::BigInt')}
+
+           # These do the same thing
+           say visnew->Objects(0)->vis($struct);
+           { local $Data::Dumper::Interp::Objects=0; say vis $struct; }
+           say viso $struct;   # 'viso' is not exported by default
+         }
+
+         # Wide characters are readable
+         use utf8;
+         my $h = {msg => "My language is not ASCII ☻ ☺ 😊 \N{U+2757}!"};
+         say dvis '$h' ;
+           # --> h={msg => "My language is not ASCII ☻ ☺ 😊 ❗!"}
+
+         #-------- OO API --------
+
+         say visnew->MaxStringwidth(50)->Maxdepth($levels)->vis($datum);
+
+         say Data::Dumper::Interp->new()
+                   ->MaxStringwidth(50)->Maxdepth($levels)->vis($datum);
+
+         #-------- UTILITY FUNCTIONS --------
+         say u($might_be_undef);  # $_[0] // "undef"
+         say quotekey($string);   # quote if not a valid bareword
+         say qsh($string);        # quote if needed for /bin/sh
+         say qshpath($pathname);  # shell quote excepting ~ prefix
+         say "Runing this: ", qshlist(@command_and_args);
+
+         system "ls -ld ".join(" ",map{ qshpath }
+                                   ("/tmp", "~sally/My Documents", "~"));
+
+DESCRIPTION
+       This Data::Dumper wrapper optimizes output for human consumption and
+       avoids side-effects which interfere with debugging.
+
+       The namesake feature is interpolating Data::Dumper output into strings.
+       Simple functions are also provided to format a scalar, array, or hash.
+
+       Internally, Data::Dumper is called to visualize (i.e. format) data with
+       pre- and post-processing to "improve" the results:
+
+       • One line if possible, else folded to terminal width, WITHOUT newline.
+
+       • Safely printable Unicode characters appear as themselves.
+
+       • Code refs show the name of the referenced sub.
+
+       • Objects like Math:BigInt etc. are stringified (by default).
+
+       • "Virtual" values behind overloaded deref operators are shown.
+
+       • Data::Dumper bugs^H^H^H^Hquirks are circumvented.
+
+       See "DIFFERENCES FROM Data::Dumper".
+
+       Utilities are also provided to quote strings for /bin/sh.
+
+FUNCTIONS
+   ivis 'string to be interpolated'
+       Returns the argument with variable references and escapes interpolated
+       as in in Perl double-quotish strings, but using Data::Dumper to format
+       variable values.
+
+       $var is replaced by its value, @var is replaced by "(comma, sparated,
+       list)", and %hash by "(key => value, ...)" .  Complex expressions with
+       indexing, dereferences, slices and method calls are also recognized.
+
+       Expressions are evaluated in the caller's context using Perl's debugger
+       hooks, and may refer to almost any lexical or global visible at the
+       point of call (see "LIMITATIONS").
+
+       IMPORTANT: The argument must be single-quoted to prevent Perl from
+       interpolating it beforehand.
+
+   dvis 'string to be interpolated'
+       The 'd' is for "debugging".  Like "ivis" but labels expansions with
+       "expr=" and shows spaces visibly as '·'.  Other debug-oriented
+       formatting may also occur (TBD).
+
+   vis [SCALAREXPR]
+   avis LIST
+   hvis EVENLIST
+       "vis" formats a single scalar ($_ if no argument is given) and returns
+       the resulting string.
+
+       "avis" formats an array (or any list) as comma-separated values in
+       parenthesis.
+
+       "hvis" formats key => value pairs in parenthesis.
+
+   FUNCTION (and METHOD) VARIATIONS
+       Variations of the above five functions have extra characters in their
+       names to imply certain options.  For example "visq" is like "vis" but
+       shows strings in single-quoted form (implied by the 'q' suffix).
+
+       There are no fixed function names; you can use any combination of
+       characters in any order, prefixed or suffixed to the primary name with
+       optional '_' separators.  The function will be generated when it is
+       imported* or called as a method.
+
+       The available modifier characters are:
+
+         l - omit parenthesis to return a bare list with "avis" or "hvis";
+         omit quotes from a string formatted by "vis".
+
+         o - show object internals (see "Objects");
+
+         r - show abbreviated addresses in refs (see "Refaddr").
+
+         <NUMBER> - limit structure depth to <NUMBER> levels (see "Maxdepth").
+
+         See "Useqq" for more info about these:
+
+         c - Show control characters as "Control Picture" characters
+
+         C - condense strings of repeated characters
+
+         d - ("debug-friendly") Condense strings; show spaces as middle-dot if
+         STDOUT is utf-encoding
+
+         h - show numbers > 9 in hexadecimal
+
+         O - Optimize for strings containing binary octets.
+
+         q - show strings 'single quoted' if possible
+
+             With q Data::Dumper is called with Useqq(0), but depending on the
+             version of Data::Dumper the result may be "double quoted" anyway
+             if wide characters are present.
+
+         u - show numbers with underscores between groups of three digits
+
+       Functions must be imported explicitly unless they are imported by
+       default (see list below).
+
+       To avoid having to import functions in advance, you can use them as
+       methods and import only the "visnew" function:
+
+         use Spreadsheet::Edit::Interp qw/visnew/;
+         ...
+         say visnew->vis($struct);
+         say visnew->visrq($my_object);
+         say visnew->avis(@ARGV);
+         say visnew->avis2lrq(@ARGV);
+         etc.
+
+       ("visnew" creates a new object.  Non-existent methods are auto-
+       generated via the AUTOLOAD mechanism).
+
+   Functions imported by default
+        ivis  dvis    vis  avis  hvis
+        ivisq dvisq   visq avisq hvisq rvis rvisq
+
+        visnew
+        addrvis addrvisl
+        u quotekey qsh qshlist qshpath
+
+       * To save memory, only stub declarations with prototypes are generated
+       for imported functions.  Bodies are generated when actually used via
+       the AUTOLOAD mechanism.  The ":debug" import tag prints messages
+       chronicling this process.
+
+Showing Abbreviated Addresses
+   addrvis REF_or_NUMBER
+       Returns a string showing an address or number in both decimal and
+       hexadecimal, abbreviated to only the last few digits.
+
+       The number of digits starts at 3 and increases over time if necessary
+       to keep new results unambiguous.
+
+       For REFs, the result is like "HASH<457:1c9>" or
+       "Package::Name<457:1c9>".
+
+       If the argument is a plain number, just the abbreviated value is
+       returned, e.g. "<457:1c9>".
+
+       "undef" is returned if the argument is undefined.  Croaks if the
+       argument is defined but not a number or reference.
+
+       addrvis_digits(NUMBER) forces a minimum width and addrvis_forget()
+       discards past values and resets to 3 digits.
+
+   addrvisl REF_or_NUMBER
+       Like "addrvis" but omits the <angle brackets>.
+
+OBJECT-ORIENTED API
+   Data::Dumper::Interp->new()
+   visnew()
+       These create an object initialized from the global configuration
+       variables listed below.  No arguments are permitted.  "visnew" is
+       simply a shorthand.
+
+       All the functions described above and any variations may be called as
+       methods on an object (when not called as a method the functions create
+       a new object internally).
+
+       For example:
+
+          $msg = visnew->Foldwidth(40)->avis(@ARGV);
+
+       returns the same string as
+
+          local $Data::Dumper::Interp::Foldwidth = 40;
+          $msg = avis @ARGV;
+
+       "Variations" can be called similarly, for example
+
+          $msg = visnew->Foldwidth(40)->vis_r2($x); # show addresses; Maxdepth 2
+
+Configuration Variables / Methods
+       These work the same way as variables/methods in Data::Dumper.
+
+       Each config method has a corresponding global variable in package
+       "Data::Dumper::Interp" which provides the default value.
+
+       When a config method is called without arguments the current value is
+       returned, and when called with an argument the value is changed and the
+       object is returned so that calls can be chained.
+
+   MaxStringwidth(INTEGER)
+   Truncsuffix("...")
+       Longer strings are truncated and Truncsuffix appended.
+       MaxStringwidth=0 (the default) means no limit.
+
+   Foldwidth(INTEGER)
+       Defaults to the terminal width at the time of first use.
+
+   Objects(FALSE);
+   Objects(1);
+   Objects("classname")
+   Objects([ list of classnames ])
+       A false value disables special handling of objects (that is, blessed
+       things) and internals are shown as with Data::Dumper.
+
+       A "1" (the default) enables for all objects, otherwise only for the
+       specified class name(s) or derived classes.
+
+       When enabled, object internals are never shown.  The class and
+       abbreviated address are shown as with "addrvis" e.g.
+       "Foo::Bar<392:0f0>", unless the object overloads the stringification
+       ('""') operator, or array-, hash-, scalar-, or glob- deref operators;
+       in that case the first overloaded operator found will be evaluated, the
+       object replaced by the result, and the check repeated.
+
+       By default, "(classname)" is prepended to the result of an overloaded
+       operator to make clear what happened.
+
+   Objects({objects => VALUE, overloads => OVOPT})
+       This form, passing a hashref, allows passing additional options for
+       blessed objects:
+
+           overloads => "tagged" (the default): "(classname)" is prepended to
+           the result when an overloaded operator is evaluated.
+
+           overloads => "transparent" : The overload results will appear
+           unadorned, i.e. they will look as if the overload result was the
+           original value.
+
+           overloads => "ignore" : Overloaded operators are not evaluated at
+           all; the original object's abbreviated refaddr is shown (if you
+           want to see object internals, disable Objects entirely.)
+
+           Deprecated: show_classname => False : Please use
+           overloads => "transparent" instead.
+
+       The objects value indicates whether and for which classes special
+       object handling is enabled (false, "1", "classname" or [list of
+       classnames]).
+
+   Sortkeys(SUBREF)
+       The default sorts numeric substrings in keys by numerical value, e.g.
+       "A.20" sorts before "A.100".  See "Data::Dumper" documentation.
+
+   Useqq(argument)
+       0 means generate 'single quoted' strings when possible.
+
+       1 means generate "double quoted" strings as-is from Data::Dumper.  Non-
+       ASCII charcters will likely appeqar as hex or octal escapes.
+
+       Otherwise generate "double quoted" strings enhanced according to option
+       keywords given as a :-separated list, e.g.
+       Useqq("unicode:controlpics").  The avilable options are:
+
+       "unicode"
+           Printable ("graphic") characters are shown as themselves rather
+           than hex escapes, and '\n', '\t', etc. are shown for ASCII control
+           codes.
+
+       "controlpics"
+           Show ASCII control characters using single "control picture"
+           characters: '␤' is shown for newline instead of '\n', and similarly
+           ␀ ␇ ␈ ␛ ␌ ␍ ␉ for \0 \a \b \e \f \r \t.
+
+           Every character occupies the same space with a fixed-width font,
+           but the tiny "control picures" can be hard to read; to see
+           traditional \n etc.  while still seeing wide characters as
+           themselves, set "Useqq" to just "unicode";
+
+       "octets"
+           Optimize for viewing binary strings (i.e. strings of octets, not
+           "wide" characters).  Octal escapes are shown instead of \n, \r,
+           etc.
+
+       "spacedots"
+           Space characters are shown as '·' (Middle Dot).
+
+       "condense"
+           Repeated characters in strings are shown as "⸨charxrepcount⸩".  For
+           example
+
+             vec(my $s, 31, 1) = 1;
+             say unpack "b*", $s;
+             say visnew->Useqq("unicode:condense")->visl(unpack "b*", $s);
+               -->00000000000000000000000000000001
+               -->⸨0×31⸩1
+
+       "underscores"
+           Show numbers with '_' seprating groups of 3 digits.
+
+       "style=OPENQUOTE,CLOSEQUOTE"
+           Use the given symbols instead of double quotes.  The symbols may
+           contain multiple characters. \, or \: may be used to escape those
+           characters.
+
+       "qq=XY"
+           (Deprecated) Equivalent to "style=qqX,Y"
+
+       "qq"
+           (Deprecated) Equivalent to "style=qq{,}"
+
+       The default is Useqq('unicode') except for "dvis" which also enables
+       'condense' and possibly 'spacedots'.  Functions/methods with 'q' in
+       their name force Useqq(0);
+
+   Quotekeys
+   Maxdepth
+   Maxrecurse
+   Deparse
+   Deepcopy
+       See "Data::Dumper" documentation.
+
+
+UTILITY FUNCTIONS
+   u
+   u SCALAR
+       Returns the argument ($_ by default) if it is defined, otherwise the
+       string "undef".
+
+   quotekey
+   quotekey SCALAR
+       Returns the argument ($_ by default) if it is a valid bareword,
+       otherwise a "quoted string".
+
+   qsh
+   qsh $string
+       The string ($_ by default) is quoted if necessary for parsing by the
+       shell (/bin/sh), which has different quoting rules than Perl.  On Win32
+       quoting is for cmd.com.
+
+       If the string contains only "shell-safe" ASCII characters it is
+       returned as-is, without quotes.
+
+       If the argument is a ref but is not an object which stringifies, then
+       vis() is called and the resulting string quoted.  An undefined value is
+       shown as "undef" without quotes; as a special case to avoid ambiguity
+       the string 'undef' is always "quoted".
+
+   qshpath $might_have_tilde_prefix
+       Like "qsh" except that an initial ~ or ~username is left unquoted.
+       Useful with bash or csh.
+
+   qshlist @items
+       Format e.g. a shell command and arguments, quoting when necessary.
+
+       Returns a single string with items separated by spaces.
+
+LIMITATIONS
+       Interpolated Strings
+         "ivis" and "dvis" evaluate expressions in the user's context using
+         Perl's debugger support ('eval' in package DB -- see perlfunc).  This
+         mechanism has some limitations:
+
+         @_ may show incorrect values except immediately after sub entry.  For
+         example after "shift" @_ will appear to still have the original
+         arguments.
+
+         A lexical ("my") sub creates a closure, and variables in visible
+         scopes which are not actually referenced by your code may not exist
+         in the closure; an attempt to display them with "ivis" will fail.
+         For example:
+
+             our $global;
+             sub outerfunc {
+               my sub inner {
+                 say dvis '$global'; # croaks with "Error interpolating '$global'"
+                 # my $x = $global;  # ... unless this is un-commented
+               }
+               &inner();
+             }
+             &outerfunc;
+
+       Multiply-referenced items
+         If a structure contains several refs to the same item, the first ref
+         will be visualized by showing the referenced item as you might
+         expect.
+
+         However subsequent refs will look like "$VAR1->place" where "place"
+         is the location of the first ref in the overall structure.  This is
+         how Data::Dumper indicates that the ref is a copy of the first ref
+         and thus points to the same datum.  "$VAR1" is an artifact of how
+         Data::Dumper would generate code using its "Purity" feature.
+         Data::Dumper::Interp simply passed through these annotations.
+
+         However with Refaddr(true), multiple references to the same thing
+         will all show the address of the referenced thing.
+
+       The special "_" stat filehandle may not be preserved
+         Data::Dumper::Interp queries the operating system for the window size
+         to initialize $Foldwidth, if it is not already defined; this may
+         change the "_" filehandle.  After the first call (or if you pre-set
+         $Foldwidth), the "_" filehandle will not change across calls.
+
+DIFFERENCES FROM Data::Dumper
+       Results differ from plain "Data::Dumper" output in the following ways
+       (most of these can be controlled via Config options):
+
+       • Punctuation variables such as $@, $!, and $?, are preserved over
+         calls.
+
+       • A final newline is never included.
+
+         Everything is shown on a single line if possible, otherwise wrapped
+         to your terminal width (or $Foldwidth), with indented structure
+         levels.
+
+       • Printable Unicode characters appear as themselves instead of
+         \x{ABCD}.
+
+         Note: If your data contains 'wide characters', you should "use open
+         IO => ':locale';" or otherwise arrange to encode the output for your
+         terminal.  You'll also want "use utf8;" if your Perl source contains
+         characters outside the ASCII range.
+
+         Undecoded binary octets (e.g. data read from a 'binmode' file) will
+         still be escaped as individual bytes.
+
+       • Depending on options, spaces·may·be·shown·visibly and '␤' may be
+         shown for newline (and similarly for other ASCII controls).
+
+         "White space" characters in qr/compiled regex/ are shown as \t, \n
+         etc.
+
+       • Unless Deparse is enabled, CODE refs show the name of the referenced
+         sub using Sub::Identify instead of "sub{ "DUMMY" }".  If the sub is
+         anonymous, the file:lineno where it was defined is shown.
+
+       • The internals of objects are not shown by default.
+
+         If stringifcation is overloaded it is used to obtain the object's
+         representation.  For example, "bignum" and "bigrat" numbers are shown
+         as easily readable values rather than "bless( {...}, 'Math::...')".
+
+         Stingified objects are prefixed with "(classname)" to make clear what
+         happened.
+
+         The "virtual" value of objects which overload a dereference operator
+         ("@{}" or "%{}") is displayed instead of the object's internals.
+
+       • Hash keys are sorted treating numeric "components" numerically.  For
+         example "A.20" sorts before "A.100".
+
+       • Numbers and strings which look like numbers are kept distinct when
+         displayed, i.e. "0" does not become 0 or vice-versa. Floating-point
+         values are shown as numbers not 'quoted strings' and similarly for
+         stringified objects.
+
+         Although such differences might be immaterial to Perl during
+         execution, they may be important when communicating to a human.
+
+SEE ALSO
+       Data::Dumper
+
+AUTHOR
+       Jim Avera  (jim.avera AT gmail)
+
+LICENSE
+       Public Domain or CC0.
+
+perl v5.40.2                      2024-12-21           Data::Dumper::Interp(3)

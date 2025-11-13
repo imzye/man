@@ -1,0 +1,478 @@
+Cflow(3)              User Contributed Perl Documentation             Cflow(3)
+
+
+NAME
+       Cflow::find - find "interesting" flows in raw IP flow files
+
+SYNOPSIS
+          use Cflow;
+
+          Cflow::verbose(1);
+          Cflow::find(\&wanted, <*.flows*>);
+
+          sub wanted { ... }
+
+       or:
+
+          Cflow::find(\&wanted, \&perfile, <*.flows*>);
+
+          sub perfile {
+             my $fname = shift;
+             ...
+          }
+
+BACKROUND
+       This module implements an API for processing IP flow accounting
+       information which as been collected from routers and written into flow
+       files by one of the various flow collectors listed below.
+
+       It was originally conceived and written for use by FlowScan:
+
+          http://net.doit.wisc.edu/~plonka/FlowScan/
+
+Flow File Sources
+       This package is of little use on its own.  It requires input in the
+       form of time-stamped raw flow files produced by other software
+       packages.  These "flow sources" either snoop a local ethernet (via
+       libpcap) or collect flow information from IP routers that are
+       configured to export said information.  The following flow sources are
+       supported:
+
+       argus by Carter Bullard:
+              http://www.qosient.com/argus/
+
+       flow-tools by Mark Fullmer (with NetFlow v1, v5, v6, or v7):
+              http://www.splintered.net/sw/flow-tools/
+
+       CAIDA's cflowd (with NetFlow v5):
+              http://www.caida.org/tools/measurement/cflowd/
+              http://net.doit.wisc.edu/~plonka/cflowd/
+
+       lfapd by Steve Premeau (with LFAPv4):
+              http://www.nmops.org/
+
+DESCRIPTION
+       Cflow::find() will iterate across all the flows in the specified files.
+       It will call your wanted() function once per flow record.  If the file
+       name argument passed to find() is specified as "-", flows will be read
+       from standard input.
+
+       The wanted() function does whatever you write it to do.  For instance,
+       it could simply print interesting flows or it might maintain byte,
+       packet, and flow counters which could be written to a database after
+       the find subroutine completes.
+
+       Within your wanted() function, tests on the "current" flow can be
+       performed using the following variables:
+
+       $Cflow::unix_secs
+           secs since epoch (deprecated)
+
+       $Cflow::exporter
+           Exporter IP Address as a host-ordered "long"
+
+       $Cflow::exporterip
+           Exporter IP Address as dotted-decimal string
+
+       $Cflow::localtime
+           $Cflow::unix_secs interpreted as localtime with this strftime(3)
+           format:
+
+              %Y/%m/%d %H:%M:%S
+
+       $Cflow::srcaddr
+           Source IP Address as a host-ordered "long"
+
+       $Cflow::srcip
+           Source IP Address as a dotted-decimal string
+
+       $Cflow::dstaddr
+           Destination IP Address as a host-ordered "long"
+
+       $Cflow::dstip
+           Destination IP Address as a dotted-decimal string
+
+       $Cflow::input_if
+           Input interface index
+
+       $Cflow::output_if
+           Output interface index
+
+       $Cflow::srcport
+           TCP/UDP src port number or equivalent
+
+       $Cflow::dstport
+           TCP/UDP dst port number or equivalent
+
+       $Cflow::ICMPType
+           high byte of $Cflow::dstport
+
+           Undefined if the current flow is not an ICMP flow.
+
+       $Cflow::ICMPCode
+           low byte of $Cflow::dstport
+
+           Undefined if the current flow is not an ICMP flow.
+
+       $Cflow::ICMPTypeCode
+           symbolic representation of $Cflow::dstport
+
+           The value is a the type-specific ICMP code, if any, followed by the
+           ICMP type.  E.g.
+
+              ECHO
+              HOST_UNREACH
+
+           Undefined if the current flow is not an ICMP flow.
+
+       $Cflow::pkts
+           Packets sent in Duration
+
+       $Cflow::bytes
+           Octets sent in Duration
+
+       $Cflow::nexthop
+           Next hop router's IP Address as a host-ordered "long"
+
+       $Cflow::nexthopip
+           Next hop router's IP Address as a dotted-decimal string
+
+       $Cflow::startime
+           secs since epoch at start of flow
+
+       $Cflow::start_msecs
+           fractional portion of startime (in milliseconds)
+
+           This will be zero unless the source is flow-tools or argus.
+
+       $Cflow::endtime
+           secs since epoch at last packet of flow
+
+       $Cflow::end_msecs
+           fractional portion of endtime (in milliseconds)
+
+           This will be zero unless the source is flow-tools or argus.
+
+       $Cflow::protocol
+           IP protocol number (as is specified in /etc/protocols, i.e.
+           1=ICMP, 6=TCP, 17=UDP, etc.)
+
+       $Cflow::tos
+           IP Type-of-Service
+
+       $Cflow::tcp_flags
+           bitwise OR of all TCP flags that were set within packets in the
+           flow; 0x10 for non-TCP flows
+
+       $Cflow::TCPFlags
+           symbolic representation of $Cflow::tcp_flags The value will be a
+           bitwise-or expression.  E.g.
+
+              PUSH|SYN|FIN|ACK
+
+           Undefined if the current flow is not a TCP flow.
+
+       $Cflow::raw
+           the entire "packed" flow record as read from the input file
+
+           This is useful when the "wanted" subroutine wants to write the flow
+           to another FILEHANDLE. E.g.:
+
+              syswrite(FILEHANDLE, $Cflow::raw, length $Cflow::raw)
+
+           Note that if you're using a modern version of perl that supports
+           PerlIO Layers, be sure that FILEHANDLE is using something
+           appropriate like the ":bytes" layer.  This can be activated on
+           open, or with:
+
+              binmode(FILEHANDLE, ":bytes");
+
+           This will prevent the external LANG setting from causing perl to do
+           such things as interpreting your raw flow records as UTF-8
+           characters and corrupting the record.
+
+       $Cflow::reraw
+           the entire "re-packed" flow record formatted like $Cflow::raw.
+
+           This is useful when the "wanted" subroutine wants to write a
+           modified flow to another FILEHANDLE. E.g.:
+
+              $srcaddr = my_encode($srcaddr);
+              $dstaddr = my_encode($dstaddr);
+              syswrite(FILEHANDLE, $Cflow::reraw, length $Cflow::raw)
+
+           These flow variables are packed into $Cflow::reraw:
+
+              $Cflow::index, $Cflow::exporter,
+              $Cflow::srcaddr, $Cflow::dstaddr,
+              $Cflow::input_if, $Cflow::output_if,
+              $Cflow::srcport, $Cflow::dstport,
+              $Cflow::pkts, $Cflow::bytes,
+              $Cflow::nexthop,
+              $Cflow::startime, $Cflow::endtime,
+              $Cflow::protocol, $Cflow::tos,
+              $Cflow::src_as, $Cflow::dst_as,
+              $Cflow::src_mask, $Cflow::dst_mask,
+              $Cflow::tcp_flags,
+              $Cflow::engine_type, $Cflow::engine_id
+
+           Note that if you're using a modern version of perl that supports
+           PerlIO Layers, be sure that FILEHANDLE is using something
+           appropriate like the ":bytes" layer.  This can be activated on
+           open, or with:
+
+              binmode(FILEHANDLE, ":bytes");
+
+           This will prevent the external LANG setting from causing perl to do
+           such things as interpreting your raw flow records as UTF-8
+           characters and corrupting the record.
+
+       $Cflow::Bps
+           the minimum bytes per second for the current flow
+
+       $Cflow::pps
+           the minimum packets per second for the current flow
+
+       The following variables are undefined if using NetFlow v1 (which does
+       not contain the requisite information):
+
+       $Cflow::src_as
+           originating or peer AS of source address
+
+       $Cflow::dst_as
+           originating or peer AS of destination address
+
+       The following variables are undefined if using NetFlow v1 or LFAPv4
+       (which do not contain the requisite information):
+
+       $Cflow::src_mask
+           source address prefix mask bits
+
+       $Cflow::dst_mask
+           destination address prefix mask bits
+
+       $Cflow::engine_type
+           type of flow switching engine
+
+       $Cflow::engine_id
+           ID of the flow switching engine
+
+       Optionally, a reference to a perfile() function can be passed to
+       Cflow::find as the argument following the reference to the wanted()
+       function.  This perfile() function will be called once for each flow
+       file.  The argument to the perfile() function will be name of the flow
+       file which is about to be processed.  The purpose of the perfile()
+       function is to allow you to periodically report the progress of
+       Cflow::find() and to provide an opportunity to periodically reclaim
+       storage used by data objects that may have been allocated or maintained
+       by the wanted() function.  For instance, when counting the number of
+       active hosts IP addresses in each time-stamped flow file, perfile() can
+       reset the counter to zero and clear the search tree or hash used to
+       remember those IP addresses.
+
+       Since Cflow is an Exporter, you can request that all those scalar flow
+       variables be exported (so that you need not use the "Cflow::" prefix):
+
+          use Cflow qw(:flowvars);
+
+       Also, you can request that the symbolic names for the TCP flags, ICMP
+       types, and/or ICMP codes be exported:
+
+          use Cflow qw(:tcpflags :icmptypes :icmpcodes);
+
+       The tcpflags are:
+
+          $TH_FIN $TH_SYN $TH_RST $TH_PUSH $TH_ACK $TH_URG
+
+       The icmptypes are:
+
+          $ICMP_ECHOREPLY     $ICMP_DEST_UNREACH $ICMP_SOURCE_QUENCH
+          $ICMP_REDIRECT      $ICMP_ECHO         $ICMP_TIME_EXCEEDED
+          $ICMP_PARAMETERPROB $ICMP_TIMESTAMP    $ICMP_TIMESTAMPREPLY
+          $ICMP_INFO_REQUEST  $ICMP_INFO_REPLY   $ICMP_ADDRESS
+          $ICMP_ADDRESSREPLY
+
+       The icmpcodes are:
+
+          $ICMP_NET_UNREACH  $ICMP_HOST_UNREACH $ICMP_PROT_UNREACH
+          $ICMP_PORT_UNREACH $ICMP_FRAG_NEEDED  $ICMP_SR_FAILED
+          $ICMP_NET_UNKNOWN  $ICMP_HOST_UNKNOWN $ICMP_HOST_ISOLATED
+          $ICMP_NET_ANO      $ICMP_HOST_ANO     $ICMP_NET_UNR_TOS
+          $ICMP_HOST_UNR_TOS $ICMP_PKT_FILTERED $ICMP_PREC_VIOLATION
+          $ICMP_PREC_CUTOFF  $ICMP_UNREACH      $ICMP_REDIR_NET
+          $ICMP_REDIR_HOST   $ICMP_REDIR_NETTOS $ICMP_REDIR_HOSTTOS
+          $ICMP_EXC_TTL      $ICMP_EXC_FRAGTIME
+
+       Please note that the names above are not necessarily exactly the same
+       as the names of the flags, types, and codes as set in the values of the
+       aforemented $Cflow::TCPFlags and $Cflow::ICMPTypeCode flow variables.
+
+       Lastly, as is usually the case for modules, the subroutine names can be
+       imported, and a minimum version of Cflow can be specified:
+
+          use Cflow qw(:flowvars find verbose 1.031);
+
+       Cflow::find() returns a "hit-ratio".  This hit-ratio is a string
+       formatted similarly to that of the value of a perl hash when taken in a
+       scalar context.  This hit-ratio indicates ((# of "wanted" flows) / (#
+       of scanned flows)).  A flow is considered to have been "wanted" if your
+       wanted() function returns non-zero.
+
+       Cflow::verbose() takes a single scalar boolean argument which indicates
+       whether or not you wish warning messages to be generated to STDERR when
+       "problems" occur.  Verbose mode is set by default.
+
+EXAMPLES
+       Here's a complete example with a sample wanted function.  It will print
+       all UDP flows that involve either a source or destination port of 31337
+       and port on the other end that is unreserved (greater than 1024):
+
+          use Cflow qw(:flowvars find);
+
+          my $udp = getprotobyname('udp');
+          verbose(0);
+          find(\&wanted, @ARGV? @ARGV : <*.flows*>);
+
+          sub wanted {
+             return if ($srcport < 1024 || $dstport < 1024);
+             return unless (($srcport == 31337 || $dstport == 31337) &&
+                             $udp == $protocol);
+
+             printf("%s %15.15s.%-5hu %15.15s.%-5hu %2hu %10u %10u\n",
+                    $localtime,
+                    $srcip,
+                    $srcport,
+                    $dstip,
+                    $dstport,
+                    $protocol,
+                    $pkts,
+                    $bytes)
+          }
+
+       Here's an example which demonstrates a technique which can be used to
+       pass arbitrary arguments to your wanted function by passing a reference
+       to an anonymous subroutine as the wanted() function argument to
+       Cflow::find():
+
+          sub wanted {
+             my @params = @_;
+             # ...
+          }
+
+          Cflow::find(sub { wanted(@params) }, @files);
+
+ARGUS NOTES
+       Argus uses a bidirectional flow model.  This means that some argus
+       flows represent packets not only in the forward direction (from
+       "source" to "destination"), but also in the reverse direction (from the
+       so-called "destination" to the "source").  However, this module uses a
+       unidirection flow model, and therfore splits some argus flows into two
+       unidirectional flows for the purpose of reporting.
+
+       Currently, using this module's API there is no way to determine if two
+       subsequently reported unidirectional flows were really a single argus
+       flow.  This may be addressed in a future release of this package.
+
+       Furthermore, for argus flows which represent bidirectional ICMP
+       traffic, this module presumes that all the reverse packets were
+       ECHOREPLYs (sic).  This is sometimes incorrect as described here:
+
+          http://www.theorygroup.com/Archive/Argus/2002/msg00016.html
+
+       and will be fixed in a future release of this package.
+
+       Timestamps ($startime and $endtime) are sometimes reported incorrectly
+       for bidirectional argus flows that represent only one packet in each
+       direction.  This will be fixed in a future release.
+
+       Argus flows sometimes contain information which does not map directly
+       to the flow variables presented by this module.  For the time being,
+       this information is simply not accessible through this module's API.
+       This may be addressed in a future release.
+
+       Lastly, argus flows produced from observed traffic on a local ethernet
+       do not contain enough information to meaningfully set the values of all
+       this module's flow variables.  For instance, the next-hop and
+       input/output ifIndex numbers are missing.  For the time being, all
+       argus flows accessed throught this module's API will have both the
+       $input_if and $output_if as 42.  Althought 42 is the answer to life,
+       the universe, and everthing, in this context, it is just an arbitrary
+       number.  It is important that $output_if is non-zero, however, since
+       existing FlowScan reports interpret an $output_if value of zero to mean
+       that the traffic represented by that flow was not forwarded (i.e.
+       dropped).  For similar reasons, the $nexthopip for all argus flows is
+       reported as "127.0.0.1".
+
+BUGS
+       Currently, only NetFlow version 5 is supported when reading cflowd-
+       format raw flow files.
+
+       When built with support for flow-tools and attempting to read a cflowd
+       format raw flow file from standard input, you'll get the error:
+
+          open "-": No such file or directory
+
+       For the time being, the workaround is to write the content to a file
+       and read it from directly from there rather than from standard input.
+       (This happens because we can't close and re-open file descriptor zero
+       after determining that the content was not in flow-tools format.)
+
+       When built with support for flow-tools and using verbose mode,
+       Cflow::find will generate warnings if you process a cflowd format raw
+       flow file.  This happens because it will first attempt to open the file
+       as a flow-tools format raw flow file (which will produce a warning
+       message), and then revert to handling it as cflowd format raw flow
+       file.
+
+       Likewise, when built with support for argus and attempting to read a
+       cflowd format raw flow file from standard input, you'll get this
+       warning message:
+
+          not Argus-2.0 data stream.
+
+       This is because argus (as of argus-2.0.4) doesn't seem to have a mode
+       in which such warning messages are supressed.
+
+       The $Cflow::raw flow variable contains the flow record in cflowd
+       format, even if it was read from a raw flow file produced by flow-tools
+       or argus.  Because cflowd discards the fractional portion of the flow
+       start and end time, only the whole seconds portion of these times will
+       be retained.  (That is, the raw record in $Cflow::raw does not contain
+       the $start_msecs and $end_msecs, so using $Cflow::raw to convert to
+       cflowd format is a lossy operation.)
+
+       When used with cflowd, Cflow::find() will generate warnings if the flow
+       data file is "invalid" as far as its concerned.  To avoid this, you
+       must be using Cisco version 5 flow-export and configure cflowd so that
+       it saves all flow-export data.  This is the default behavior when
+       cflowd produces time-stamped raw flow files after being patched as
+       described here:
+
+          http://net.doit.wisc.edu/~plonka/cflowd/
+
+NOTES
+       The interface presented by this package is a blatant ripoff of
+       File::Find.
+
+AUTHOR
+       Dave Plonka <plonka@doit.wisc.edu>
+
+       Copyright (C) 1998-2005  Dave Plonka.  This program is free software;
+       you can redistribute it and/or modify it under the terms of the GNU
+       General Public License as published by the Free Software Foundation;
+       either version 2 of the License, or (at your option) any later version.
+
+VERSION
+       The version number is the module file RCS revision number ($Revision:
+       1.53 $) with the minor number printed right justified with leading
+       zeroes to 3 decimal places.  For instance, RCS revision 1.1 would yield
+       a package version number of 1.001.
+
+       This is so that revision 1.10 (which is version 1.010), for example,
+       will test greater than revision 1.2 (which is version 1.002) when you
+       want to require a minimum version of this module.
+
+SEE ALSO
+       perl(1), Socket, Net::Netmask, Net::Patricia.
+
+perl v5.40.2                      2005-09-28                          Cflow(3)

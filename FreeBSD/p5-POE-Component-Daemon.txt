@@ -1,0 +1,431 @@
+POE::Component::Daemon(3)                  User Contributed Perl Documentation
+
+
+NAME
+       POE::Component::Daemon - Handles all the housework for a daemon.
+
+SYNOPSIS
+           use POE::Component::Daemon;
+
+           POE::Component::Daemon->spawn(detach=>1, max_children=>3);
+
+
+           # Create a session that uses SocketFactory
+           POE::Session->create(
+           inline_states=>{
+
+               _start=>sub {
+                   # catch this message from Daemon session
+                   $kernel->sig('daemon_child'=>'request');
+
+                   # create a POE::Wheel::SocketFactory or whatever
+                   # .....
+               },
+
+               # socketfactory got a connection handle it here
+               accept=>sub {
+                   # tell Daemon session about this
+                   Daemon->update_status('req', $info);
+               },
+
+               ###############
+               # we are now the child process (via the sig() in _start
+               request=>sub {
+                   my($heap, $info)=@_[HEAP, ARG1];
+                   # $info was passed here from accept accept
+
+                   # create POE::Wheel::ReadWrite
+                   ....
+                   # tell Daemon session that this request will take a long time
+                   Daemon->update_status('long');
+               },
+
+               ###############
+               # The request is finished
+               finished=>sub {
+                   return unless $heap->{done};
+                   # tell Deamon session that this request is done
+                   $poe_kernel->post(Daemon=>'update_status', 'done');
+               },
+           });
+
+DESCRIPTION
+       Dealing with all the little details of a forking daemon can be annoying
+       and hard.  POE::Component::Daemon encapsulates all the details into one
+       place and (hopefully) gets them right.
+
+       POE::Component::Daemon will deal with all the annoying details of
+       creating and maintaining daemon processes.  It can detach from the
+       console, handle pre-forking pools or post-forking (ie, fork on each
+       request). It will also redirect STDERR to a log file if asked.
+
+       POE::Component::Daemon also babysits child processes, handling their
+       "CHLD".  POE::Component::Daemon can also makes sure requests don't take
+       to long.  If they do, it will try to get rid of them.  See "BABYSITING"
+       below.
+
+       POE::Component::Daemon does not handle listening on sockets.  That is
+       up to your code.
+
+       Like all of POE, POE::Component::Daemon works cooperatively.  It is up
+       your code to tell POE::Component::Daemon when it is time to fork, block
+       incoming requests when approriate and so on.
+
+       Sub-processes are maintained with the help of a scoreboard.  In some
+       situations, your code will have to update it's status in scoreboard
+       with the "update_status" method.
+
+   POST-FORKING
+       Post-forking is the model that most examples and tutorials use.  The
+       daemon listens on a socket (or other mechanism) for new requests.  When
+       a new request comes in, a child process is forked off to handle that
+       request and the parent process continues to listen for new requests.
+
+       If you are using a post-forking model, your code must inform
+       POE::Component::Daemon about a new request.  POE::Component::Daemon
+       will then handle all the details of forking, and then broadcast a
+       daemon_child signal, which is your cue that you can now handle the
+       request.
+
+       This means the following steps are done.
+
+           Create SocketFactory wheel
+           Create POE::Component::Daemon
+           Receive SocketFactory's SuccessEvent
+           Tell POE::Component::Daemon we are in a request (L</update_status>)
+           POE::Component::Daemon forks
+           POE::Component::Daemon sends daemon_child signal
+           Receive daemon_child signal, create ReadWrite wheel
+           Close SocketFactory wheel
+           Talk with remote process
+           When done, close ReadWrite wheel
+           Tell POE::Component::Daemon we are no longer in a request
+           POE::Component::Daemon will then shutdown this child process (signal
+           daemon_shutdown).
+
+       Additionnaly, when POE::Component::Daemon detects that there are nearly
+       too many child processes, it will send a "daemon_pause" signal.  You
+       should call "accept_pause" in POE::Wheel::SocketFactory.  When the
+       number of child processes drops back down, POE::Component::Daemon will
+       then send a "daemon_accept" signal.  You should then call
+       "accept_resume" in POE::Wheel::SocketFactory.
+
+       The graph in forking-flow.png might (or might not) help you understand
+       the above.
+
+   PRE-FORKING
+       The pre-forking model creates a pool of child processes before
+       accepting requests.  This is done so that each request doesn't incure
+       the overhead of forking before it can be processed.  It also allows a
+       child process to handle more then one request.  This is the model used
+       by Apache.
+
+       When pre-forking, you create your SocketFactory and immediately pause
+       it with "accept_pause" in POE::Wheel::SocketFactory.  Then spawn a
+       POE::Component::Daemon. and allow the kernel to run.
+       POE::Component::Daemon will fork off the desired initial number of sub-
+       processes ("start_children").  The child processes will be told they
+       are children with a "daemon_child" signal.  Your code then does what it
+       needs and updates the status to 'wait' ("update_status").  When
+       POE::Component::Daemon sees this, it fires off a "daemon_accept"
+       signal.  Your code would then unpause the socket, with "accept_resume"
+       in POE::Wheel::SocketFactory.
+
+       When you receive a new connection, the status to 'req' or 'long' (if
+       it's a long running request) and handle the request.  When done, update
+       the status to 'done' (or 'wait').  POE::Component::Daemon sees this,
+       and will either send another "daemon_accept" signal to say it's time to
+       start again or shutdown the daemon if this child has handled enough
+       requests.
+
+       Note that when you receive a new request, you should pause your
+       SocketFactory or you could receive more than one request at the same
+       time AND ALL SORTS OF HIGGLY-PIGGLE WILL BE UNLEASHED on your code.
+
+       In list form, that gives us:
+
+           Spawn POE::Component::Daemon
+           Spawn your session
+           Create SocketFactory wheel, and pause it
+           Getting a daemon_child signal means we are now a child process.
+           Update status to 'wait'
+           Get a daemon_accept signal
+           Resume the SocketFactory wheel
+           Receive SocketFactory's SuccessEvent
+           Close the SocketFactory
+           Update status to 'req'
+           Create a ReadWrite wheel
+           Talk with remote process
+           When done, close the ReadWrite wheel
+           Update status to 'done'
+           Wait for daemon_accept or daemon_shutdown signal
+
+       The graph in preforking-flow.png might (or might not) help you
+       understand the above.
+
+NON-FORKING
+       It is of course possible to use this code in a non-forking server.
+       While most functionnality of POE::Component::Daemon will be useless,
+       methods like "drop_privs", "detach" and "peek" are useful.
+
+BABYSITING
+       Babysiting is the action of periodically monitoring all child processes
+       to make sure none of them do anything bad.  For values of 'bad' limited
+       to going rogue (using too much CPU) or disapearing without a trace.
+       Rogue processes are killed after 10 minutes.
+
+       Babysiting is activated with the "babysit" parameter to "spawn".
+
+       Babysiting doesn't have a test case and is probably badly implemented.
+       Patches welcome.
+
+METHODS
+   spawn
+           POE::Component::Daemon->spawn( %params );
+
+       Where %params may contain:
+
+       alias
+           POE session alias for POE::Component::Daemon.  Defaults to
+           'Daemon'.  If you change it, other code that depends on it might be
+           confused.
+
+       detach
+           If true, POE::Component::Daemon will detach from the current
+           process tree.  It does this by forking twice and the grand-child
+           then calls "setsid" in POSIX.  Parent and grand-parent summarily
+           exit.
+
+           Default is to not detach.
+
+       logfile
+           Name of the log file.  STDERR and STDOUT are redirected to this
+           file.  You need to set logfile if you want detach from the current
+           terminal.
+
+           The logfile will be closed and reopened on a "HUP" signal.
+
+       verbose
+           Turn on verbose messages.  If set, babysiting and process creation
+           will output some details to STDERR.
+
+       max_children
+           Maximum number of child processes that POE::Component::Daemon may
+           create.
+
+           If set, but not "start_children", then POE::Component::Daemon acts
+           as a post-forking daemon.  Note that it is unfortunately possible
+           for POE::Component::Daemon to create more then "max_children" post-
+           forking processes but instances of this should be rare.
+
+           In pre-forking mode, defaults to start_children + max_spare.
+
+       start_children
+           If set, then POE::Component::Daemon acts as a pre-forking daemon.
+           At startup, POE::Component::Daemon will fork off "start_children"
+           child processes.
+
+       max_spare =item min_spare
+           Used by pre-forking server to decide when to create more child
+           processes.  If there are fewer than min_spare, it creates a new
+           spare.  If there are more than max_spare, some of the spares killed
+           off with TERM.
+
+           "max_spare" defaults to 80% of max_children.  "min_spare" defaults
+           to 20% of max_children.
+
+       requests
+           The number of requests each child process is allowed to handle
+           before it is killed off.  Limiting the number of requests prevents
+           child processes from consuming too much memory or other resource.
+
+       babysit
+           Time, in seconds, between checks for rogue processes.  See
+           "BABYSITING" above.
+
+   shutdown
+           Daemon->shutdown;
+           $poe_kernel->post( Daemon=>'shutdown' );
+           $poe_kernel->signal( $poe_kernel=>'shutdown' );
+
+       Tell POE::Component::Daemon to shutdown.  POE::Component::Daemon
+       responds by cleaning up all traces in the kernel and broadcasting the
+       "daemon_shutdown" signal.  In the parent process, it sends a "TERM"
+       signal to all child processes.
+
+   update_status
+           Daemon->update_status( $new_status, $data )
+           $poe_kernel->post( Daemon=>'update_status', $new_status, $data );
+
+       Tell POE::Component::Daemon your new status.  $new_status is one of the
+       scoreboards states, as discussed below.  $data is useful information
+       for a post-forking server moving into the 'req' state.  See below.
+
+   status
+           Daemon->status()
+
+       Returns a string containing human readable information about the status
+       of the daemon, including the current state of the scoreboard.
+
+   foreign_child
+           Daemon->foreign_child( $pid );
+
+       Allows you to report a child process that you might have spawned with
+       POE::Component::Daemon.  This obviates the need for you to have a CHLD
+       handler.  They will receive a TERM when current process exists.
+
+   peek
+           Daemon->peek( $verbose );
+
+       Outputs the internal status of the POE::Kernel, with special attention
+       paid to the reasons why a kernel won't exit.
+
+       If $verbose is false, only returns the event queue.  If $verbose is
+       set, details of each session are also output.
+
+       In void context, outputs the status to STDERR.  Otherwise outputs a
+       big, human-readable string.
+
+       One helluva useful feature is to tie USR2 to the verbose output.
+
+           $poe_kernel->state( USR2 => sub { Daemon->peek( 1 ) } );
+           $poe_kernel->sig( USR2 => 'USR2' );
+
+       Now, instead of cursing the $GODS because your kernel doesn't exit when
+       you think it should, you simply type the following in another window.
+
+           kill -USR2 I<pid>
+
+SCOREBOARD
+       POE::Component::Daemon uses a scoreboard to keep track of child
+       processes.  In a few situations, you must update the scoreboard to tell
+       POE::Component::Daemon when certain events occur.  You do this with
+       "update_status"
+
+           Daemon->update_status( 'req', { handle=>$handle } );
+           $poe_kernel->call( Daemon=>'update_status', 'long' );
+
+       To find out when and why you should set your status, please read the
+       "PRE-FORKING" and "POST-FORKING" sections above.
+
+       r (req)
+           Process is handling a request.  In a post-forking server, any extra
+           data is sent back via daemon_child.
+
+       l (long)
+           Process is handling a long request.  Differentiating between normal
+           and long requests can help the babysitter detect rogue processes.
+
+           In a post-forking server, any extra data is sent back via
+           daemon_child
+
+       w (wait)
+           Process is waiting for next request.
+
+       ' ' Slot is empty.
+
+       e (exit)
+           Process is exiting.
+
+       F (FORK)
+           Process is forking, but we are still in the parent
+
+       f (fork)
+           Process is forking, we are in the child.
+
+       .   Process is waiting for first request.
+
+SIGNALS
+       POE::Component::Daemon uses signals to communicate with other sessions.
+       If you are interested in a given signal, simply register a handler with
+       the kernel.
+
+           $poe_kernel->sig( $some_signal => $event );
+
+       The following signals are defined:
+
+   daemon_start
+       Posted from POE::Component::Daemon's _start event.
+
+   daemon_parent
+       The current process is the parent.  This is sent by a pre-forking
+       daemon when all the initial children have been forked.
+
+   daemon_child
+       The current process is a child.
+
+       This is sent by a pre-forking daemon just after forking a new process.
+       You must then update the status to 'wait'.
+
+       In post-forking daemon, this signal means that you may now handle the
+       new request.  ARG1 is the data you passed to update_status( 'req' ).
+
+   daemon_accept
+       The current process is ready to accept new requests.
+
+       This is sent by a pre-forking daemon when the status is updated to
+       'wait'.
+
+       In post-forking daemon, this signal means that the number of child
+       processes has fallen below the maximum and you may resume accepting new
+       requests.  Generally you do this by calling "accept_resume" in
+       POE::Wheel::SocketFactory.
+
+   daemon_pause
+       There are too many child processes.  Do not accept any more requests.
+       Generally you do this by calling "accept_pause" in
+       POE::Wheel::SocketFactory.
+
+   daemon_shutdown
+       Time to go to bed!  Sent by POE::Component::Daemon when it thinks it's
+       time to shutdown.  This might be because of code called
+       Daemon->shutdown or because of TERM or INT signals.  Additionnaly, in a
+       pre-forking server a shutdown is called when a child process has
+       handled a certain number of requests.
+
+   daemon_HUP
+       We received a HUP signal.  Any log files should be closed then
+       reopenned.
+
+BUGS
+       Tested on Linux and FreeBSD.
+
+       Reports for Mac OS, and other BSDs would be appreciated.
+
+       You can also look for information at:
+
+       •   RT: CPAN's request tracker (report bugs here)
+
+           <http://rt.cpan.org/NoAuth/Bugs.html?Dist=POE-Component-Daemon>
+
+       •   AnnoCPAN: Annotated CPAN documentation
+
+           <http://annocpan.org/dist/POE-Component-Daemon>
+
+       •   CPAN Ratings
+
+           <http://cpanratings.perl.org/d/POE-Component-Daemon>
+
+       •   METACPAN
+
+           <https://metacpan.org/module/POE::Component::Daemon/>
+
+       •   GITHUB
+
+           <https://github.com/hashbangperl/PoCoDaemon>
+
+       Doesn't support Windows.
+
+SEE ALSO
+       POE
+
+AUTHOR
+       Philip Gwyn, <gwyn -AT- cpan.org>
+
+COPYRIGHT AND LICENSE
+       Copyright 2004-2011 by Philip Gwyn. All rights reserved.
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2013-07-19         POE::Component::Daemon(3)

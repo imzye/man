@@ -1,0 +1,265 @@
+KCGI(3)                FreeBSD Library Functions Manual                KCGI(3)
+
+NAME
+     kcgi – minimal CGI and FastCGI library in C
+
+LIBRARY
+     library “libkcgi”
+
+SYNOPSIS
+     #include <sys/types.h>
+     #include <stdarg.h>
+     #include <stdint.h>
+     #include <kcgi.h>
+
+     #define KCGI_VMAJOR x
+     #define KCGI_VMINOR y
+     #define KCGI_VBUILD z
+     #define KCGI_VERSION x.y.z
+     #define KCGI_VSTAMP xxxyyyzzz
+
+DESCRIPTION
+     The kcgi library handles the CGI or FastCGI environment for C web
+     applications.  Interfacing applications generally work as follows:
+
+     1.   Call khttp_parse(3) as early as possible.  This will parse and
+          validate input fields and cookies with the kvalid_string(3) family
+          of functions or those provided by the calling application.  It will
+          do so in memory, so enormous requests (e.g., files) will occur
+          entirely in memory!  It also sets up the HTTP environment:
+          compression, paths, MIME types, and so on.
+
+     2.   Process input fields by examining the struct kpair elements.
+
+     3.   Emit HTTP headers with khttp_head(3), followed by khttp_body(3) to
+          begin the HTTP body.
+
+     4.   Emit HTTP body output using the khttp_template(3) templating system,
+          the khttp_write(3) family for general HTTP content, and/or an
+          external library such as kcgihtml(3).  Do not use printf(3) or other
+          functions to append to standard output: kcgi will automatically
+          compress output if requested by the client, and overriding the
+          output stream will circumvent this behaviour and might mix
+          compressed and uncompressed data.
+
+     5.   Call khttp_free(3) to clean up.
+
+     It can also accept FastCGI connections in a manner similar to the above,
+     except that the parse routine is run within a loop.
+
+     1.   Call khttp_fcgi_init(3) as early as possible.
+
+     2.   Iterate over khttp_fcgi_parse(3) for as many connections as desired,
+          performing any processing on the created request.  Each successful
+          parse must be matched with khttp_free(3).
+
+     3.   Call khttp_fcgi_free(3) when all processing is complete.
+
+     To compile applications with kcgi, include the kcgi.h as follows:
+
+           #include <sys/types.h> /* size_t, ssize_t */
+           #include <stdarg.h> /* va_list */
+           #include <stdint.h> /* int64_t */
+           #include <kcgi.h>
+
+     To compile and link, use pkg-config(1):
+
+           % cc `pkg-config --cflags kcgi` -c -o sample.o sample.c
+           % cc -o sample sample.o `pkg-config --libs kcgi`
+
+     If the library will be statically linked (e.g., for running within a
+     chroot(2)), link as follows:
+
+           % cc `pkg-config --static --cflags kcgi` -c -o sample.o sample.c
+           % cc -static -o sample sample.o `pkg-config --static --libs kcgi`
+
+     The current version of the library is defined in KCGI_VERSION as a string
+     of major number, minor number, and build.  These values are available
+     seperately as KCGI_VMAJOR, KCGI_VMINOR, and KCGI_VBUILD, respectively.  A
+     numeric concatenation of the version is defined as KCGI_VSTAMP, which may
+     be used to test for version number applicability.
+
+   Pledge Promises
+     The kcgi library is built to operate in security-sensitive environments,
+     including pledge(2) on OpenBSD.  The following is a list of all required
+     promises.
+
+     cpath wpath
+             kutil_openlog(3) requires file-system access to produce its log.
+
+     proc    khttp_parse(3) and khttp_fcgi_init(3) must create child
+             processes.
+
+     stdio   Required by essentially all kcgi functions.
+
+     rpath   khttp_template(3) and khttp_templatex(3) need access to their
+             template files.
+
+     recvfd  khttp_fcgi_init(3) needs these for inheritence by its child
+             processes and khttp_fcgi_parse(3) needs this for accepting the
+             end-point descriptor for each connection.
+
+     unix sendfd
+             khttp_fcgi_init(3) needs these for inheritence by its child
+             processes.
+
+EXAMPLES
+     The following simple example assumes that kcgi.h is in the compiler's
+     include path.  None of them perform error checking: each call into the
+     kcgi library should have its error code checked!
+
+     The following does nothing but emit “Hello, world!” to the output.
+
+           #include <sys/types.h> /* size_t, ssize_t */
+           #include <stdarg.h> /* va_list */
+           #include <stddef.h> /* NULL */
+           #include <stdint.h> /* int64_t */
+           #include <kcgi.h>
+
+           int main(void) {
+             struct kreq r;
+             const char *page = "index";
+
+             if (khttp_parse(&r, NULL, 0, &page, 1, 0) != KCGI_OK)
+                 return 1;
+
+             khttp_head(&r, kresps[KRESP_STATUS],
+                 "%s", khttps[KHTTP_200]);
+             khttp_head(&r, kresps[KRESP_CONTENT_TYPE],
+                 "%s", kmimetypes[r.mime]);
+             khttp_body(&r);
+             khttp_puts(&r, "Hello, world!");
+
+             khttp_free(&r);
+             return 0;
+           }
+
+     This can be extended to work with the FastCGI interface by allowing the
+     request parser to operate within a loop.
+
+           #include <sys/types.h> /* size_t, ssize_t */
+           #include <stdarg.h> /* va_list */
+           #include <stddef.h> /* NULL */
+           #include <stdint.h> /* int64_t */
+           #include <kcgi.h>
+
+           int main(void) {
+             struct kreq r;
+             struct kfcgi *fcgi;
+             const char *page = "index";
+
+             if (khttp_fcgi_init(&fcgi, NULL, 0, &page, 1, 0) != KCGI_OK)
+                 return 1;
+
+             while (khttp_fcgi_parse(fcgi, &r) == KCGI_OK) {
+               khttp_head(&r, kresps[KRESP_STATUS],
+                   "%s", khttps[KHTTP_200]);
+               khttp_head(&r, kresps[KRESP_CONTENT_TYPE],
+                   "%s", kmimetypes[r.mime]);
+               khttp_body(&r);
+               khttp_puts(&r, "Hello, world!");
+               khttp_free(&r);
+             }
+
+             khttp_fcgi_free(fcgi);
+             return 0;
+           }
+
+     In a more complicated example, kcgi accepts a single parameter “string”
+     to validate and display.  This might be provided as part of an HTML form
+     or directly as part of the URL query string.
+
+           #include <sys/types.h> /* size_t, ssize_t */
+           #include <stdarg.h> /* va_list */
+           #include <stdint.h> /* int64_t */
+           #include <kcgi.h>
+
+           int main(void) {
+             struct kreq r;
+             struct kpair *p;
+             const char *page = "index";
+             struct kvalid key = { kvalid_stringne, "string" };
+
+             if (khttp_parse(&r, &key, 1, &page, 1, 0) != KCGI_OK)
+                 return 1;
+
+             khttp_head(&r, kresps[KRESP_STATUS],
+                 "%s", khttps[KHTTP_200]);
+             khttp_head(&r, kresps[KRESP_CONTENT_TYPE],
+                 "%s", kmimetypes[r.mime]);
+             khttp_body(&r);
+             khttp_puts(&r, "Result: ");
+             if ((p = r.fieldmap[0]))
+                 khttp_puts(&r, p->parsed.s);
+             else if (r.fieldnmap[0])
+                 khttp_puts(&r, "bad parse");
+             else
+                 khttp_puts(&r, "no value");
+
+             khttp_free(&r);
+             return 0;
+           }
+
+     Applications will usually specify an array of key-value pairs to
+     validate; or in the event of web services, a default validator (empty
+     string) for the full HTTP message body.
+
+SEE ALSO
+     kcgi_buf_printf(3), kcgi_buf_putc(3), kcgi_buf_puts(3),
+     kcgi_buf_write(3), kcgi_strerror(3), kcgi_writer_disable(3),
+     kcgi_writer_free(3), kcgi_writer_get(3), kcgi_writer_putc(3),
+     kcgi_writer_puts(3), kcgi_writer_write(3), kcgihtml(3), kcgijson(3),
+     kcgiregress(3), kcgixml(3), khttp_body(3), khttp_epoch2str(3),
+     khttp_fcgi_free(3), khttp_fcgi_getfd(3), khttp_fcgi_init(3),
+     khttp_fcgi_parse(3), khttp_fcgi_test(3), khttp_free(3), khttp_head(3),
+     khttp_parse(3), khttp_printf(3), khttp_putc(3), khttp_puts(3),
+     khttp_template(3), khttp_templatex(3), khttp_urlencode(3),
+     khttp_write(3), khttpbasic_validate(3), khttpdigest_validate(3),
+     kmalloc(3), kutil_invalidate(3), kutil_log(3), kutil_openlog(3),
+     kvalid_string(3), kfcgi(8)
+
+STANDARDS
+     Many standards are involved in the kcgi library, most significantly being
+     draft RFC 3875, “The Common Gateway Interface (CGI) Version 1.1”, and the
+     “FastCGI Specification”, version 1.0, published 29 April 1996.
+
+     •   Cookies are parsed according to “HTTP State Management Mechanism”,
+         RFC 6265.  However, quoted cookies are not supported.
+
+     •   The “Authentication” header is parsed for digest or basic tokens as
+         defined by RFC 2617, “HTTP Authentication: Basic and Digest Access
+         Authentication”, and RFC 6750, “The OAuth 2.0 Authorization
+         Framework: Bearer Token Usage”.
+
+     •   The partial multipart form data support is defined by RFC 2388,
+         “Returning Values from Forms: multipart/form-data”, which is further
+         defined by RFCs 2045 and 2046, “Multipurpose Internet Mail
+         Extensions”.
+
+     •   MIME type names are registered with IANA.
+
+     •   URLs are formatted according to RFC 1630, “Universal Resource
+         Identifiers in WWW”.
+
+     •   HTTP response headers are standardised in RFC 2616, “HTTP/1.1” and
+         further in RFC 4229, “HTTP Header Field Registrations”.
+
+     •   Permanent URI schemes are registered with IANA.
+
+     •   The FastCGI Extensions for Management Control:
+         https://kristaps.bsd.lv/kcgi/extending01.html.
+
+     •   HTTP dates (logging and date-time management) are specified by “RFC
+         822”.
+
+     •   URL encoding and decoding is defined by RFC 3986, “Uniform Resource
+         Identifier (URI): Generic Syntax”.
+
+     Additional HTTP methods are defined by RFC 4918, “HTTP Extensions for Web
+     Distributed Authoring and Versioning”; and RFC 4791 , “Calendaring
+     Extensions to WebDAV”.
+
+AUTHORS
+     The kcgi library was written by Kristaps Dzonsons <kristaps@bsd.lv>.
+
+FreeBSD 14.1-RELEASE            August 17, 2025           FreeBSD 14.1-RELEASE

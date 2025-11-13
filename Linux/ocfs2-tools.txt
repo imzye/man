@@ -1,0 +1,185 @@
+o2cb(7)                                                                                      OCFS2 Manual Pages                                                                                     o2cb(7)
+
+NAME
+       o2cb - Default cluster stack of the OCFS2 file system.
+
+SYNOPSIS
+       o2cb  is  the default cluster stack of the OCFS2 file system. It is an in-kernel cluster stack that includes a node manager (o2nm) to keep track of the nodes in the cluster, a disk heartbeat agent
+       (o2hb) to detect node live-ness, a network agent (o2net) for intra-cluster node communication and a distributed lock manager (o2dlm) to keep track of lock resources.  It also includes a  synthetic
+       file system, dlmfs, to allow applications to access the in-kernel dlm.
+
+CONFIGURATION
+       The stack is configured using the o2cb(8) cluster configuration utility and operated (online/offline/status) using the o2cb init service.
+
+       CLUSTER CONFIGURATION
+
+              It  has  two  configuration  files. One for the cluster layout (/etc/ocfs2/cluster.conf) and the other for the cluster timeouts, etc. (/etc/sysconfig/o2cb). More information about these two
+              files can be found in ocfs2.cluster.conf(5) and o2cb.sysconfig(5).
+
+              The o2cb cluster stack supports two heartbeat modes, namely, local and global.  Only one heartbeat mode can be active at any one time.
+
+              Local heartbeat refers to disk heartbeating on all shared devices. In this mode, the heartbeat is started during mount and stopped during umount. This mode is easy to setup as it  does  not
+              require  configuring  heartbeat  devices.  The  one drawback in this mode is the overhead on servers having a large number of OCFS2 mounts. For example, a server with 50 mounts will have 50
+              heartbeat threads. This is the default heartbeat mode.
+
+              Global heartbeat, on the other hand, refers to heartbeating on specific shared devices.  These devices are normal OCFS2 formatted volumes that could also be mounted and  used  as  clustered
+              file  systems.  In this mode, the heartbeat is started during cluster online and stopped during cluster offline. While this mode can be used for all clusters, it is strongly recommended for
+              clusters having a large number of mounts.
+
+              More information on disk heartbeat is provided below.
+
+       KERNEL CONFIGURATION
+
+              Two sysctl values need to be set for o2cb to function properly. The first, panic_on_oops, must be enabled to turn a kernel oops into a panic. If a kernel thread required for o2cb  to  func‐
+              tion crashes, the system must be reset to prevent a cluster hang. If it is not set, another node may not be able to distinguish whether a node is unable to respond or slow to respond.
+
+              The  other  related sysctl parameter is panic, which specifies the number of seconds after a panic that the system will be auto-reset. Setting this parameter to zero disables autoreset; the
+              cluster will require manual intervention. This is not preferred in a cluster environment.
+
+              To manually enable panic on oops and set a 30 sec timeout for reboot on panic, do:
+
+              # echo 1 > /proc/sys/kernel/panic_on_oops
+              # echo 30 > /proc/sys/kernel/panic
+
+              To enable the above on every boot, add the following to /etc/sysctl.conf:
+
+              kernel.panic_on_oops = 1
+              kernel.panic = 30
+
+       OS CONFIGURATION
+
+              The o2cb cluster stack also requires iptables (firewalling) to be either disabled or modified to allow network traffic on the private network interface. The port used by o2cb  is  specified
+              in /etc/ocfs2/cluster.conf.
+
+DISK HEARTBEAT
+       O2CB  uses  disk heartbeat to detect node liveness. The disk heartbeat thread, o2hb, periodically reads and writes to a heartbeat file in a OCFS2 file system. Its write payload contains a sequence
+       number that it increments in each write. This allows other nodes reading the same heartbeat file to detect the change and associate that with a live node.  Conversely, a node whose sequence number
+       has stopped changing is marked as a possible dead node. Possible. Not confirmed. That is because it just could be slow I/Os.
+
+       To differentiate between a dead node and one that has slow I/Os, O2CB has a disk heartbeat threshold (timeout). Only nodes whose sequence number has not incremented for that  duration  are  marked
+       dead.
+
+       However  that  node  may  not be dead but just experiencing slow I/O. To prevent that, the heartbeat thread keeps track of the time elapsed since the last completed write. If that time exceeds the
+       timeout, it forces a self-fence. It does so to prevent other nodes from marking it as dead while it is still alive.
+
+       This self-fencing scheme has proven to be very reliable as it relies on kernel timers and pci bus reset. External fencing, while attractive, is rarely as reliable as it relies on external hardware
+       and software that is prone to failure due to misconfiguration, etc.
+
+       Having said that, O2CB disk heartbeat has had its share of problems with self fencing.  Nodes experiencing slow I/O on only one of multiple devices have to initiate self-fence.
+
+       This is because in the default local heartbeat scheme, nodes in a cluster may not be heartbeating on the same set of devices.
+
+       The global heartbeat mode addresses this shortcoming by introducing a scheme that forces all nodes to heartbeat on the same set of devices. In this scheme, a node experiencing a slowdown in I/O on
+       a device may not need to initiate self-fence. It will only have to do so if it encounters slowdown on 50% or more of the heartbeat devices.  In a cluster with 3 heartbeat regions, a slowdown in  1
+       region will be tolerated. In a cluster with 5 regions, a slowdown in 2 will be tolerated.
+
+       It is for this reason, this mode is recommended for users that have 3 or more OCFS2 mounts.
+
+       O2CB allows up to 32 heartbeat regions to be configured in the global heartbeat mode.
+
+ONLINE CLUSTER MODIFICATION
+       The  O2CB cluster stack allows adding and removing nodes in an online cluster when run in the global heartbeat mode. Use the o2cb(8) utility to make the changes in the configuration and (re)online
+       the cluster using the o2cb init script. The user must do the same on all nodes in the cluster. The cluster will not allow any new cluster mounts if the node configuration on all nodes is  not  the
+       same.
+
+       The removal of nodes will only succeed if that node is no longer in use. If the user removes an active node from the configuration, the re-online will fail.
+
+       The  cluster  stack  also allows adding and removing heartbeat regions in an online cluster.  Use the o2cb(8) utility to make the changes in the configuration file and (re)online the cluster using
+       the o2cb init script. The user must do the same on all nodes in the cluster. The cluster will not allow any new cluster mounts if the heartbeat region configuration on all nodes is not the same.
+
+       The removal of heartbeat regions will only succeed if the active heartbeat region count is greater than 3. This is to protect against edge conditions that can destabilize the cluster.
+
+GETTING STARTED
+       The first step in configuring o2cb is deciding whether to setup local or global heartbeat. If global heartbeat, then one has to format atleast one heartbeat device.
+
+       To format a OCFS2 volume with global heartbeat enabled, do:
+
+       # mkfs.ocfs2 --cluster-stack=o2cb --cluster-name=webcluster --global-heartbeat -L "hbvol1" /dev/sdb1
+
+       Once formatted, setup /etc/ocfs2/cluster.conf following the example provided in ocfs2.cluster.conf(5).
+
+       If local heartbeat, then one can setup cluster.conf without any heartbeat devices. The next step is starting the cluster.
+
+       To online the cluster stack, do:
+
+       # service o2cb online
+       Loading stack plugin "o2cb": OK
+       Loading filesystem "ocfs2_dlmfs": OK
+       Mounting ocfs2_dlmfs filesystem at /dlm: OK
+       Setting cluster stack "o2cb": OK
+       Registering O2CB cluster "webcluster": OK
+       Setting O2CB cluster timeouts : OK
+       Starting global heartbeat for cluster "webcluster": OK
+
+       Once the cluster stack is online, new OCFS2 volumes can be formatted normally without specifying the cluster stack information. mkfs.ocfs2(8) will pick up that information automatically.
+
+       # mkfs.ocfs2 -L "datavol" /dev/sdc1
+
+       Meanwhile existing volumes can be converted to the new cluster stack using tunefs.ocfs2(8) utility.
+
+       # tunefs.ocfs2 --update-cluster-stack /dev/sdd1
+       Updating on-disk cluster information to match the running cluster.
+       DANGER: YOU MUST BE ABSOLUTELY SURE THAT NO OTHER NODE IS USING THIS FILESYSTEM
+       BEFORE MODIFYING ITS CLUSTER CONFIGURATION.
+       Update the on-disk cluster information? y
+
+       Another utility mounted.ocfs2(8) is useful is listing all the OCFS2 volumes alonghwith the cluster stack information.
+
+       To get a list of OCFS2 volumes, do:
+
+       # mounted.ocfs2 -d
+       Device     Stack  Cluster     F  UUID                              Label
+       /dev/sdb1  o2cb   webcluster  G  DCDA2845177F4D59A0F2DCD8DE507CC3  hbvol1
+       /dev/sdc1  None                  23878C320CF3478095D1318CB5C99EED  localmount
+       /dev/sdd1  o2cb   webcluster  G  8AB016CD59FC4327A2CDAB69F08518E3  webvol
+       /dev/sdg1  o2cb   webcluster  G  77D95EF51C0149D2823674FCC162CF8B  logsvol
+       /dev/sdh1  o2cb   webcluster  G  BBA1DBD0F73F449384CE75197D9B7098  scratch
+
+       The o2cb init script can also be used to check the status of the cluster, offline the cluster, etc.
+
+       To check the status of the cluster stack, do:
+
+       # service o2cb status
+       Driver for "configfs": Loaded
+       Filesystem "configfs": Mounted
+       Stack glue driver: Loaded
+       Stack plugin "o2cb": Loaded
+       Driver for "ocfs2_dlmfs": Loaded
+       Filesystem "ocfs2_dlmfs": Mounted
+       Checking O2CB cluster "webcluster": Online
+         Heartbeat dead threshold: 62
+         Network idle timeout: 60000
+         Network keepalive delay: 2000
+         Network reconnect delay: 2000
+         Heartbeat mode: Global
+       Checking O2CB heartbeat: Active
+         77D95EF51C0149D2823674FCC162CF8B /dev/sdg1
+         DCDA2845177F4D59A0F2DCD8DE507CC3 /dev/sdk1
+         BBA1DBD0F73F449384CE75197D9B7098 /dev/sdh1
+       Nodes in O2CB cluster: 6 7 10
+       Active userdlm domains:  ovm
+
+       To offline and unload the cluster stack, do:
+
+       # service o2cb offline
+       Clean userdlm domains: OK
+       Stopping global heartbeat on cluster "webcluster": OK
+       Stopping O2CB cluster webcluster: OK
+       Unregistering O2CB cluster "webcluster": OK
+
+       # service o2cb unload
+       Clean userdlm domains: OK
+       Unmounting ocfs2_dlmfs filesystem: OK
+       Unloading module "ocfs2_dlmfs": OK
+       Unloading module "ocfs2_stack_o2cb": OK
+
+SEE ALSO
+       o2cb(8) o2cb.sysconfig(5) ocfs2.cluster.conf(5) o2hbmonitor(8)
+
+AUTHORS
+       Oracle Corporation
+
+COPYRIGHT
+       Copyright © 2004, 2011 Oracle. All rights reserved.
+
+Version 1.8.9                                                                                   August 2011                                                                                         o2cb(7)

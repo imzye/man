@@ -1,0 +1,767 @@
+Class::Tangram(3)     User Contributed Perl Documentation    Class::Tangram(3)
+
+
+NAME
+       Class::Tangram - Tangram-friendly classes, DWIM attributes
+
+SYNOPSIS
+        package MyObject;
+
+        use base qw(Class::Tangram);
+
+        our $fields = { int    => [ qw(foo bar) ],
+                        string => [ qw(baz quux) ] };
+
+        package main;
+
+        my $object = MyObject->new(foo => 2, baz => "hello");
+
+        print $object->baz();            # prints "hello"
+
+        $object->set_quux("Something");
+
+        $object->set_foo("Something");   # dies - not an integer
+
+DESCRIPTION
+       Class::Tangram is a tool for defining objects attributes.  Simply
+       define your object's fields/attributes using the same data structure
+       introduced in _A Guided Tour of Tangram_ (see "SEE ALSO") and detailed
+       in Tangram::Schema, and you get objects that work As You'd Expect(tm).
+
+       Class::Tangram has no dependancy upon Tangram, and vice versa.  Neither
+       requires anything special of your objects, nor do they insert any
+       special fields into your objects.  This is a very important feature
+       with innumerable benefits, and few (if any) other object persistence
+       tools have this feature.
+
+       So, fluff aside, let's run through how you use Class::Tangram to make
+       objects.
+
+       First, you decide upon the attributes your object is going to have.
+       You might do this using UML, or you might pick an existing database
+       table and declare each column to be an attribute (you can leave out
+       "id"; that one is implicit; also, leave out foreign keys until later).
+
+       Your object should use Class::Tangram as a base class;
+
+         use base qw(Class::Tangram)
+
+       or for older versions of perl:
+
+         use Class::Tangram;
+         use vars qw(@ISA);
+         @ISA = qw(Class::Tangram)
+
+       You should then define a $fields variable in the scope of the package,
+       that is a hash from attribute types (see Tangram::Type) to either an
+       array of attribute names, or another hash from attribute names to
+       options hashes (or "undef").  The layout of this structure coincides
+       exactly with the "fields" portion of a tangram schema (see
+       Tangram::Schema), though there are some extra options available.
+
+       This will hereon in be referred to as the `object schema' or just
+       `schema'.
+
+       For example,
+
+        package Orange;
+        use base qw(Class::Tangram);
+
+        our $fields = {
+            int => {
+                juiciness => undef,
+                segments => {
+                    # this code reference is called when this
+                    # attribute is set, to check the value is
+                    # OK - note, no object is passed, this is for
+                    # simple marshalling only.
+                    check_func => sub {
+                        die "too many segments"
+                            if (${(shift)} > 30);
+                    },
+                    # the default for this attribute.
+                    init_default => 7,
+                },
+            },
+            ref => {
+               grower => {
+               },
+            },
+
+            # 'required' attributes - insist that these fields are
+            # set, both with constructor and set()/set_X methods
+            string => {
+                # true: 'type' must have non-empty value (for
+                # strings) or be logically true (for other types)
+                type => { required => 1 },
+
+                # false: 'tag' must be defined but may be empty
+                tag => { required => '' },
+            },
+
+            # fields allowed by Class::Tangram but not ever
+            # stored by Tangram - no type checking by default
+            transient => [ qw(_tangible) ],
+        };
+
+       It is of critical importance to your sanity that you understand how
+       anonymous hashes and anonymous arrays work in Perl.  Some additional
+       features are used above that have not yet been introduced, but you
+       should be able to look at the above data structure and see that it
+       satisfies the conditions stated in the paragraph before it.  If it is
+       hazy, I recommend reading perlref or perlreftut.
+
+       When the schema for the object is first imported (see Schema import),
+       Class::Tangram defines accessor functions for each of the attributes
+       defined in the schema.  These accessor functions are then available as
+       "$object->function" on created objects.  By virtue of inheritance,
+       various other methods are available.
+
+       From Class::Tangram 1.12 onwards, perl's "AUTOLOAD" feature is not used
+       to implement accessors; closures are compiled when the class is first
+       used.
+
+METHODS
+       The following methods are available for all Class::Tangram objects
+
+   Constructor
+       A Constructor is a method that returns a new instance of an object.
+
+       Class->new (attribute1 => value, attribute2 => value)
+           Sets up a new object of type "Class", with attributes set to the
+           values supplied.
+
+           Can also be used as an object method (normal use is as a "class
+           method"), in which case it returns a copy of the object, without
+           any deep copying.
+
+   Accessing & Setting Attributes
+       $instance->set(attribute => $value, ...)
+           Sets the attributes of the given instance to the given values.
+           croaks if there is a problem with the values.
+
+           This function simply calls "$instance->set_attribute($value)" for
+           each of the "attribute => $value" pairs passed to it.
+
+       $instance->get("attribute")
+           Gets the value of $attribute.  This simply calls
+           "$instance->get_attribute".  If multiple attributes are listed,
+           then a list of the attribute values is returned in order.  Note
+           that you get back the results of the scalar context "get_attribute"
+           call in this case.
+
+       $instance->attribute($value)
+           For DWIM's sake, the behaviour of this function depends on the type
+           of the attribute.
+
+               This function, along with the get_attribute and set_attribute
+               functions, are actually written inside a loop of the
+               import_schema() function.  The rationale for this is that a
+               single closure is faster than two functions.
+
+               scalar attributes
+
+               If $value is not given, then this is equivalent to
+               "$instance->get_attribute"
+
+               If $value is given, then this is equivalent to
+               "$instance->set_attribute($value)".  This usage issues a
+               warning if warnings are on; you should change your code to use
+               the set_attribute syntax for better readability.  OO veterans
+               will tell you that for maintainability object method names
+               should always be a verb.
+
+               associations
+
+               With attributes that are associations, the default action when
+               a parameter is given depends on what the argument list looks
+               like.  If it appears to be a series of "(key => value)" pairs
+               (with or without the keys), then it is translated into call to
+               "set".  Containers (or "undef") are also allowed in place of
+               values.
+
+               If the argument list contains only keys (ie, scalars) then it
+               is assumed you mean to `get' attributes.
+
+               If you pass this method an ambiguous argument list (eg, Key Key
+               Value or Value Key) then you get an exception.
+
+       $instance->get_attribute([@keys])
+           scalar attributes
+               Returns the value of the attribute.  This may be a normal
+               scalar, for "int", "string", and the "datetime" related types,
+               or an ARRAY or HASH REF, in the case of "flat_array" or
+               "flat_hash" types.
+
+           associations
+               The association types - "ref", "set", "array" and "hash" return
+               different results depending upon the context and presence of
+               keys in the method's parameter list.
+
+               In list context with no parameters, always returns the entire
+               contents of the container, as a list, without keys.  No sorting
+               is applied, unless there is an implicit order due to the type
+               of container the association uses (ie, arrays).
+
+               In scalar context with no parameters, always returns the
+               container - a Set::Object, Array or Hash (or, for single
+               element containers, the single element or "undef" if it is
+               empty).
+
+               In list context with parameters, the parameters are assumed to
+               be a list of keys to look up.  The container does its best to
+               look up items corresponding to the keys given, and then returns
+               them in the same order as the keys.
+
+               In scalar context with one parameter, the function returns that
+               element best described by that key, or "undef" if it is not
+               present in the container.
+
+           `ref' attributes get
+               `ref' attributes are modelled as a container with a single
+               element.
+
+               The accessor always returns the single element.
+
+           `array' attributes get
+           `set' attributes get
+           `hash' attributes get
+       $instance->set_attribute($value)
+           The normative way of setting attributes.  If you wish to override
+           the behaviour of an object when getting or setting an attribute,
+           override these functions.  They will be called when you use
+           "$instance->attribute", "$instance->get()", constructors, etc.
+
+           When attributes that are associations are changed via other
+           functions, a new container with the new contents is built, and then
+           passed to this function.
+
+           `ref' attributes set
+               Like all other container set methods, this method may be passed
+               a Set, Array or Hash, and all the members are added in order to
+               (single element) container.  If the resultant container has
+               more than one item, it raises a run-time warning.
+
+           `set' attributes set
+           `array' attributes set
+           `hash' attributes set
+       $instance->attribute_includes(@objects)
+           Returns true if all of the objects, or object => value pairs, are
+           present in the container.
+
+       $instance->attribute_insert([key] => $object, [...])
+           Inserts all of the items into the collection.
+
+           Where possible, if the collection type can avoid a collision
+           (perhaps by duplicating an entry for a key or inserting a slot into
+           an ordered list), then such action is taken.
+
+           If you're inserting a list of objects into an array by number,
+           ensure that you list the keys in order, unless you know what you're
+           doing.
+
+           eg
+
+            $obj->myarray_insert( 1 => $obj1, 2 => $obj2, 1 => $obj3 )
+
+           will yield
+
+            $obj->myarray()  ==  ( $obj3, $obj1, $obj2 );
+
+           Empty slots are shifted along with the rest of them.
+
+       $instance->attribute_replace([key] => $object, [...])
+           "Replace" is, for the most part, identical to "insert".  However,
+           if collisions occur (whatever that means for the collection type
+           you are inserting to), then the target will be replaced, no
+           duplications of elements will occur in collection types supporting
+           duplicates.
+
+       $instance->attribute_pairs
+       $instance->attribute_size
+           FETCHSIZE
+
+       $instance->attribute_clear
+           Empties a collection
+
+       $instance->attribute_push
+           Place an element on the end of a collection; identical to
+           foo_insert without an index.
+
+       $instance->attribute_unshift
+           Place an element on the end of a collection; identical to
+           foo_insert without an index.
+
+       $instance->attribute_pop
+           Returns the last element in a collection, and deletes that item
+           from the collection, but not necessarily in that order.  No
+           parameters are accepted.
+
+       $instance->attribute_shift
+           Remove an element on the beginning of a collection, and return it
+
+       $instance->attribute_splice($offset, $length, @objects)
+           Pretends that the collection is an array and splices it.
+
+       $instance->attribute_remove(@objects)
+           translates logically to a search for that item or index, followed
+           by a delete
+
+           This suite of functions applies to attributes that are sets ("iset"
+           or "set").  It could in theory also apply generally to all
+           collections - ie also arrays ("iarray" or "array"), and hashes
+           ("hash", "ihash").
+
+           All of these modifications build a new container, then call
+           $object->set_attribute($container)
+
+           It is up to the set_attribute() function to update all related
+           classes.
+
+       Note: The above functions can be overridden, but they may not be called
+       with the "$self->SUPER::" superclass chaining method.  This is because
+       they are not defined within the scope of Class::Tangram, only your
+       package.
+
+ATTRIBUTE TYPE CHECKING
+       Class::Tangram provides type checking of attributes when attributes are
+       set - either using the default "set_attribute" functions, or created
+       via the "new" constructor.
+
+       The checking has default behaviour for each type of attribute (see
+       "Default Type Checking"), and can be extended arbitrarily via a per-
+       attribute "check_func", described below.  Critical attributes can be
+       marked as such with the "required" flag.
+
+       The specification of this type checking is placed in the class schema,
+       in the per-attribute options hash.  This is a Class::Tangram extension
+       to the Tangram schema structure.
+
+       check_func
+           A function that is called with a reference to the new value in
+           $_[0].  It should call die() if the value is bad.  Note that this
+           check_func will never be passed an undefined value; this is covered
+           by the "required" option, below.
+
+           In the example schema (above), the attribute "segments" has a
+           "check_func" that prevents setting the value to anything greater
+           than 30.  Note that it does not prevent you from setting the value
+           to something that is not an integer; if you define a "check_func",
+           it replaces the default.
+
+       required
+           If this option is set to a true value, then the attribute must be
+           set to a true value to pass type checking.  For string attributes,
+           this means that the string must be defined and non-empty (so "0" is
+           true).  For other attribute types, the normal Perl definition of
+           logical truth is used.
+
+           If the required option is defined but logically false, (ie "" or
+           0), then the attribute must also be defined, but may be set to a
+           logically false value.
+
+           If the required option is undefined, then the attribute may be set
+           to an undefined value.
+
+           For integration with tangram, the new() function has a special
+           hack; if it is being invoked from within Tangram, then the required
+           test is skipped.
+
+   Other per-attribute options
+       Any of the following options may be inserted into the per-attribute
+       options hash:
+
+       init_default
+           This value specifies the default value of the attribute when it is
+           created with new().  It is a scalar value, it is copied to the
+           fresh object.  If it is a code reference, that code reference is
+           called and its return value inserted into the attribute.  If it is
+           an ARRAY or HASH reference, then that array or hash is COPIED into
+           the attribute.
+
+       destroy_func
+           If anything special needs to happen to this attribute before the
+           object is destroyed (or when someone calls
+           "$object->clear_refs()"), then define this.  It is called as
+           "$sub->($object, "attribute")".
+
+   Default Type Checking
+       Default type checking s
+
+       check_X (\$value)
+           This series of internal functions are built-in "check_func"
+           functions defined for all of the standard Tangram attribute types.
+
+           check_string
+               checks that the supplied value is less than 255 characters
+               long.
+
+           check_int
+               checks that the value is a (possibly signed) integer
+
+           check_real
+               checks that the value is a real number, by stringifying it and
+               matching it against ("m/^-?\d*(\.\d*)?(e-?\d*)?$/").
+               Inefficient?  Yes.  Patches welcome.
+
+               With my cries for help, where are the user-submitted patches?!
+               Well, this function now checks the scalar flags that indicate
+               that it contains a number, which isn't flawless, but a lot
+               faster :)
+
+           check_obj
+               checks that the supplied variable is a reference to a blessed
+               object
+
+           check_flat_array
+               checks that $value is a ref ARRAY and that all elements are
+               unblessed scalars.  Does NOT currently check that all values
+               are of the correct type (int vs real vs string, etc)
+
+           check_rawdate
+               checks that $value is of the form YYYY-MM-DD, or YYYYMMDD, or
+               YYMMDD.
+
+           check_rawtime
+               checks that $value is of the form HH:MM(:SS)?
+
+           check_rawdatetime
+               checks that $value is of the form YYYY-MM-DD HH:MM(:SS)? (the
+               time and/or the date can be missing), or a string of numbers
+               between 6 and 14 numbers long.
+
+           check_dmdatetime
+               checks that $value is of the form YYYYMMDDHH:MM:SS, or those
+               allowed for rawdatetime.
+
+           check_flat_hash
+               checks that $value is a ref HASH and all values are scalars.
+               Does NOT currently check that all values are of the correct
+               type (int vs real vs string, etc)
+
+           check_set
+               Checks that the passed value is a Set::Object
+
+           check_hash
+               Checks that the passed value is a perl HV
+
+           check_array
+               Checks that the passed value is a perl AV
+
+           check_nothing
+               checks whether Australians like sport
+
+       destroy_X ($instance, $attr)
+           Similar story with the check_X series of functions, these are
+           called during object destruction on every attribute that has a
+           reference that might need breaking.  Note: these functions all
+           assume that attributes belonging to an object that is being
+           destroyed may be destroyed also.  In other words, do not allow
+           distinct objects to share Set::Object containers or hash references
+           in their attributes, otherwise when one gets destroyed the others
+           will lose their data.
+
+           Available functions:
+
+           destroy_array
+               empties an array
+
+           destroy_set
+               Calls Set::Object::clear to clear the set
+
+           destroy_hash
+               empties a hash
+
+           destroy_ref
+               destroys a reference.
+
+       parse_X ($attribute, { schema option })
+           Parses the schema option field, and returns one or two closures
+           that act as a check_X and a destroy_X function for the attribute.
+
+           This is currently a very ugly hack, parsing the SQL type definition
+           of an object.  But it was bloody handy in my case for hacking this
+           in quickly.  This is probably unmanagably unportable across
+           databases; but send me bug reports on it anyway, and I'll try and
+           make the parsers work for as many databases as possible.
+
+           This perhaps should be replaced by primitives that go the other
+           way, building the SQL type definition from a more abstract
+           definition of the type.
+
+           Available functions:
+
+           parse_string
+               parses SQL types of:
+
+               CHAR(N), VARCHAR(N)
+                   closure checks length of string is less than N characters
+
+               TINYBLOB, BLOB, LONGBLOB
+                   checks max. length of string to be 255, 65535 or 16777215
+                   chars respectively.  Also works with "TEXT" instead of
+                   "BLOB"
+
+               SET("members", "of", "set")
+                   checks that the value passed is valid as a SQL set type,
+                   and that all of the passed values are allowed to be a
+                   member of that set.
+
+               ENUM("possible", "values")
+                   checks that the value passed is one of the allowed values.
+
+   Quick Object Dumping and Destruction
+       $instance->quickdump
+           Quickly show the blessed hash of an object, without descending into
+           it.  Primarily useful when you have a large interconnected graph of
+           objects so don't want to use the x command within the debugger.  It
+           also doesn't have the side effect of auto-vivifying members.
+
+           This function returns a string, suitable for print()ing.  It does
+           not currently escape unprintable characters.
+
+       $instance->DESTROY
+           This function ensures that all of your attributes have their
+           destructors called.  It calls the destroy_X function for attributes
+           that have it defined, if that attribute exists in the instance that
+           we are destroying.  It calls the destroy_X functions as
+           destroy_X($self, $k)
+
+       $instance->clear_refs
+           This clears all references from this object, ie exactly what
+           DESTROY normally does, but calling an object's destructor method
+           directly is bad form.  Also, this function has no qualms with
+           loading the class' schema with import_schema() as needed.
+
+           This is useful for breaking circular references, if you know you
+           are no longer going to be using an object then you can call this
+           method, which in many cases will end up cleaning up most of the
+           objects you want to get rid of.
+
+           However, it still won't do anything about Tangram's internal
+           reference to the object, which must still be explicitly unlinked
+           with the Tangram::Storage->unload method.
+
+FUNCTIONS
+       The following functions are not intended to be called as object
+       methods.
+
+   Schema Import
+        our $fields = { int => [ qw(foo bar) ],
+                        string => [ qw(baz quux) ] };
+
+        # Version 1.115 and below compatibility:
+        our $schema = {
+           fields => { int => [ qw(foo bar) ],
+                       string => [ qw(baz quux) ] }
+           };
+
+       Class::Tangram::import_schema($class)
+           Parses a tangram object field list, in "${"${class}::fields"}" (or
+           "${"${class}::schema"}->{fields}" to the internal type information
+           hashes.  It will also define all of the attribute accessor and
+           update methods in the $class package.
+
+           Note that calling this function twice for the same class is not
+           tested and may produce arbitrary results.  Patches welcome.
+
+   Run-time type information
+       It is possible to access the data structures that Class::Tangram uses
+       internally to verify attributes, create objects and so on.
+
+       This should be considered a HIGHLY EXPERIMENTAL interface to INTERNALS
+       of Class::Tangram.
+
+       Class::Tangram keeps seven internal hashes:
+
+       %types
+           "$types{$class}->{$attribute}" is the tangram type of each
+           attribute, ie "ref", "iset", etc.  See Tangram::Type.
+
+       %attribute_options
+           "$attribute_options{$class}->{$attribute}" is the options hash for
+           a given attribute.
+
+       %required_attributes
+           "$required_attributes{$class}->{$attribute}" is the 'required'
+           option setting for a given attribute.
+
+       %check
+           "$check{$class}->{$attribute}" is a function that will be passed a
+           reference to the value to be checked and either throw an exception
+           (die) or return true.
+
+       %cleaners
+           "$attribute_options{$class}->{$attribute}" is a reference to a
+           destructor function for that attribute.  It is called as an object
+           method on the object being destroyed, and should ensure that any
+           circular references that this object is involved in get cleared.
+
+       %abstract
+           "$abstract->{$class}" is set if the class is abstract
+
+       %init_defaults
+           "$init_defaults{$class}->{$attribute}" represents what an attribute
+           is set to automatically if it is not specified when an object is
+           created. If this is a scalar value, the attribute is set to the
+           value. If it is a function, then that function is called (as a
+           method) and should return the value to be placed into that
+           attribute.  If it is a hash ref or an array ref, then that
+           structure is COPIED in to the new object.  If you don't want that,
+           you can do something like this:
+
+              [...]
+               flat_hash => {
+                   attribute => {
+                       init_default => sub { { key => "value" } },
+                   },
+               },
+              [...]
+
+           Now, every new object will share the same hash for that attribute.
+
+       %companions
+           Any "Companion" relationships between attributes, that are to be
+           treated as linked pairs of relationships; deleting object A from
+           container B of object C will also cause object C to be removed from
+           container D of object A.
+
+       There are currently four functions that allow you to access parts of
+       this information.
+
+       Class::Tangram::attribute_options($class)
+           Returns a hash ref to a data structure from attribute names to the
+           option hash for that attribute.
+
+       Class::Tangram::attribute_types($class)
+           Returns a hash ref from attribute names to the tangram type for
+           that attribute.
+
+       Class::Tangram::required_attributes($class)
+           Returns a hash ref from attribute names to the 'required' option
+           setting for that attribute.  May also be called as a method, as in
+           "$instance->required_attributes".
+
+       Class::Tangram::init_defaults($class)
+           Returns a hash ref from attribute names to the default intial
+           values for that attribute.  May also be called as a method, as in
+           "$instance->init_defaults".
+
+       Class::Tangram::companions($class)
+           Returns a hash ref from attribute names to the default intial
+           values for that attribute.  May also be called as a method, as in
+           "$instance->init_defaults".
+
+       Class::Tangram::known_classes
+           This function returns a list of all the classes that have had their
+           object schema imported by Class::Tangram.
+
+       Class::Tangram::is_abstract($class)
+           This function returns true if the supplied class is abstract.
+
+       Class->set_init_default(attribute => $value);
+           Sets the default value on an attribute for newly created "Class"
+           objects, as if it had been declared with init_default.  Can be
+           called as a class or an instance method.
+
+SEE ALSO
+       Tangram::Schema
+
+       A guided tour of Tangram, by Sound Object Logic.
+
+        http://www.soundobjectlogic.com/tangram/guided_tour/fs.html
+
+DEPENDENCIES
+       The following modules are required to be installed to use
+       Class::Tangram:
+
+          Set::Object => 1.02
+          Test::Simple => 0.18
+          Date::Manip => 5.21
+
+       Test::Simple and Date::Manip are only required to run the test suite.
+
+       If you find Class::Tangram passes the test suite with earlier versions
+       of the above modules, please send me an e-mail.
+
+   MODULE RELEASE
+       This is Class::Tangram version 1.14.
+
+BUGS/TODO
+       •   Inside an over-ridden "$obj-"set_attribute> function, it is not
+           possible to call "$self-"SUPER::set_attribute>, because that
+           function does not exist in any superclass' namespace.  So, you have
+           to modify your own hash directly - ie
+
+             $self->{attribute} = $value;
+
+           Instead of the purer OO
+
+             $self->SUPER::set_attribute($value);
+
+           Solutions to this problem may involve creating an intermediate
+           super-class that contains those functions, and then replacing
+           "Class::Tangram" in @Class::ISA with the intermediate class.
+
+       •   Container enhancements;
+
+           copy constructor
+               The copy constructor now automatically duplicates
+
+          - $obj->new() should take a copy of containers etc
+
+        New `array' functions:
+          - $obj->attr_push()
+
+        * Container notification system
+
+          - all $obj->attr_do functions call $obj->set_attr to provide a
+            single place to catch modifications of that attribute
+
+          -
+
+        *
+
+        * back-reference notification system
+
+       There should be more functions for breaking loops; in particular, a
+       standard function called drop_refs($obj), which replaces references to
+       $obj with the appropriate "Tangram::RefOnDemand" object so that an
+       object can be unloaded via "Tangram::Storage-"unload()> and actually
+       have a hope of being reclaimed.  Another function that would be handy
+       would be a deep "mark" operation for manual mark & sweep garbage
+       collection.
+
+       Need to think about writing some functions using "Inline" for speed.
+       One of these days...
+
+       Allow "init_default" values to be set in a default import function?
+
+       ie
+
+         use MyClassTangramObject -defaults => { foo => "bar" };
+
+AUTHOR
+       Sam Vilain, <sam@vilain.net>
+
+   CREDITS
+        # Some modifications
+        # Copyright �© 2001 Micro Sharp Technologies, Inc., Vancouver, WA, USA
+        # Author: Karl M. Hegbloom <karlheg@microsharp.com>
+        # Perl Artistic Licence.
+
+       Many thanks to Charles Owens and David Wheeler for their feedback,
+       ideas, patches and bug testing.
+
+POD ERRORS
+       Hey! The above document had some coding errors, which are explained
+       below:
+
+       Around line 396:
+           You can't have =items (as at line 405) unless the first thing after
+           the =over is an =item
+
+       Around line 2940:
+           Non-ASCII character seen before =encoding in '�©'. Assuming CP1252
+
+perl v5.40.2                      2006-01-30                 Class::Tangram(3)

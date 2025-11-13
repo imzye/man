@@ -1,0 +1,181 @@
+Whoseip::DB(3)        User Contributed Perl Documentation       Whoseip::DB(3)
+
+
+NAME
+       Whoseip::DB - WhoseIP cache database
+
+SYNOPSIS
+       use Whoseip::DB; use Whoseip::DB qw(:all);
+
+       $dbf = Whoseip::DB::ipdb_open($filename[,
+                                     pagesize => $psize,
+                                     cachesize => $csize]);
+
+       $ref = Whoseip::DB::ipdb_lookup($ip); print $ref->{country} if
+       defined($ref);
+
+       Whoseip::DB::ipdb_insert($dbf, "192.0.2.0/24", 'US');
+
+       Whoseip::DB::ipdb_close($dbf);
+
+DESCRIPTION
+       The Whoseip::DB package provides functions for creating and accessing a
+       whoseip(1) cache database.  This database is analogous to a GeoIP
+       database, except that it keeps more information.
+
+       The database is kept in a single file and consists of pages of the same
+       size.  The file begins with a 512-byte header block of the following
+       structure:
+
+       Offset      Size        Description
+            0         8        "WHOSEIP\0"
+            8         2        major version
+           10         2        minor version
+           12        16        UUID
+           28         4        page size
+           32         4        number of allocated pages
+           36         4        number of entries in root index table
+           40       472        root index table
+
+       The first three fields serve to identify the file format and its
+       version.  At the time of this writing, major and minor versions are
+       1.0.
+
+       Page size defines the size of the file page.  It defaults to 1280
+       bytes.
+
+       Pages are of two types: index pages, that serve to navigate through the
+       file, and leaf pages, that keep actual data.  The root index table,
+       located at the end of the file header keeps offsets of the initial
+       index page for IP addresses of different sizes kept in the database.
+       Each entry in this table consists of two 32-bit words: the first one
+       keeps the length of the IP address in bits (e.g. 32 for IPv4 and 128
+       for IPv6), and the second one keeps the offset of the first index table
+       for entries of that size.  The table can accomodate at most 59 entries,
+       which is more than enough for the purpose.
+
+       An index page contains a table of offsets of the next page to look up
+       (whether index or leaf) and is indexed by the octet value (0 -- 255).
+       An extra slot keeps the offset of the leaf page.  The overall structure
+       of an index page is as follows:
+
+       Offset      Size        Description
+            0         4        Index page type: 1
+            4         4        OFF[0]
+            8         4        OFF[1]
+            .         .        .
+            .         .        .
+            .         .        .
+            1024      4        OFF[255]
+            1028      4        OFF[LEAF]
+
+       When looking up for an IP address, index pages are descended starting
+       from the root page.  The octets of the IP address in host order are
+       iterated from left to right.  Each subsequent octet is used to select
+       offset of the next page from the current index page.  If the
+       corresponding offset is zero the last entry (OFF[LEAF]) is used.  This
+       process stops when the leaf page is encountered.
+
+       A leaf page contains a table of CIDRs and their descriptions.  Its
+       structure is as follows:
+
+       Offset      Size        Description
+            0         4        Leaf page type: 2
+            4         4        Number of entries in the table
+            8         4        Offset of the continuation page (0 if none)
+
+            12        4        Entry 0: network address
+            16        4        Entry 0: network mask
+            20        4        Entry 0: timestamp
+            24        2        Entry 0: ISO 3166-1 country code
+            26        4        Entry 0: length of additional data
+            30        ?        Entry 0: additional data
+            .         .        .
+            .         .        .
+            .         .        .
+
+            12+N*14   4        Entry N: network address
+            16+N*14   4        Entry N: network mask
+            20+N*14   4        Entry N: timestamp
+            24+N*14   2        Entry N: ISO 3166-1 country code
+            26+N*14   4        Entry N: length of additional data
+            30+N*14   ?        Entry N: additional data
+
+       When a leaf page is encountered, the IP address in question is compared
+       with each entry in turn using the usual procedure (ANDing with the
+       network mask and comparing the result with the network address).
+       Search stops when a matching entry is found.  Very large tables can
+       span several leaf pages: if no entry matches in the current page, the
+       search continues at the continuation page whose offset is indicated by
+       the third field.  If that field is 0, the search returns failure.
+
+   $dbf = Whoseip::DB::ipdb_open($filename[, options]);
+       Opens the database file $filename and returns a descriptor to be used
+       for searches in that file.  options is a hash that can contain the
+       following keys:
+
+       pagesize
+           Page size for the file.  This option is honoured only when creating
+           the file.  It cannot be less than 1032 bytes.  Default is 1280
+           bytes.
+
+       cachesize
+           Maximum number of pages to keep in a LRU cache.  Defaults to 16.
+
+   Whoseip::DB::ipdb_locker($dbf[, opts]);
+       Lock or unlock the database.
+
+       opts is a hash of the following options:
+
+       lock => MODE
+           Defines the locking operation.  MODE is one of: exclusive or
+           LOCK_EX, shared or LOCK_SH, unlock or LOCK_UN.
+
+           If this option is not supplied, no locking will be done.  This is
+           useful to force syncronization with the disk state.
+
+       sync => 0|1
+           When set to 0, disables synchronization with the disk file.
+           Default is 1.
+
+   Whoseip::DB::ipdb_sync($dbf);
+       Sunchronizes the database with the disk.
+
+   Whoseip::DB::ipdb_close($dbf);
+       Close the database.  $dbf is the handle returned from the previous call
+       to ipdb_open.
+
+   $res = Whoseip::DB::ipdb_lookup($dbf, $ip);
+       Look up IP address $ip in the database identified by $dbf (a handle
+       returned by the previous call to ipdb_open.  If found, $ref is a
+       reference to a hash that contains the following keys:
+
+       country
+           ISO 3166-1 country code
+
+       network
+           Network address in a dotted-quad form.
+
+       netmask
+           Network mask in a dotted-quad form.
+
+       If not found, the function returns undef.
+
+   $res = Whoseip::DB::ipdb_insert($dbf, $cidr, $country[, $hashref]);
+       Inserts into the database $cidr and the corresponding country code
+       $country and additional data $hashref.
+
+       Currently, $cidr must be in the form Net-address/Netmask-length.
+
+Whoseip::DB::ipdb_export($dbf[, $fd]);
+       Exports database $dbf in a portable plain-text format to file
+       identified by $fd (STDOUT by default).
+
+       The created file can be transferred over the network and used to
+       recreate the database via Whoseip::DB::ipdb_import.
+
+$res = Whoseip::DB::ipdb_import($dbf[, $fd]);
+       Imports data from the file descriptor $fd (STDIN by default) into the
+       database file $dbf.  Returns 1 on success and 0 on failure.
+
+perl v5.40.2                      2014-10-19                    Whoseip::DB(3)

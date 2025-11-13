@@ -1,0 +1,426 @@
+Macro(3)              User Contributed Perl Documentation             Macro(3)
+
+
+NAME
+       HTML::Macro - process HTML templates with loops, conditionals, macros
+       and more!
+
+SYNOPSIS
+         use HTML::Macro;
+         $htm = new HTML::Macro ('template.html');
+         $htm->print;
+
+         sub myfunc {
+           $htm->declare ('var', 'missing');
+           $htm->set ('var', 'value');
+           return $htm->process;
+         }
+
+         ( in template.html ):
+
+         <html><body>
+           <eval expr="&myfunc">
+             <if def="missing">
+               Message about missing stuff...
+             <else />
+               Var's value is #var#.
+             </if>
+           </eval>
+         </body></html>
+
+DESCRIPTION
+       HTML::Macro is a module to be used behind a web server (in CGI
+       scripts). It provides a convenient mechanism for generating HTML pages
+       by combining "dynamic" data derived from a database or other
+       computation with HTML templates that represent fixed or "static"
+       content of a page.
+
+       There are many different ways to accomplish what HTML::Macro does,
+       including ASP, embedded perl, CFML, etc, etc. The motivation behind
+       HTML::Macro is to keep everything that a graphic designer wants to play
+       with *in a single HTML template*, and to keep as much as possible of
+       what a perl programmer wants to play with *in a perl file*.  Our
+       thinking is that there are two basically dissimilar tasks involved in
+       producing a dynamic web page: graphic design and programming. Even if
+       one person is responsible for both tasks, it is useful to separate them
+       in order to aid clear thinking and organized work.  I guess you could
+       say the main motivation for this separation is to make it easier for
+       emacs (and other text processors, including humans) to parse your
+       files: it's yucky to have a lot of HTML in a string in your perl file,
+       and it's yucky to have perl embedded in a special tag in an HTML file.
+
+       HTML::Macro began with some simple programming constructs: macro
+       expansions, include files, conditionals, loops and block quotes.  Since
+       then we've added very little: only a define tag to allow setting values
+       and an eval tag to allow perl function calls in a nested macro scope.
+       Our creed is "less is more, more or less."
+
+       HTML::Macro variables will look familiar to C preprocessor users or
+       especially to Cold Fusion people.  They are always surrounded with
+       single or double hash marks: "#" or "##".  Variables surrounded by
+       double hash marks are subject to html entity encoding; variables with
+       single hash marks are substituted "as is" (like single quotes in perl
+       or UNIX shells).  Conditionals are denoted by the <if> and <else> tags,
+       and loops by the <loop> tag.  Quoting used to be done using a <quote>
+       tag, but we now deprecate that in favor of the more familiar CFML
+       quoting syntax: <!--- --->.
+
+Basic Usage:
+       Create a new HTML::Macro:
+
+           $htm = new HTML::Macro  ('templates/page_template.html', { 'collapse_whitespace' => 1 });
+
+       The first (filename) argument is optional.  If you do not specify it
+       now, you can do it later, which might be useful if you want to use this
+       HTML::Macro to operate on more than one template.  If you do specify
+       the template when the object is created, the file is read in to memory
+       at that time.
+
+       The second (attribute hash) argument is also optional, but you have to
+       set it now if you want to set attributes.  See Attributes below for a
+       list of attributes you can set.
+
+       Optionally, declare the names of all the variables that will be
+       substituted on this page.  This has the effect of defining the value ''
+       for all these variables.
+
+         $htm->declare ('var', 'missing');
+
+       Set the values of one or more variables using HTML::Macro::set.
+
+         $htm->set ('var', 'value', 'var2', 'value2');
+
+       Note: variable names beginning with an '@' are reserved for internal
+       use.
+
+       Get previously-set values using get:
+
+         $htm->get ('var');  # returns 'value'
+         $htm->get ('blah');  # returns undefined
+
+       get also returns values from enclosing scopes (see Scope below).
+
+         $htm->keys() returns a list of all defined macro names.
+
+       Or use HTML::Macro::set_hash to set a whole bunch of values at once.
+       Typically used with the value returned from a DBI::fetchrow_hashref.
+
+         $htm->set_hash ( {'var' => 'value', 'var2' => 'value2' } );
+
+       Finally, process the template and print the result using
+       HTML::Macro::print, or save the value return by HTML::Macro::process.
+
+           open CACHED_PAGE, '>page.html';
+           print CACHED_PAGE, $htm->process;
+           # or: print CACHED_PAGE, $htm->process ('templates/page_template.html');
+           close CACHED_PAGE;
+
+           - or in some contexts simply:
+
+           $htm->print;
+           or
+           $htm->print ('test.html');
+
+
+           However note this would not be useful for printing a cached page since
+           as a convenience for use in web applications HTML::Macro::print prints
+           some HTTP headers prior to printing the page itself as returned by
+           HTML::Macro::process.
+
+Macro Expansion
+       HTML::Macro::process attempts to perform a substitution on any word
+       beginning and ending with single or double hashmarks (#) , such as
+       ##NAME##.  A word is any sequence of alphanumerics and underscores.  If
+       the HTML::Macro has a matching variable, its value is substituted for
+       the word in the template everywhere it appears.  A matching variable is
+       determined based on a case-folding match with precedence as follows:
+       exact match, lower case match, upper case match.  HTML::Macro macro
+       names are case sensitive in the sense that you may define distinct
+       macros whose names differ only by case.  However, matching is case-
+       insensitive and follows the above precedence rules.  So :
+
+           $htm->set ('Name', 'Mike', 'NAME', 'MIKE', 'name', 'mike');
+
+       results in the following substitutions:
+
+           Name => Mike
+           NAME => MIKE
+           name => mike
+           NAme => mike (same for any other string differing from 'name' only by case).
+
+       If no value is found for a macro name, no substitution is performed,
+       and this is not treated as an error.  This allows templates to be
+       processed in more than one pass.  Possibly it would be useful to be
+       able to request notification if any variables are not matched, or to
+       request unmatched variables be mapped to an empty string.  However the
+       convenience seems to be outweighed by the benefit of consistency since
+       it easy to get confused if things like undefined variables are handled
+       differently at different times.
+
+       A typical usage is to stuff all the values returned from
+       DBI::fetchrow_hashref into an HTML::Macro.  Then SQL column names are
+       to be mapped to template variables.  Databases have different case
+       conventions for column names; providing the case insensitivity and
+       stripping the underscores allows templates to be written in a portable
+       fashion while preserving an upper-case convention for template
+       variables.
+
+   HTML entity quoting
+       Variables surrounded by double delimiters (##) are subject to HTML
+       entity encoding.  That is, >, <, & and "" occuring in the variables
+       value are replaced by their corresponding HTML entities.  Variables
+       surrounded by single delimiters are not quoted; they are substituted
+       "as is"
+
+Conditionals
+       Conditional tags take one of the following forms:
+
+       <if expr="perl expression">
+        HTML block 1 <else/>
+        HTML block 2 </if>
+
+       or
+
+       <if expr="perl expression">
+        HTML block 1 <else>
+        HTML block 2 </else> </if>
+
+       or simply
+
+       <if expr="perl expression">
+        HTML block 1 </if>
+
+       Conditional tags are processed by evaluating the value of the "expr"
+       attribute as a perl expression.  The entire conditional tag structure
+       is replaced by the HTML in the first block if the expression is true,
+       or the second block (or nothing if there is no else clause) if the
+       expressin is false.
+
+       Conditional expressions are subject to variable substitution, allowing
+       for constructs such as:
+
+       You have #NUM_ITEMS# item<if "#NUM_THINGS# > 1">s</if> in your basket.
+
+   ifdef
+       HTML::Macro also provides the <if def="variable-name"> conditional.
+       This construct evaluates to true if variable-name is defined and has a
+       true value.  It might have been better to name this something different
+       like <if set="variable"> ? Sometimes there is a need for if (defined
+       (variable)) in the perl sense.  Also we occasionally want <if
+       ndef="var"> but just use <if def="var"><else/> instead which seems
+       adequate if a little clumsy.
+
+File Interpolation
+       It is often helpful to structure HTML by separating commonly-used
+       chunks (headers, footers, etc) into separate files.  HTML::Macro
+       provides the <include /> tag for this purpose.  Markup such as <include
+       file="file.html" /> gets replaced by the contents of file.html, which
+       is itself subject to evaluation by HTML::Macro.  If the "asis"
+       attribute is present: <include/ file="quoteme.html" asis>, the file is
+       included "as is"; without any further evaluation.
+
+       HTML::Macro also supports an include path.  This allows common "part"
+       files to be placed in a single central directory.
+       HTML::Macro::push_incpath adds to the path, as in $htm->push_incpath
+       ("/path/to/include/files").  The current directory (of the file being
+       processed) is always checked first, followed by each directory on the
+       incpath.  When paths are added to the incpath they are always converted
+       to absolute paths, relative to the working directory of the invoking
+       script.  Thus, if your script is running in "/cgi-bin" and calls
+       push_incpath("include"), this adds "/cgi-bin/include" to the incpath.
+       (Note that HTML::Macro never calls chdir as part of an effort to be
+       thread-safe).
+
+       Also note that during the processing of an included file, the folder in
+       which the included file resides is pushed on to the incpath.  This
+       means that relative includes work as you would expect in included
+       files; a file found in a directory relative to the included file takes
+       precedence over one found in a directory relative to the including file
+       (or HTML::Macros global incpath).
+
+Loops
+           The <loop> tag and the corresponding HTML::Macro::Loop object provide
+       for repeated blocks of HTML, with subsequent iterations evaluated in
+       different contexts.  Typically you will want to select rows from a database
+       (lines from a file, files from a directory, etc), and present each
+       iteration in succession using identical markup.  You do this by creating a
+       <loop> tag in your template file containing the markup to be repeated, and
+       by creating a correspondingly named Loop object attached to the HTML::Macro
+       and containing all the data to be interpolated.  Note: this requires all
+       data to be fetched and stored before it is applied to the template; there
+       is no facility for streaming data.  For the intended use this is not a
+       problem.  However it militates against using HTML::Macro for text
+       processing of very large datasets.
+
+         <loop id="people">
+           <tr><td>#first_name# #last_name#</td><td>#email#</td></tr>
+         </loop>
+
+           The loop tag allows the single attribute "id" which can be any
+           identifier.  Loop tags may be nested.  If during processing no matching
+           loop object is found, a warning is produced and the tag is simply
+           ignored.
+
+         $htm = new HTML::Macro;
+         $loop = $htm->new_loop('people', 'id', 'first_name', 'last_name', 'email');
+         $loop->push_array (1, 'frank', 'jones', 'frank@hotmail.com');
+
+         Create a loop object using HTML::Macro::new_loop (or
+         HTML::Macro::Loop::new_loop for a nested loop).  The first argument is
+         the id of the loop and must match the id attribute of a tag in the
+         template (the match is case sensitive).  The remaining arguments are the
+         names of loop variables.
+
+         Append loop iterations (rows) by calling push_array with an array of
+         values corresponding to the loop variables declared when the loop was
+         created.
+
+         An alternative is to use push_hash, which is analogous to
+       HTML::Macro::set_hash; it sets up multiple variable substitutions.  If you
+       use push_hash you don't have to declare the names of the variables when you
+       create the loop object.  This allows them to be taken out of a hash and
+       bound late, for example by names returned in a database query.
+
+         pushall_arrays is a shortcut that allows a number of loop iterations to
+       be pushed at once.  It is typically used in conjunction with
+       DBI::selectall_arrayref.
+
+         is_empty returns a true value iff the loop has at least one row.
+
+         keys returns a list of variable names defined in the (last row of the)
+         loop.
+
+Eval
+         <eval expr="perl expression"> ... </eval>
+
+         You can evaluate arbitrary perl expressions (as long as you can place
+         them in an XML attribute between double quotes!).  The expression is
+         subject to macro substition, placed in a block and invoked as an
+         anonymous function whose single argument is an HTML::Macro object
+         representing the nested scope.  Any values set in the perl expression
+         thus affect the markup inside the eval tag.  The perl is evaluated after
+         setting the package to the HTML::Macro caller's package.
+
+         Note: typically we only use this to make a function call, and it would
+         probably be more efficient to optimize for that case - look for the
+         special case <eval function=""> to be implemented soon.  Also we might
+         like to provide a singleton eval that would operate in the current scope:
+         <eval function="perl_function" />.
+
+Scope
+       Each of the tags include, eval and loop introduce a nested "local"
+       lexical scope.  Within a nested scope, a macro definition overrides any
+       same-named macro in the enclosing scope and the value of the macro
+       outside the nested scope is unaffected.  This is generally the expected
+       behavior and makes it possible to write modular code.
+
+       Sometimes desirable to set values at a global scope when operating in a
+       nested scope.  You do this using set_global.  set_global is totally
+       analogous to set, but sets values in the outermost scope, whatever the
+       current scope.
+
+       Another related function is set_ovalue.  Set_ovalue sets values in a
+       parallel scope that takes precedence over the default scope (think
+       "overridding" value).  We use set_ovalue to place request variables in
+       a privileged scope so that their values override values fetched from
+       the datbase.  Each nested lexical scope really contains two name spaces
+       - values and ovalues, with ovalues taking precedence.  However, an
+       inner scope always takes precedence over an outer scope.
+
+       element Variable substitution within a loop follows the rule that loop
+       keys take precedence over "global" variables set by the enclosing page
+       (or any outer loop(s)).
+
+Define
+       You can set the value of a variable using the <define /> tag which
+       requires two attributes: name and value.  This is only occasionally
+       useful since mostly we set variable values in perl.  An example might
+       be setting a value that is constant in an outer context but variable in
+       an inner context, such as a navigation state:
+
+       <define name="nav_state" value="about" /> <include file="nav.html" />
+
+       We might want a more convenient syntax for this such as
+
+       <define variable="value" />
+
+       but this seems somehow contravening the XML ideal since it would allow
+       arbitrary attributes; we could never write any sort of DTD or schema.
+       And this whole feature is so little used that it doesn't seem worth it.
+
+Quoting
+       For inserting block quotes in your markup that will be completely
+       removed during macro processing, use <!--- --->.
+
+       Also note that all macro and tag processing can be inhibited by the use
+       of the "<quote>" tag.  Any markup enclosed by <quote> ... </quote> is
+       passed on as-is.  However please don't rely on this as it is not all
+       that useful and may go away.  The only real use for this was to support
+       a pre-processing phase that could generate templates.  A new feature
+       supports this better: any of the HTML::Macro tags may be written with a
+       trailing underscore, as in <if_ expr="..."> ... </if_>.  Tags such as
+       this are processed only if the preference variable '@precompile' is
+       set, in which case unadorned tags are ignored.
+
+Attributes
+       These are user-controllable attributes that affect the operation of
+       HTML::Macro in one way or another.
+
+       debug
+
+       Set to a true value, produces various diagnostic information on STDERR.
+       Default is false.
+
+       precompile
+
+       If set, (only) tags with trailing underscores will be processed.
+       Default is false.
+
+       collapse_whitespace, collapse_blanklines
+
+        If you set '@collapse_whitespace' the processor will collapse all
+         adjacent whitespace (including line terminators) to a single space.  An
+         exception is made for markup appearing within <textarea>, <pre> and
+         <quote> tags.  Similarly, setting '@collapse_blank_lines' (and not
+         '@collapse_whitespace', which takes precedence), will cause adjacent line
+         terminators to be collapsed to a single newline character.  We use the
+         former for a final pass in order to produce efficient HTML, the latter
+         for the preprocessor, to improve the readability of generated HTML with a
+         lot of blank lines in it.  Default for both is false.
+
+       cache_files
+
+       If set, files are read into and retrieved from an in-memory cache to
+       improve performance for long-lived applications such as mod_perl and
+       for situations in which the same file is read repeatedly during the
+       processing of a single template.  This definitely helped in a scenario
+       involving an include in side a loop, but it's not immediately clear why
+       given that the operating system is probably caching recently-read files
+       in memory anyway.  The cache checks file modification times and reloads
+       when a file changes.  There is currently no limit to file cache size,
+       which should definitely get changed.
+
+Idiosyncracies
+       For hysterical reasons HTML::Macro allows a certain kind of non-XML;
+       singleton tags are allowed to be written with the trailing slash
+       immediately following the tag and separated from the closing > by white
+       space.  EG:
+
+           <include/ file="foo"> is OK
+
+       whereas XML calls for
+
+           <include file="foo" /> (which is also allowed here).
+
+       HTML::Macro is copyright (c) 2000-2004 by Michael Sokolov and
+       Interactive Factory (sm).  Some rights may be reserved.  This program
+       is free software; you can redistribute it and/or modify it under the
+       same terms as Perl itself.
+
+AUTHOR
+       Michael Sokolov, sokolov@ifactory.com
+
+SEE ALSO HTML::Macro::Loop
+       perl(1).
+
+perl v5.40.2                      2010-05-30                          Macro(3)

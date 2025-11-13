@@ -1,0 +1,225 @@
+LWP::UserAgent::Cached(3)                  User Contributed Perl Documentation
+
+
+NAME
+       LWP::UserAgent::Cached - LWP::UserAgent with simple caching mechanism
+
+SYNOPSIS
+           use LWP::UserAgent::Cached;
+
+           my $ua = LWP::UserAgent::Cached->new(cache_dir => '/tmp/lwp-cache');
+           my $resp = $ua->get('http://google.com/'); # makes http request
+
+           ...
+
+           $resp = $ua->get('http://google.com/'); # no http request - will get it from the cache
+
+DESCRIPTION
+       When you process content from some website, you will get page one by
+       one and extract some data from this page with regexp, DOM parser or
+       smth else. Sometimes we makes errors in our data extractors and realize
+       this only when all 1_000_000 pages were processed. We should fix our
+       extraction logic and start all process from the beginning. Please STOP!
+       How about cache? Yes, you can cache all responses and second, third and
+       other attempts will be very fast.
+
+       LWP::UserAgent::Cached is yet another LWP::UserAgent subclass with
+       cache support. It stores cache in the files on local filesystem and if
+       response already available in the cache returns it instead of making
+       HTTP request.  This module was writed because other available
+       alternatives didn't meet my needs:
+
+       LWP::UserAgent::WithCache
+           caches responses on local filesystem and gets it from the cache
+           only if online document was not modified
+
+       LWP::UserAgent::Cache::Memcached
+           same as above but stores cache in memory
+
+       LWP::UserAgent::Snapshot
+           can record responses in the cache or get responses from the cache,
+           but not both for one useragent
+
+       LWP::UserAgent::OfflineCache
+           seems it may cache responses and get responses from the cache, but
+           has too much dependencies and unclear `delay' parameter
+
+METHODS
+       All LWP::UserAgent methods and several new.
+
+   new(...)
+       Creates new LWP::UserAgent::Cached object. Since LWP::UserAgent::Cached
+       is LWP::UserAgent subclass it has all same parameters, but in
+       additional it has some new optional pararmeters:
+
+       cache_dir
+
+       nocache_if
+
+       recache_if
+
+       on_uncached
+
+       cachename_spec
+
+       LWP::UserAgent::Cached creation example:
+
+           my $ua = LWP::UserAgent::Cached->new(cache_dir => 'cache/lwp', nocache_if => sub {
+               my $response = shift;
+               return $response->code >= 500; # do not cache any bad response
+           }, recache_if => sub {
+               my ($response, $path, $request) = @_;
+               return $response->code == 404 && -M $path > 1; # recache any 404 response older than 1 day
+           }, on_uncached => sub {
+               my $request = shift;
+               sleep 5 if $request->uri =~ '/category/\d+'; # delay before http requests inside "/category"
+           }, cachename_spec => {
+               'User-Agent' => undef, # omit agent while calculating cache name
+           });
+
+   cache_dir() or cache_dir($dir)
+       Gets or sets path to the directory where cache will be stored.  If not
+       set useragent will behaves as LWP::UserAgent without cache support.
+
+   nocache_if() or nocache_if($sub)
+       Gets or sets reference to subroutine which will be called after
+       receiving each non-cached response. First parameter of this subroutine
+       will be HTTP::Response object. This subroutine should return true if
+       this response should not be cached and false otherwise. If not set all
+       responses will be cached.
+
+   recache_if() or recache_if($sub)
+       Gets or sets reference to subroutine which will be called for each
+       response available in the cache. First parameter of this subroutine
+       will be HTTP::Response object, second - path to file with cache, third
+       - HTTP::Request object.  This subroutine should return true if response
+       needs to be recached (new HTTP request will be made) and false
+       otherwise.  This $sub will be called only if response already available
+       in the cache. Here you can also modify request for your needs.  This
+       will not change name of the file with cache.
+
+   on_uncached() or on_uncached($sub)
+       Gets or sets reference to subroutine which will be called for each non-
+       cached http request, before actually request.  First parameter of this
+       subroutine will be HTTP::Request object. Here you can also modify
+       request for your needs.  This will not change name of the file with
+       cache.
+
+   cachename_spec() or cachename_spec($spec)
+       Gets or sets hash reference to cache naming specification. In fact
+       cache naming for each request based on request content.  Internally it
+       is md5_hex($request->as_string("\n")). But what if some of request
+       headers in your program changed dinamically, e.g.  User-Agent or
+       Cookie? In such case caching will not work properly for you. We need
+       some way to omit this headers when calculating cache name. This option
+       is what you need. Specification hash should contain header name and
+       header value which will be used (instead of values in request) while
+       calculating cache name.
+
+       For example we already have cache where 'User-Agent' value in the
+       headers was 'Mozilla/5.0', but in the current version of the program it
+       will be changed for each request. So we force specified that for cache
+       name calculation 'User-Agent' should be 'Mozilla/5.0'. Cached request
+       had not 'Accept' header, but in the current version it has. So we force
+       specified do not include this header for cache name calculation.
+
+           cachename_spec => {
+               'User-Agent' => 'Mozilla/5.0',
+               'Accept' => undef
+           }
+
+       Specification hash may contain two special keys: '_body' and
+       '_headers'. With '_body' key you can specify body content in the
+       request for cache name calculation. For example to not include body
+       content in cache name calculation set '_body' to undef or empty string.
+       With '_headers' key you can specify which headers should be included in
+       $request for cache name calculation. For example you can say to include
+       only 'Host' and 'Referer'. '_headers' value should be array reference:
+
+           cachename_spec => {
+               _body => undef, # omit body
+               _headers => ['Host'], # include only host with value from request
+               # It will be smth like:
+               # md5_hex("METHOD url\r\nHost: host\r\n\r\n")
+               # method and url will be included in any case
+           }
+
+       Another example. Omit body, include only 'Host' and 'User-Agent'
+       headers, use 'Host' value from request and specified 'User-Agent'
+       value, in addition include referrer with specified value ('Referer' not
+       specified in '_headers', but values from main specification hash has
+       higher priority):
+
+           cachename_spec => {
+               _body => '',
+               _headers => ['Host', 'User-Agent'],
+               'User-Agent' => 'Mozilla/5.0',
+               'Referer' => 'http://www.com'
+           }
+
+       One more example. Calculate cache name based only on method and url:
+
+           cachename_spec => {
+               _body =>'',
+               _headers => []
+           }
+
+   last_cached()
+       Returns list with pathes to files with cache stored by last noncached
+       response. List may contain more than one element if there was redirect.
+
+   last_used_cache()
+       Returns list with pathes to files with cache used in last response.
+       This includes files just stored (last_cached) and files that may be
+       already exists (cached earlier). List may contain more than one element
+       if there was redirect.
+
+   uncache()
+       Removes last response from the cache. Use case example:
+
+           my $page = $ua->get($url)->decoded_content;
+           if ($page =~ /Access for this ip was blocked/) {
+               $ua->uncache();
+           }
+
+Proxy and cache name
+       Here you can see how changing of proxy for useragent will affect cache
+       name
+
+   HTTP proxy
+       HTTP proxy support works out of the box and causes no problems.
+       Changing of proxy server will not affect cache name
+
+   HTTPS proxy
+       Proper HTTPS proxy support added in LWP since 6.06 and causes no
+       problems. Changing of proxy server will not affect cache name
+
+   CONNECT proxy
+       CONNECT proxy support may be added using LWP::Protocol::connect. The
+       problem is that this module uses LWP's request() for creation of
+       CONNECT tunnel, so this response will be cached. But in fact it
+       shouldn't. To workaround this you need to install "nocache_if" hook
+
+           $ua->nocache_if(sub {
+               my $resp = shift;
+               # do not cache creation of tunnel
+               $resp->request->method eq 'CONNECT';
+           });
+
+       After that it works without problems. Changing of proxy server will not
+       affect cache name
+
+   SOCKS proxy
+       SOCKS proxy support may be added using LWP::Protocol::socks and causes
+       no problems.  Changing of proxy server will not affect cache name
+
+SEE ALSO
+       LWP::UserAgent
+
+COPYRIGHT
+       Copyright Oleg G <oleg@cpan.org>.
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2019-11-29         LWP::UserAgent::Cached(3)

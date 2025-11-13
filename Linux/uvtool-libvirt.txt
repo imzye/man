@@ -1,0 +1,352 @@
+uvt-kvm(1)                                                                                      uvtool                                                                                      uvt-kvm(1)
+
+NAME
+       uvt-kvm - Ubuntu virtualisation front-end for libvirt and KVM
+
+SYNOPSIS
+       uvt-kvm list
+
+       uvt-kvm create [options] name [filter ...]
+
+       uvt-kvm wait [options] name
+
+       uvt-kvm ip name
+
+       uvt-kvm ssh [options] ®.RI [ command ...]
+
+       uvt-kvm destroy name
+
+DESCRIPTION
+       uvtool provides a unified and integrated VM front-end to Ubuntu cloud image downloads, libvirt, and cloud-init.
+
+       uvt-kvm uses the volume storage pool maintained by uvt-simplestreams-libvirt(1) as a basis to provide quick start and management of Ubuntu VMs by wrapping libvirt and cloud-init.
+
+       uvt-kvm  is not intended to wrap all possible use cases. Where possible, it provides access to some more advanced cases using options to override entire sections of default operation, such as
+       the ability to directly override the backing volume image used, the libvirt domain definition, cloud-init metadata and userdata, and directly provide a network-config file.  For yet more com‐
+       plex cases, it is expected that the user will call libvirt directly (for example by using virsh(1)), and use uvt-kvm for only the simpler operations required on  affected  VMs.  See  ADVANCED
+       OVERRIDE OPTIONS and ADVANCED USAGE for details.
+
+SUBCOMMANDS
+       uvt-kvm's interface is designed around subcommands. The subcommand to be used must be specified as the first positional argument. Each subcommand has its own set of available options.
+
+       Where  a  subcommand requires a VM to be specified, the VM name must be provided as a second positional argument. When using uvt-kvm create to create VMs, the VM name is specified by the user
+       at this time. Where users have manipulated libvirt directly, VM names are expected to match libvirt domain names.
+
+   list
+       uvt-kvm list
+
+       Print a list of existing VMs to stdout. This list currently includes libvirt domains that are defined but were not created by uvt-kvm, but in future this is expected to change to VMs  created
+       by uvt-kvm only.
+
+   create
+       uvt-kvm create [options] name [filter ...]
+
+       Create  a new VM based on a backing volume specified by the provided simplestreams filters. This VM will be called name, and the same name must be used when referring to the VM from the other
+       subcommands.
+
+       Each filter operates on the images downloaded and managed by uvt-simplestreams-libvirt(1), and when combined together must uniquely specify a single  image.  See  uvt-simplestreams-libvirt(1)
+       for details on image selection.
+
+       Since  backing volume images are downloaded and maintained by uvt-simplestreams-libvirt(1), it is necessary to first run uvt-simplestreams-libvirt(1) to download images before this subcommand
+       will succeed. See EXAMPLES, below.
+
+       If no filters are specified, a filter of release=release is assumed, where release corresponds to the current LTS release as returned by distro-info(1).
+
+       Alternatively, see --backing-image-file under ADVANCED OVERRIDE OPTIONS below to supply a backing image directly yourself.
+
+       This subcommand supports an extensive set of options to modify the definition and behavior of the VM. See LIBVIRT DOMAIN DEFINTION OPTIONS, CLOUD-INIT CONFIGURATION OPTIONS and ADVANCED OVER‐
+       RIDE OPTIONS below. Other general behavioural options:
+
+       --no-start     Do not start the VM after creation. This is useful to make further customisations to the VM before using it. To start the VM when done, use virsh start name.
+
+   wait
+       uvt-kvm wait [options] name
+
+       Wait for a VM to become ready. This includes: waiting for the VM to request an IP address, waiting for ssh to become available on this IP, and an ssh(1) operation into the VM to wait for  two
+       things:
+
+       First the system to fully initialize.
+                    This  is  checked via the runlevel to reach 2 (upstart) or 5 (systemd).  Since 25.04 Plucky runlevel stopped to be supported and instead systemctl is-system-running --wait has to
+                    complete.
+
+       Then it checks if cloud-init finished.
+                    This is done by checking for the existence of /var/lib/cloud/instance/boot-finished
+
+       By using the wait command, scripts can create, operate on and destroy VMs synchronously and reliably.
+
+       --timeout timeout
+              Give up waiting after timeout seconds. Default: 120 seconds.
+
+       --interval interval
+              For wait operations that must poll, poll every interval seconds. Default: 8 seconds.
+
+       --remote-wait-script remote_wait_script
+              Run remote_wait_script through sh(1) on the guest system, which must block and exit with a zero status when the system is ready. Default:  /usr/share/uvtool/remote-wait.sh,  which  as‐
+              sumes that upstart and cloud-init are being used on the guest, waits for upstart to enter runlevel 2 and then waits for cloud-init to signal that it has finished booting the system.
+
+              When  remote_wait_script  is  run  on  the guest system, its environment will define the variables UVTOOL_WAIT_INTERVAL and UVTOOL_WAIT_TIMEOUT which contain the poll interval and wait
+              timeout as specified by the --interval and --timeout options, respectively.
+
+       --remote-wait-user user
+              Run the remote wait script as user user.  It must be possible to ssh(1) into the guest system as this user for the remote wait mechanism to work.
+
+       --insecure
+              Permit potentially insecure operations. See COMMON OPTIONS, below.
+
+       --ssh-private-key-file ssh_private_key_file
+              Use ssh_private_key_file to authenticate to the guest machine when performing the ssh(1) operation
+
+       --without-ssh
+              Skip the ssh(1) operation. This will cause the command to exit with success as soon as the ssh port is available, but without logging to the guest to wait until it is ready internally.
+
+   ip
+       uvt-kvm ip name
+
+       Guess the IP address of a VM and print it to stdout. Currently, this assumes a default (Ubuntu) installation of libvirt and dnsmasq on the host, and default networking behaviour on the VM. IP
+       address guessing is currently implemented via libvirt-python.
+
+       This subcommand assumes that the VM has successfully acquired an IP address, and will fail otherwise. Callers can use uvt-kvm wait after creating or rebooting a VM to wait for this to  become
+       the case.
+
+       In future, this subcommand may incorporate multiple IP address detection mechanisms.
+
+   ssh
+       uvt-kvm ssh [options] ®.RI [ command ...]
+
+       Run  ssh(1) against the VM. This is a limited wrapper around ssh(1) and the ip subcommand, designed for ease-of-use in the common case. For full functionality, use the ip subcommand to obtain
+       the VM's IP address, and then call ssh(1) directly instead.
+
+       --insecure  Permit potentially insecure operations. See COMMON OPTIONS, below.
+
+       --login-name user
+       -l user
+
+                   Specify the username to pass to ssh(1).  This is the recommended method for use in scripts. This option overrides the username provided by the @ notation in the  first  positional
+                   argument, and thus allows the VM name to include an @ symbol. Default: ubuntu, to match the default on Ubuntu cloud images.
+
+   destroy
+       uvt-kvm destroy name
+
+       Stop  and  completely destroy an existing VM. This stops the libvirt domain if it is running, undefines it, and deletes all volumes that had been part of the domain's definition. It does not,
+       however, delete any backing volumes, thus keeping intact pristine Ubuntu cloud images as maintained by uvt-simplestreams-libvirt(8).
+
+COMMON OPTIONS
+       --insecure
+              Valid for: uvt-kvm wait, uvt-kvm ssh.
+
+              Permit connections which may not be secure. For ssh(1) connections, this skips host key validation. This is no longer be required in the default case, since uvtool creates the  guest's
+              host keys, supplies them to the guest via cloud-init, and thus knows and sets the expected host public key automatically. In the common non-default case, --insecure may be required but
+              still  should  not  be  a problem since the guest system is located on the same system and this network path can be trusted. However, uvt-kvm will refuse to make a connection (for uvt-
+              kvm ssh) or skip steps (for uvt-kvm wait) without this option, in order to make absolutely sure that the user cannot compromise his path to the guest system without being aware of this
+              caveat.
+
+       -d
+       --developer
+              Valid for: uvt-kvm create only.
+
+              Turn on a set of options deemed most useful for developers but not suitable for turning on by default. Currently this is the same as specifying --unsafe-caching and  --log-console-out‐
+              put but this may change between releases.
+
+              Scripts should never use this option. To protect against future changes to the definition of this option, they should instead use the expansion defined above.
+
+LIBVIRT DOMAIN DEFINITION OPTIONS
+       Valid for: uvt-kvm create only.
+
+       These options modify the definition of the guest VM, and its connection to the host.
+
+       uvt-kvm create takes the default or user-supplied libvirt domain XML template definition and modifies it according to the following parameters. Each of these parameters has a sensible default
+       which may change between releases.
+
+       --memory size
+              Amount of system RAM in megabytes. Default: 512 (MiB).
+
+       --disk size
+              Size of the OS disk in gigabytes. Default: 8 (GiB).
+
+       --ephemeral-disk size
+              Add an ephemeral disk of Size gigabytes.
+
+       --unsafe-caching
+              Do not flush guest syncs to the host on the OS disk. This can improve guest I/O performance at the cost of losing data on host power failure.  This option is useful for ephemeral guest
+              machines that do not need to be persistent beyond a host power cycle.
+
+       --cpu cores
+              Number of CPU cores. Default: 1.
+
+       --bridge bridge
+              Replace the first defined NIC with one that connects to the given host bridge. Default: unaltered from the libvirt domain template.
+
+       --mac mac
+              Use this MAC address for the first defined NIC. Can be used in conjunction with --bridge. Default unspecified.
+
+       --log-console-output
+              Log  output to a disk file on the host instead of to a pty. With libvirt's default configuration on Ubuntu, this log can be found in /var/log/libvirt/qemu/<name>.log.  This options en‐
+              ables retrospective examination of VM console output, but breaks virsh console for interactive use.  On s390x this option is currently not supported due to  incompatibilties  with  the
+              sclp console used.
+
+       --host-passthrough
+              Instead of the default CPU model - which is host-model this will use host-passthrough which will try to make all of the host's CPU features (not migration safe) available in the guest.
+              This option is deprecated and will later be removed. Please use --model instead.
+
+       --cpu-model
+              Set  the  CPU model that shall be used.  The default generally is host-model, except on arm64 where host-model won't work - there the default is host-passthrough.  If set to host-model
+              or host-passthrough this will set the CPU mode.  If set to any other string it will be handled as a named CPU passed to libvirt.  Allowed values are all CPUs listed on your host as us‐
+              able=yes in `virsh domcapabilities`.  This option has no effect if the target is emulated, in this case the safe defaults of libvirt will be used.
+
+       --machine-type type
+              Set the machine type to the specified string before instantiating the guest.  See kvm -M ? for a list of types supported by your current system.  If not set this section  of  the  tem‐
+              plate is not altered before the guest is defined.  If set this modifies the internal temporary libvirt domain template at the element domain->os->type and sets the attribute machine to
+              the given value before defining the guest. This implies that libvirt will add the type-dependent default devices when defining the guest.
+
+              If  --machine-type is not specified, the current host is an x86_64 system and the requested guest is arch=amd64 then the machine type will by default be set to the latest available q35
+              based type to overcome the ancient compatibility oriented defaults of libvirt on x86.
+
+CLOUD-INIT CONFIGURATION OPTIONS
+       Valid for: uvt-kvm create only.
+
+       These options modify operation within the guest VM itself.
+
+       Unless --user-data is used to override this behaviour, uvt-kvm generates cloud-init userdata with some sensible defaults when a VM is created. These defaults can be altered using the  follow‐
+       ing options:
+
+       --password password
+
+              Permit login to the VM to the default user ubuntu and password password.  This is useful for debugging purposes, since it also enables a VT login.  Using this command line option leaks
+              the password used to other users on the same system, so should never be used in production for security reasons.
+
+              Default: no password login.
+
+       --run-script-once script_file
+              Run script_file as root on the VM the first time it is booted, but never again. This option can be used multiple times to run multiple scripts. If the script exits with a non-zero sta‐
+              tus, it will be left on the VM in /tmp for debugging purposes.
+
+              script_file  will be copied to the guest, marked as executable, and executed directly, so it must be an appropriate binary, start with a shebang, or otherwise be directly executable by
+              the guest kernel.
+
+              Default: no scripts.
+
+       --ssh-public-key-file ssh_public_key_file
+
+              Permit login to the VM to the default user ubuntu and the ssh keys specified in ssh_public_key_file.
+
+              Default: use the output of ssh-add -L if available; otherwise use ~/.ssh/id_rsa.pub.  If no source is found at all, then a warning will be printed to stderr, and VM creation will  con‐
+              tinue with no arrangement for access to the guest.
+
+       --packages package_list
+
+              Install the comma-separated packages specified in package_list on first boot. This option can be used multiple times; each additional option adds to the final package list.
+
+              Default: no packages.
+
+ADVANCED OVERRIDE OPTIONS
+       Valid for: uvt-kvm create only.
+
+       --template template_file
+              The  base  libvirt  domain definition XML template to use when constructing a new VM's definition. This is dynamically altered before domain creation; see LIBVIRT DOMAIN DEFINITION OP‐
+              TIONS.
+
+              Default: /usr/share/uvtool/libvirt/template.xml.
+
+       --guest-arch architecture
+              Specify the architecture of the guest template file that will be selected.  If an explicit --template is given then --guest-arch has no effect.  If neither --template nor  --guest-arch
+              are set the host's architecture will be used to determine the default xml template.
+
+              If  you set an architecture that requires emulation on the current host the guest will be set up for that. See EMULATION OF FOREIGN ARCHITECTURES for more details on using an architec‐
+              ture that is different to the current system.
+
+              Default: Current Host architecture
+
+       --user-data user_data_file
+              Override cloud-init userdata, instead using the file supplied. This overrides all options in the section CLOUD-INIT CONFIGURATION OPTIONS.
+
+              Default: as described in CLOUD-INIT CONFIGURATION OPTIONS.
+
+       --meta-data meta_data_file
+              Override default cloud-init metadata, instead using the file supplied.  This does not override any other options, since cloud-init metadata is not otherwise tunable.
+
+              Default: minimal file with automatically generated instance-id.
+
+       --network-config network_config_file
+              Provide cloud-init network-config using the file supplied.
+
+              Default: no network-config file.
+
+       --backing-image-file image_file
+              Specify the name of a local file that will be used to create the VM instead of relying on the volume storage pool. It must point to a qcow2 formatted file.  This option  overrides  any
+              simplestreams filters provided.
+
+ADVANCED USAGE
+       uvt-kvm is carefully constructed to avoid impeding the ability of the user to directly use virsh(1) or other libvirt tooling at any time, and provides override options to supply backing image
+       volumes and cloud-init userdata and metadata where possible. VMs created by uvt-kvm are not "special" in libvirt. What uvt-kvm does with VMs is well-defined, so that advanced users can manip‐
+       ulate a VM using libvirt directly without necessarily losing the ability for uvt-kvm to continue to manipulate that VM for common use cases.
+
+   TERMINOLOGY AND LIFECYCLE
+       For simplicity, uvt-kvm uses create to mean the definition, allocation and running of a VM, and destroy to mean the stopping and removing of all persistent state associated with a VM, includ‐
+       ing VM-specific disk image files and the VM definition itself. This matches the commonly expected lifecycle of VMs created with uvt-kvm.
+
+       This  works well for the common use case, but if VMs created with uvt-kvm need to be manipulated with virsh(1) or libvirt directly, then it becomes necessary to understand how this matches up
+       to the more complex libvirt terminology.
+
+       In libvirt, a VM is called a domain.  A domain is first defined, and then independently started. In libvirt terminology, destroy means a VM stop; after a destroy, the domain still exists  and
+       can be restarted.  undefine finally removes the domain definition. Resources associated with a VM (such as disk image files, which in libvirt are called volumes) must be created and destroyed
+       separately.
+
+       When uvt-kvm creates a VM, libvirt volumes are defined and populated, a libvirt domain is defined, marked as autostarted, and the domain started. When uvt-kvm destroys a VM, the corresponding
+       libvirt domain is stopped, domain-specific volumes deleted and the libvirt domain itself is undefined.
+
+   EMULATION OF FOREIGN ARCHITECTURES
+       emulation  of  foreign architectures can be done with uvt-kvm. Currently armhf being the only supported target architecture. Please be aware that defining filters to use a different architec‐
+       ture image will not be enough. To let uvtool know that you want to run as a specific architecture you need to set --guest-arch If that is set to armhf (just like  your  simplestreams  filters
+       for the image would be) then uvt-kvm will use qemu-system-arm
+
+       Since  in  these  modes bootloaders often struggle uvt-kvm will provide externel kernel and initrd to boot the guest. To be able to extract those from the guest image it needs root permission
+       when syncing the non native architecture image.
+
+EXAMPLES
+       # Update uvtool's libvirt volume storage pool with the
+       # latest Precise image
+       uvt-simplestreams-libvirt sync release=precise arch=amd64
+
+       # Create an ssh key for the local user (if you don't have
+       # one already)
+       ssh-keygen
+       # (...)
+
+       # Create an amd64 VM running Precise
+       uvt-kvm create myvm release=precise arch=amd64
+
+       # Wait for the VM to become ready
+       uvt-kvm wait --insecure myvm
+
+       # Shell into the VM to do some testing there
+       uvt-kvm ssh --insecure myvm
+       # (...)
+
+       # Destroy the VM
+       uvt-kvm destroy myvm
+
+TROUBLESHOOTING
+   Common Errors
+       Failed to connect socket to '/var/run/libvirt/libvirt-sock': Permission denied
+
+       Do you have permission to connect to libvirt? On Ubuntu, you must belong to the libvirt group (this group was named libvirtd on 16.04 and earlier). Users with sudo(8) access are added to this
+       group by default, but users only get group membership on the next login after the libvirt-bin package has been installed. To temporarily add yourself to this group in advance of your next lo‐
+       gin, try newgrp libvirt (or newgrp libvirtd if on Ubuntu 16.04 or earlier).
+
+       no supported architecture for os type 'hvm'
+
+       libvirt did not find KVM support on your system. Try sudo kvm-ok for diagnostics, and service libvirt-bin restart to pick up any changes before retrying.
+
+   Interactive console access
+       If you cannot access the VM from the host system, try using --password to set a password for the default ubuntu user inside the VM, and then logging in to the VM over the console in order  to
+       examine it from the inside.
+
+       To  access the console interactively, use virsh console name. However, note that interactive access is disabled if you are using --log-console-output or -d, so for interactive access you will
+       have to drop these options if you are using them.
+
+       If you are using --user-data, then --password will be overridden by it and you will need to modify your cloud-init userdata manually to achieve the same effect.
+
+SEE ALSO
+       uvt-simplestreams-libvirt(1), distro-info(1), dnsmasq(8), virsh(1).
+
+uvtool                                                                                        2014-03-10                                                                                    uvt-kvm(1)

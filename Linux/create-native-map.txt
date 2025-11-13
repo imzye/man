@@ -1,0 +1,309 @@
+create-native-map(1)                                                                        General Commands Manual                                                                        create-native-map(1)
+
+NAME
+       create-native-map - C/C# Mapping Creator
+
+SYNOPSIS
+       create-native-map [OPTIONS]* ASSEMBLY-FILE-NAME OUPUT-PREFIX
+
+OPTIONS
+       --autoconf-header=HEADER
+              HEADER is a header file name in the syntax typically used with the C #include statement, e.g.  #include <stdio.h> or #include "local.h" .
+
+              An Autoconf-formatted macro is generated from the include name, and a #include directive is wrapped within a #ifdef block for the Autoconf macro within the generated .c file.
+
+              For example, --autoconf-header=<stdio.h> would generate the code:
+
+                   #ifndef HAVE_STDIO_H
+                   #include <stdio.h>
+                   #endif /* ndef HAVE_STDIO_H */
+
+       --autoconf-member=MEMBER
+              Specify that any access to MEMBER should be wrapped within a #ifdef HAVE_MEMBER block.  MEMBER can be either a field-name or a class-name .  field-name combination.
+
+              For example, given the C# declaration:
+
+                   [Mono.Unix.Native.Map ("struct dirent")]
+                   struct Dirent {
+                        public long d_off;
+                   }
+
+              then --autoconf-member=d_off would generate the code similar to:
+
+                   int
+                   ToDirent (struct dirent *from, struct Dirent *to)
+                   {
+                   #ifdef HAVE_STRUCT_DIRENT_D_OFF
+                        to->d_off = from->d_off;
+                   #endif /* ndef HAVE_STRUCT_DIRENT_D_OFF */
+                   }
+
+       --exclude-native-symbol=SYMBOL
+              SYMBOL is a [DllImport] -marked method that should not have a prototype generated for it.
+
+       --impl-header=HEADER
+              Insert a #include statement within the generated .c file for HEADER .
+
+              For example, --impl-header=<stdlib.h> generates
+
+                   #include <stdlib.h>
+
+       --impl-macro=MACRO
+              Insert a #define statement within the generated .c file.  MACRO can contain a = to separate the macro name from the macro value.
+
+              For example, --impl-macro=FOO=42 generates
+
+                   #define FOO 42
+
+       --library=LIBRARY
+              Create prototypes for [DllImport] -marked methods which reference the native library LIBRARY into the generated .h file.
+
+       --public-header=HEADER
+              Insert a #include statement within the generated .h file for HEADER .
+
+              For example, --public-header=<stdlib.h> generates
+
+                   #include <stdlib.h>
+
+       --public-macro=MACRO
+              Insert a #define statement within the generated .h file.  MACRO can contain a = to separate the macro name from the macro value.
+
+              For example, --public-macro=FOO=42 generates
+
+                   #define FOO 42
+
+       --rename-member=FROM=TO
+              This is used when FROM is a C macro, and thus must be altered in order to be used sanely.  All generated references to the managed representation will use TO instead of FROM .
+
+              For example, given the C# declaration:
+
+                   [Mono.Unix.Native.Map ("struct stat")]
+                   struct Stat {
+                        public long st_atime;
+                   }
+
+              and the argument --rename-member=st_atime=st_atime_ , the generated .h file would contain:
+
+                   struct Stat {
+                        gint64 st_atime_;
+                   };
+
+              (note the altered field name), while the generated .c file would contain:
+
+                   ToStat (struct stat *from, struct Stat *to)
+                   {
+                        to->st_atime_ = from->st_atime;
+                   }
+
+       --rename-namespace=FROM=TO
+              By  default,  the  C  "namespace" (symbol prefix) is the C# namespace; types within the C# namespace Mono.Unix.Native would be in the C "namespace" Mono_Unix_Native .  Use --rename-namespace to
+              modify the default, e.g.  --rename-namespace=Mono.Unix.Native=Mono_Posix .
+
+DESCRIPTION
+       create-native-map is a program for a specific scenario: keeping code which is tightly coupled between C and C# in sync with each other, based upon the C# types.
+
+       Platform Invoke is only useful if the managed code knows the exact types and layout of all unmanaged structures it uses.  This is usually the case on Windows, but it is not the case on Unix.  For  ex‐
+       ample,  struct  stat  makes  use of types with sizes that will vary from platform to platform (or even based on the compiler macros defined!).  For example, off_t is usually a signed 32-bit integer on
+       ILP32 platforms, but may be a signed 64-bit integer on LP64 platforms, but may also be a 64-bit signed integer on ILP32 platforms if the _FILE_OFFSET_BITS macro has the value 64.  In short, everything
+       is flexible within Unix, and managed code can't deal with such flexibility.
+
+       Thus,  the  niche  for  create-native-map : assume a fixed ABI that managed code can target, and generate code to "thunk" the managed representations to the corresponding native representations.  This
+       needs to be done for everything that can vary between platforms and compiler flags, from enumeration values ( SIGBUS has the value 10 on FreeBSD but 7 on Linux) to structure members (how big is  off_t
+       ?).
+
+       create-native-map will inspect ASSEMBLY-FILE-NAME and output the following files:
+
+              OUTPUT-PREFIX.h
+                     Contains  enumeration  values, class and structure declarations, delegate declarations, and [DllImport] -marked methods (from the library specified by --library ) within the assembly AS‐
+                     SEMBLY-FILE-NAME .
+
+              OUTPUT-PREFIX.c
+                     Contains the implementation of enumeration and structure conversion functions.
+
+              OUTPUT-PREFIX.cs
+                     Contains a partial class NativeConvert containing enumeration translation methods.
+
+              OUTPUT-PREFIX.xml
+                     Generates ECMA XML documentation stubs for the enumeration translation methods in OUTPUT-PREFIX.cs .
+
+       create-native-map primarily looks for MapAttribute -decorated types, and makes use of two MapAttribute properties:
+
+              NativeType
+                     Contains the corresponding C type.  Only useful if applied to classes, structures, and fields.
+
+              SuppressFlags
+                     When specified on an enumeration member of a [Flags] -decorated enumeration type, disables the normal code generator support for bit-masking enumeration types.
+
+                     This is useful when bitmask and non-bitmask information is stored within the same type, and bitmask checking shouldn't  be  used  for  the  non-bitmask  values.   Example:  Mono.Unix.Na‐
+                     tive.FilePermissions.S_IFREG , which is not a bitmask value, while most of FilePermissions consists of bitmask values ( FilePermissions.S_IRUSR , FilePermissions.S_IWUSR , etc.).
+
+       The MapAttribute attribute can be specified on classes, structures, delegates, fields, and enumerations.
+
+       Delegates
+              Code generation for delegates ignores the MapAttribute.NativeType property, and generates a function pointer typedef that best matches the delegate declaration into the .h file.
+
+              For example,
+
+                   namespace Foo {
+                        [Map]
+                        delegate string MyCallback (string s);
+                   }
+
+              generates the typedef :
+
+                   typedef char* (*Foo_MyCallback) (const char *s);
+
+       Classes and Structures
+              A [Map] -decorated class or structure will get a C structure declaration within the .h file:
+
+                   [Map]
+                   struct Foo {
+                        public int i;
+                   }
+
+              becomes
+
+                   struct Foo {
+                        public int i;
+                   };
+
+              If the MapAttribute.NativeType property is set, then conversion functions will be declared within the .h file and created within the .c file:
+
+                   namespace Foo {
+                        [Map ("struct stat")]
+                        struct Stat {
+                             public uint st_uid;
+                        }
+                   }
+
+              becomes
+
+                   /* The .h file */
+                   struct Foo_Stat {
+                        unsigned int st_uid;
+                   };
+                   int
+                   Foo_FromStat (struct Foo_Stat *from, struct stat *to);
+                   int
+                   Foo_ToStat (struct stat *to, sxtruct Foo_Stat *to);
+
+                   /* The .c file */
+                   int
+                   Foo_FromStat (struct Foo_Stat *from, struct stat *to)
+                   {
+                        memset (to, 0, sizeof(*to);
+                        to->st_uid = from->st_uid;
+                        return 0;
+                   }
+
+                   int
+                   Foo_ToStat (struct stat *to, sxtruct Foo_Stat *to)
+                   {
+                        memset (to, 0, sizeof(*to);
+                        to->st_uid = from->st_uid;
+                        return 0;
+                   }
+
+              For  classes, the conversion functions will only copy fields declared in the class itself. Fields declared in parent classes will not be copied. (This is because create-native-map does not know
+              how the inheritance is implemented in C. Therefore copying fields from parent classes is left to the caller of the conversion functions.)
+
+       Fields If a field (1) has the MapAttribute attribute, and (2) has the MapAttribute.NativeType property set, then the specified native type will be used for overflow checking.  For example:
+
+                   namespace Foo {
+                        [Map ("struct stat")]
+                        struct Stat {
+                             [Map ("off_t")] public long st_size;
+                        }
+                   }
+
+              generates
+
+                   /* The .h file */
+                   struct Foo_Stat {
+                        gint64 st_size;
+                   };
+                   int
+                   Foo_FromStat (struct Foo_Stat *from, struct stat *to);
+                   int
+                   Foo_ToStat (struct stat *to, sxtruct Foo_Stat *to);
+
+                   /* The .c file */
+                   int
+                   Foo_FromStat (struct Foo_Stat *from, struct stat *to)
+                   {
+                        _cnm_return_val_if_overflow (off_t, from->st_size, -1);
+
+                        memset (to, 0, sizeof(*to);
+                        to->st_size = from->st_size;
+                        return 0;
+                   }
+
+                   int
+                   Foo_ToStat (struct stat *to, sxtruct Foo_Stat *to)
+                   {
+                        _cnm_return_val_if_overflow (gint64, from->st_size, -1);
+
+                        memset (to, 0, sizeof(*to);
+                        to->st_size = from->st_size;
+                        return 0;
+                   }
+
+              This is useful for better error checking within the conversion functions.  MapAttribute.NativeType is required for this as there is no other way to know what the native type is (without parsing
+              the system header files...).
+
+       Enumerations
+              Generates a C enumeration and macros for each of the members within the enumeration.  To and From functions are also declared in the .h file and implemented in the .c file.
+
+              For example,
+
+                   namespace Foo {
+                        [Map]
+                        enum Errno {
+                             EINVAL
+                        }
+                   }
+
+              would generate the following in the .h file:
+
+                   enum Foo_Errno {
+                        Foo_Errno_EINVAL          = 0,
+                        #define Foo_Errno_EINVAL    Foo_Errno_EINVAL
+                   };
+                   int Foo_FromErrno (int from, int *to);
+                   int Foo_ToErrno (int from, int *to);
+
+              and generates the following in the the .c file:
+
+                   int
+                   Foo_FromErrno (int from, int *to)
+                   {
+                        *to = 0;
+                        if (from == Foo_Errno_EPERM)
+                   #ifdef EINVAL
+                             {*to = EINVAL;}
+                   #else
+                             {errno = EINVAL; return -1;}
+                   #endif
+                        return 0;
+                   }
+
+                   int
+                   Foo_ToErrno (int from, int *to)
+                   {
+                        *to = 0;
+                   #ifdef EINVAL
+                        if (from == EINVAL)
+                             {*to = Foo_Errno_EPERM; return 0;}
+                   #endif
+                        return -1;
+                   }
+
+              Different code will be generated if the managed enum is a [Flags] -decorated enumeration (to account for bitwise flags), but this is the basic idea.
+
+MAILING LISTS
+       Visit http://lists.ximian.com/mailman/listinfo/mono-devel-list for details.
+
+WEB SITE
+       Visit http://www.mono-project.com for details
+
+                                                                                                                                                                                           create-native-map(1)

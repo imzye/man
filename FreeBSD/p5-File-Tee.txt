@@ -1,0 +1,193 @@
+File::Tee(3)          User Contributed Perl Documentation         File::Tee(3)
+
+
+NAME
+       File::Tee - replicate data sent to a Perl stream
+
+SYNOPSIS
+         use File::Tee qw(tee);
+
+         # simple usage:
+         tee(STDOUT, '>', 'stdout.txt');
+
+         print "hello world\n";
+         system "ls";
+
+         # advanced usage:
+         my $pid = tee STDERR, { prefix => "err[$$]: ", reopen => 'my.log'};
+
+         print STDERR "foo\n";
+         system("cat /bad/path");
+
+DESCRIPTION
+       This module is able to replicate data written to a Perl stream into
+       another streams. It is the Perl equivalent of the shell utility tee(1).
+
+       It is implemeted around "fork", creating a new process for every tee'ed
+       stream. That way, there are no problems handling the output generated
+       by external programs run with system or by XS modules that don't go
+       through perlio.
+
+   API
+       The following function can be imported from this module:
+
+       tee $fh, $target, ...
+           redirects a copy of the data written to $fh to one or several files
+           or streams.
+
+           "$target, ..." is a list of target streams specifications that can
+           be:
+
+           •   file names with optional mode specifications:
+
+                 tee STDOUT, '>> /tmp/out', '>> /tmp/out2';
+                 tee STDOUT, '>>', '/tmp/out', '/tmp/out2';
+
+               If the mode specification is a separate argument, it will
+               affect all the file names following and not just the nearest
+               one.
+
+               If mode "|-" is used as a separate argument, the rest of the
+               arguments are slurped as arguments for the pipe command:
+
+                  tee STDERR, '|-', 'grep', '-i', 'error';
+                  tee STDERR, '| grep -i error'; # equivalent
+
+               Valid modes are ">", ">>", ">&", ">>&" and "|-". The default
+               mode is ">>".
+
+               File handles can also be used as targets:
+
+                  open my $target1, '>>', '/foo/bar';
+                  ...
+                  tee STDOUT, $target1, $target2, ...;
+
+               Finally, code references can also be used as targets. The
+               callback will be invoked for every line written to the tee'ed
+               stream with the data in $_. It has to return a true value on
+               success or false if some error happens. Also, note that the
+               callback will be called from a different process.
+
+           •   hash references describing the targets
+
+               For instance:
+
+                 tee STDOUT, { mode => '>>', open => '/tmp/foo', lock => 1};
+
+               will copy the data sent to STDOUT to "/tmp/foo".
+
+               The attributes that can be included inside the hash are:
+
+               open => $file_name
+               reopen => $file_name
+                   sets the target file or stream. It can contain a mode
+                   specification and also be an array. For instance:
+
+                     tee STDOUT, { open => '>> /tmp/out' };
+                     tee STDOUT, { reopen => ['>>', '/tmp/out2'] };
+                     tee STDOUT, { open => '| grep foo > /tmp/out' };
+
+                   If "reopen" is used, the file or stream is reopen for every
+                   write operation. The mode will be forced to append after
+                   the first write.
+
+               mode => $mode
+                   Alternative way to specify the mode to open the target file
+                   or stream
+
+               lock => $bool
+                   When true, an exclusive lock is obtained on the target file
+                   before writing to it.
+
+               prefix => $txt
+                   Some text to be prepended to every line sent to the target
+                   file.
+
+                   For instance:
+
+                     tee STDOUT, { prefix => 'OUT: ', lock => 1, mode => '>>', open => '/tmp/out.txt' };
+                     tee STDERR, { prefix => 'ERR: ', lock => 1, mode => '>>', open => '/tmp/out.txt' };
+
+               preprocess => sub { ... }
+                   A callback function that can modify the data before it gets
+                   sent to the target file.
+
+                   For instance:
+
+                     sub hexdump {
+                       my $data = shift;
+                       my @out;
+                       while ($data =~ /(.{1,32})/smg) {
+                           my $line=$1;
+                           my @c= (( map { sprintf "%02x",$_ } unpack('C*', $line)),
+                                   (("  ") x 32))[0..31];
+                           $line=~s/(.)/ my $c=$1; unpack("c",$c)>=32 ? $c : '.' /egms;
+                           push @out, join(" ", @c, '|', $line), "\n";
+                       }
+                       join('', @out);
+                     }
+
+                     tee BINFH, { preprocess => \&hexdump, open => '/tmp/hexout'};
+
+               autoflush => $bool
+                   Sets autoflush mode for the target streams. Default is on.
+
+               ignore_errors => $bool
+                   By default, when writting to the targets, any error will
+                   close the tee'ed handle. This option allows to change that
+                   behaviour.
+
+               process => sub { ... }
+                   the callback will be called for every line read (see using
+                   code references as targets discussion above). This option
+                   can not be used at the same time as most other options
+                   (open, reopen, lock, autoflush, etc.).
+
+               begin => sub { ... }
+               end => sub { ... }
+                   Those functions are called on the forked process before the
+                   first write and when closing the handle respectively.
+
+                   For instance:
+
+                     my @capture;
+                     tee STDERR, { process => sub { push @capture, $_ },
+                                   end => sub { send_mail 'foo@bar.com', 'stderr capture', "@capture" } };
+
+           The funcion returns the PID for the newly created process.
+
+           Inside the "tee" pipe process created, data is readed honouring the
+           input record separator $/.
+
+           You could also want to set the tee'ed stream in autoflush mode:
+
+             open $fh, ...;
+
+             my $oldsel = select $fh;
+             $| = 1;
+             select $fh;
+
+             tee $fh, "> /tmp/log";
+
+BUGS
+       Does not work on Windows (patches welcome).
+
+       Send bug reports by email or via the CPAN RT web <https://rt.cpan.org>.
+
+SEE ALSO
+       IO::Capture
+
+       IO::Tee is a similar module implemented around tied file handles. Tee
+       allows to launch external processes capturing their output to some
+       files. IO::CaptureOutput allows to capture the output generated from a
+       child process or a subroutine.
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2007, 2008, 2010, 2011 by Salvador Fandiño
+       (sfandino@yahoo.com)
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself, either Perl version 5.8.8 or, at
+       your option, any later version of Perl 5 you may have available.
+
+perl v5.40.2                      2011-11-04                      File::Tee(3)

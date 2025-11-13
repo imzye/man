@@ -1,0 +1,429 @@
+signál(7)                                                                                 Různé informační manuál                                                                                 signál(7)
+
+JMÉNO
+       signal - overview of signals
+
+POPIS
+       V Linuxu jsou podporovány jak POSIX reliable signály (dále jen "standardní signály"), tak POSIX real-time signály.
+
+   Dispozice signálů
+       Každý signál má dispozici, která určuje, jak se proces zachová při jeho přijetí.
+
+       Údaje ve sloupci "Akce" níže uvedených tabulek určují výchozí dipozici každého signálu následujícně:
+
+       Term   Výchozí akcí je ukončení procesu.
+
+       Ign    Výchozí akcí je ignorování signálu.
+
+       Core   Výchozí akcí je ukončení procesu a výpis paměti (core dump) (viz core(5)).
+
+       Stop   Výchozí akcí je zastavení procesu.
+
+       Cont   Výchozí akcí je pokračování procesu, pokud je momentálně zastavený.
+
+       A  process can change the disposition of a signal using sigaction(2)  or signal(2). (The latter is less portable when establishing a signal handler; see signal(2)  for details.) Using these system
+       calls, a process can elect one of the following behaviors to occur on delivery of the signal: perform the default action; ignore the signal; or catch the signal with a signal handler,  a  program‐
+       mer-defined function that is automatically invoked when the signal is delivered.
+
+       By  default,  a  signal handler is invoked on the normal process stack. It is possible to arrange that the signal handler uses an alternate stack; see sigaltstack(2)  for a discussion of how to do
+       this and when it might be useful.
+
+       Dispozice signálu je atribut procesu: v mnohovláknových aplikacích je dispozice určitého signálu stejná pro všechna vlákna.
+
+       A child created via fork(2)  inherits a copy of its parent's signal dispositions. During an execve(2), the dispositions of handled signals are reset to the default;  the  dispositions  of  ignored
+       signals are left unchanged.
+
+   Sending a signal
+       The following system calls and library functions allow the caller to send a signal:
+
+       raise(3)
+              Sends a signal to the calling thread.
+
+       kill(2)
+              Sends a signal to a specified process, to all members of a specified process group, or to all processes on the system.
+
+       pidfd_send_signal(2)
+              Sends a signal to a process identified by a PID file descriptor.
+
+       killpg(3)
+              Sends a signal to all of the members of a specified process group.
+
+       pthread_kill(3)
+              Sends a signal to a specified POSIX thread in the same process as the caller.
+
+       tgkill(2)
+              Sends a signal to a specified thread within a specific process. (This is the system call used to implement pthread_kill(3).)
+
+       sigqueue(3)
+              Sends a real-time signal with accompanying data to a specified process.
+
+   Waiting for a signal to be caught
+       The following system calls suspend execution of the calling thread until a signal is caught (or an unhandled signal terminates the process):
+
+       pause(2)
+              Suspends execution until any signal is caught.
+
+       sigsuspend(2)
+              Temporarily changes the signal mask (see below) and suspends execution until one of the unmasked signals is caught.
+
+   Synchronously accepting a signal
+       Rather  than asynchronously catching a signal via a signal handler, it is possible to synchronously accept the signal, that is, to block execution until the signal is delivered, at which point the
+       kernel returns information about the signal to the caller. There are two general ways to do this:
+
+       •  sigwaitinfo(2), sigtimedwait(2), and sigwait(3)  suspend execution until one of the signals in a specified set is delivered. Each of these calls returns information about the delivered signal.
+
+       •  signalfd(2)  returns a file descriptor that can be used to read information about signals that are delivered to the caller. Each read(2) from this file descriptor blocks until one of  the  sig‐
+          nals in the set specified in the signalfd(2)  call is delivered to the caller. The buffer returned by read(2)  contains a structure describing the signal.
+
+   Signal mask and pending signals
+       A signal may be blocked, which means that it will not be delivered until it is later unblocked. Between the time when it is generated and when it is delivered a signal is said to be pending.
+
+       Each thread in a process has an independent signal mask, which indicates the set of signals that the thread is currently blocking. A thread can manipulate its signal mask using pthread_sigmask(3).
+       In a traditional single-threaded application, sigprocmask(2)  can be used to manipulate the signal mask.
+
+       A child created via fork(2)  inherits a copy of its parent's signal mask; the signal mask is preserved across execve(2).
+
+       A  signal  may be process-directed or thread-directed. A process-directed signal is one that is targeted at (and thus pending for)  the process as a whole. A signal may be process-directed because
+       it was generated by the kernel for reasons other than a hardware exception, or because it was sent using kill(2)  or sigqueue(3). A thread-directed signal is one that is  targeted  at  a  specific
+       thread. A signal may be thread-directed because it was generated as a consequence of executing a specific machine-language instruction that triggered a hardware exception (e.g., SIGSEGV for an in‐
+       valid memory access, or SIGFPE for a math error), or because it was targeted at a specific thread using interfaces such as tgkill(2)  or pthread_kill(3).
+
+       A process-directed signal may be delivered to any one of the threads that does not currently have the signal blocked. If more than one of the threads has the signal unblocked, then the kernel cho‐
+       oses an arbitrary thread to which to deliver the signal.
+
+       A  thread  can obtain the set of signals that it currently has pending using sigpending(2). This set will consist of the union of the set of pending process-directed signals and the set of signals
+       pending for the calling thread.
+
+       A child created via fork(2)  initially has an empty pending signal set; the pending signal set is preserved across an execve(2).
+
+   Execution of signal handlers
+       Whenever there is a transition from kernel-mode to user-mode execution (e.g., on return from a system call or scheduling of a thread onto the CPU), the kernel checks whether  there  is  a  pending
+       unblocked signal for which the process has established a signal handler. If there is such a pending signal, the following steps occur:
+
+       (1)  The kernel performs the necessary preparatory steps for execution of the signal handler:
+
+            (1.1)  The signal is removed from the set of pending signals.
+
+            (1.2)  If the signal handler was installed by a call to sigaction(2)  that specified the SA_ONSTACK flag and the thread has defined an alternate signal stack (using sigaltstack(2)), then that
+                   stack is installed.
+
+            (1.3)  Various pieces of signal-related context are saved into a special frame that is created on the stack. The saved information includes:
+
+                   •  the program counter register (i.e., the address of the next instruction in the main program that should be executed when the signal handler returns);
+
+                   •  architecture-specific register state required for resuming the interrupted program;
+
+                   •  the thread's current signal mask;
+
+                   •  the thread's alternate signal stack settings.
+
+                   If the signal handler was installed using the sigaction(2)  SA_SIGINFO flag, then the above information is accessible via the ucontext_t object that is pointed to by the third argument
+                   of  the signal handler. This object reflects the state at which the signal is delivered, rather than in the handler; for example, the mask of blocked signals stored in this object will
+                   not contain the mask of new signals blocked through sigaction(2).
+
+            (1.4)  Any signals specified in act->sa_mask when registering the handler with sigaction(2)  are added to the thread's signal mask. The signal being delivered is  also  added  to  the  signal
+                   mask, unless SA_NODEFER was specified when registering the handler. These signals are thus blocked while the handler executes.
+
+       (2)  The  kernel  constructs  a  frame for the signal handler on the stack. The kernel sets the program counter for the thread to point to the first instruction of the signal handler function, and
+            configures the return address for that function to point to a piece of user-space code known as the signal trampoline (described in sigreturn(2)).
+
+       (3)  The kernel passes control back to user-space, where execution commences at the start of the signal handler function.
+
+       (4)  When the signal handler returns, control passes to the signal trampoline code.
+
+       (5)  The signal trampoline calls sigreturn(2), a system call that uses the information in the stack frame created in step 1 to restore the thread to its state before the signal handler was called.
+            The thread's signal mask and alternate signal stack settings are restored as part of this procedure. Upon completion of the call to sigreturn(2), the kernel transfers  control  back  to  user
+            space, and the thread recommences execution at the point where it was interrupted by the signal handler.
+
+       Note  that if the signal handler does not return (e.g., control is transferred out of the handler using siglongjmp(3), or the handler executes a new program with execve(2)), then the final step is
+       not performed. In particular, in such scenarios it is the programmer's responsibility to restore the state of the signal mask (using sigprocmask(2)), if it is desired to unblock the  signals  that
+       were  blocked on entry to the signal handler. (Note that siglongjmp(3)  may or may not restore the signal mask, depending on the savesigs value that was specified in the corresponding call to sig‐
+       setjmp(3).)
+
+       From the kernel's point of view, execution of the signal handler code is exactly the same as the execution of any other user-space code. That is to say, the kernel does not record any special sta‐
+       te information indicating that the thread is currently executing inside a signal handler. All necessary state information is maintained in user-space registers and the user-space stack. The  depth
+       to which nested signal handlers may be invoked is thus limited only by the user-space stack (and sensible software design!).
+
+   Standardní Signály
+       Linux supports the standard signals listed below. The second column of the table indicates which standard (if any)  specified the signal: "P1990" indicates that the signal is described in the ori‐
+       ginal POSIX.1-1990 standard; "P2001" indicates that the signal was added in SUSv2 and POSIX.1-2001.
+       Signál      Standard   Akce   Poznámka
+       ──────────────────────────────────────────────────────────────────────────────────────────────
+       SIGABRT      P1990     Core   "Abort" - ukončení funkcí abort(3)
+       SIGALRM      P1990     Term   Signál od časovače, nastaveného funkcí alarm(1)
+       SIGBUS       P2001     Core   "Bus error" - pokus o přístup mimo mapovanou paměť
+       SIGCHLD      P1990     Ign    Zastavení nebo ukončení dětského procesu
+       SIGCLD         -       Ign    Synonymum SIGCHLD
+       SIGCONT      P1990     Cont   Pokračování po zastavení
+       SIGEMT         -       Term   Emulator trap
+       SIGFPE       P1990     Core   "Floating point exception" - přetečení v pohyblivé řádové čárce
+       SIGHUP       P1990     Term   "Hangup" - při zavěšení na řídícím terminálu
+                                     nebo ukončení řídícího procesu
+       SIGILL       P1990     Core   "Illegal Instruction" - neplatná instrukce
+       SIGINFO        -              Synonymum SIGPWR
+       SIGINT       P1990     Term   "Interrupt" - přerušení z klávesnice
+       SIGIO          -       Term   Lze pokračovat ve vstupu/výstupu (4.2 BSD)
+       SIGIOT         -       Core   IOT - synonymum signálu SIGABRT
+       SIGKILL      P1990     Term   "Kill" - signál pro nepodmíněné ukončení procesu
+       SIGLOST        -       Term   Zámek souboru byl ztracen (nepoužívá se)
+       SIGPIPE      P1990     Term   "Broken pipe" - pokus o zápis do roury,
+                                     readers; see pipe(7)
+       SIGPOLL      P2001     Term   Pollable event (Sys V);
+                                     Synonymum SIGIO
+       SIGPROF      P2001     Term   Časovač používaný při profilování
+       SIGPWR         -       Term   Výpadek napájení (Systém V)
+       SIGQUIT      P1990     Core   "Quit" - ukončení z klávesnice
+       SIGSEGV      P1990     Core   Odkaz na nepřípustnou adresu v paměti
+       SIGSTKFLT      -       Term   Chyba zásobníku koprocesoru (nepoužívá se)
+       SIGSTOP      P1990     Stop   Zastavení procesu
+       SIGTSTP      P1990     Stop   Stop typed at terminal
+       SIGSYS       P2001     Core   Bad system call (SVr4);
+                                     see also seccomp(2)
+       SIGTERM      P1990     Term   "Termination" - signál ukončení
+       SIGTRAP      P2001     Core   Přerušení při ladění (trasování,breakpoint)
+       SIGTTIN      P1990     Stop   Terminal input for background process
+       SIGTTOU      P1990     Stop   Terminal output for background process
+       SIGUNUSED      -       Core   Synonymous with SIGSYS
+       SIGURG       P2001     Ign    Soket přijal data s příznakem Urgent (4.2 BSD)
+       SIGUSR1      P1990     Term   Signál 1 definovaný uživatelem
+       SIGUSR2      P1990     Term   Signál 2 definovaný uživatelem
+       SIGVTALRM    P2001     Term   Virtuální časovač (4.2 BSD)
+       SIGXCPU      P2001     Core   Překročen limit času CPU (4.2 BSD);
+                                     viz setrlimit(2)
+       SIGXFSZ      P2001     Core   Překročen limit velikosti souboru (4.2 BSD);
+                                     viz setrlimit(2)
+       SIGWINCH       -       Ign    Změna velikosti okna (4.3 BSD, Sun)
+
+       Signály SIGKILL a SIGSTOP nemohou být zachyceny, blokovány ani ignorovány.
+
+       Až  po Linux 2.2 včetně bylo výchozí chování pro SIGSYS, SIGXCPU, SIGXFSZ, a (na architekturách jiných než SPARC a MIPS)  SIGBUS ukončit proces (bez core dump). (Na některých jiných UNIXových sys‐
+       témech bylo výchozí akcí pro SIGXCPU a SIGXFSZ ukončení procesu bez core dump.) Linux 2.4 splňuje požadavky POSIX.1-2001 pro tyto signály, ukončuje procesy s core dump.
+
+       SIGEMT není specifikován v POSIX.1-2001, ale stejně je přítomen na většině ostatních UNIXových systémů, kde je výchozí akcí obvykle ukončení procesu s core dump.
+
+       SIGPWR (není specifikován v POSIX.1-2001) na většině ostatních UNIXových systémů, kde se objevuje, je obvykle ignorován.
+
+       SIGIO (není specifikován v POSIX.1-2001) na některých dalších UNIXech je jako výchozí ignorován.
+
+   Queueing and delivery semantics for standard signals
+       If multiple standard signals are pending for a process, the order in which the signals are delivered is unspecified.
+
+       Standard signals do not queue. If multiple instances of a standard signal are generated while that signal is blocked, then only one instance of the signal is marked as pending (and the signal will
+       be delivered just once when it is unblocked). In the case where a standard signal is already pending, the siginfo_t structure (see sigaction(2))  associated with that signal is not overwritten  on
+       arrival of subsequent instances of the same signal. Thus, the process will receive the information associated with the first instance of the signal.
+
+   Signal numbering for standard signals
+       The  numeric  value for each signal is given in the table below. As shown in the table, many signals have different numeric values on different architectures. The first numeric value in each table
+       row shows the signal number on x86, ARM, and most other architectures; the second value is for Alpha and SPARC; the third is for MIPS; and the last is for PARISC. A dash (-) denotes that a  signal
+       is absent on the corresponding architecture.
+       Signál        x86/ARM     Alpha/   MIPS   PARISC   Poznámky
+                   most others   SPARC
+       ─────────────────────────────────────────────────────────────────
+       SIGHUP           1           1       1       1
+       SIGINT           2           2       2       2
+       SIGQUIT          3           3       3       3
+       SIGILL           4           4       4       4
+       SIGTRAP          5           5       5       5
+       SIGABRT          6           6       6       6
+       SIGIOT           6           6       6       6
+       SIGBUS           7          10      10      10
+       SIGEMT           -           7       7      -
+       SIGFPE           8           8       8       8
+       SIGKILL          9           9       9       9
+       SIGUSR1         10          30      16      16
+       SIGSEGV         11          11      11      11
+       SIGUSR2         12          31      17      17
+       SIGPIPE         13          13      13      13
+       SIGALRM         14          14      14      14
+       SIGTERM         15          15      15      15
+       SIGSTKFLT       16          -       -        7
+       SIGCHLD         17          20      18      18
+       SIGCLD           -          -       18      -
+       SIGCONT         18          19      25      26
+       SIGSTOP         19          17      23      24
+       SIGTSTP         20          18      24      25
+       SIGTTIN         21          21      26      27
+       SIGTTOU         22          22      27      28
+       SIGURG          23          16      21      29
+       SIGXCPU         24          24      30      12
+       SIGXFSZ         25          25      31      30
+       SIGVTALRM       26          26      28      20
+       SIGPROF         27          27      29      21
+       SIGWINCH        28          28      20      23
+       SIGIO           29          23      22      22
+       SIGPOLL                                            Same as SIGIO
+       SIGPWR          30         29/-     19      19
+       SIGINFO          -         29/-     -       -
+       SIGLOST          -         -/29     -       -
+       SIGSYS          31          12      12      31
+       SIGUNUSED       31          -       -       31
+
+       Note the following:
+
+       •  Where defined, SIGUNUSED is synonymous with SIGSYS. Since glibc 2.26, SIGUNUSED is no longer defined on any architecture.
+
+       •  Signal 29 is SIGINFO/SIGPWR (synonyms for the same value) on Alpha but SIGLOST on SPARC.
+
+   Real-time signály
+       Starting with Linux 2.2, Linux supports real-time signals as originally defined in the POSIX.1b real-time extensions (and now included in POSIX.1-2001). The range of supported real-time signals is
+       defined by the macros SIGRTMIN and SIGRTMAX. POSIX.1-2001 requires that an implementation support at least _POSIX_RTSIG_MAX (8) real-time signals.
+
+       Linux  podporuje  33  různých  real-time signálů očíslovaných 32 až 64. Nicméně implementace POSIX threads v glibc používá interně dva (pro NPTL) nebo tři (pro LinuxThreads) real-time signály (viz
+       pthreads(7)), a podle toho upravuje hodnotu SIGRTMIN (na 34 nebo 35). protože rozsah dostupných real-time signálů se liší v závislosti na implementaci vláken v glibc (může se měnit za běhu  v  zá‐
+       vislosti na jádře a glibc)  a navíc rozsah real-time signálů se mezi UNIXovými systémy liší, programy by nikdy neměly odkazovat na real-time signály pevně danými čísly, místo toho by měly používat
+       notaci SIGRTMIN+n, a za běhu kontrolovat, zda SIGRTMIN+n nepřesahuje SIGRTMAX.
+
+       Na rozdíl od standardních signálů nemají real-time signály stanovený význam: Celá sada real-time signálů může být použita pro účely definované aplikací.
+
+       Výchozí akcí pro nezpracovaný real-time signál je ukončení procesu, který jej přijal.
+
+       Real-time signály se liší následujícně:
+
+       •  Vícero instancí real-time signálů může být zařazeno do fronty. Naopak pokud je doručeno vícero instancí standardního signálu, zatímco je signál blokován, je do fronty zařazen jen jeden.
+
+       •  Pokud je signál poslán pomocí sigqueue(3), může s ním být poslána doprovodná hodnota (integer nebo pointer). Pokud přijímací proces vytvoří pro tento signál handler pomocí vlajky SA_SIGINFO pro
+          sigaction(2), tak může tato data získat v poli si_value struktury siginfo_t předané jako druhý argument handleru. Navíc mohou být pole si_pid a si_uid této struktury použita k získání PID a re‐
+          al user ID procesu, který signál poslal.
+
+       •  Real-time  signály  jsou doručeny v zaručeném pořadí. Vícero real-time signálů stejného typu je doručeno v pořadí, v jakém byly vyslány. Pokud jsou procesu poslány různé real-time signály, jsou
+          doručeny v pořadí podle čísla, začínajíc nejnižším (tj. signály s nízkým číslem mají vyšší prioritu). Naopak, pokud na proces čeká vícero standardních signálů, není pořadí jejich doručení defi‐
+          nováno.
+
+       Pokud má proces nevyřízené zároveň real-time a standardní signály, POSIX neurčuje, které mají být doručeny jako první. Linux, stejně jako mnoho jiných implementací, v takovém  případě  upřednostňí
+       standardní signály.
+
+       According to POSIX, an implementation should permit at least _POSIX_SIGQUEUE_MAX (32) real-time signals to be queued to a process. However, Linux does things differently. Up to and including Linux
+       2.6.7, Linux imposes a system-wide limit on the number of queued real-time signals for all processes. This limit can be viewed and (with privilege) changed via the /proc/sys/kernel/rtsig-max file.
+       A  related  file,  /proc/sys/kernel/rtsig-nr, can be used to find out how many real-time signals are currently queued. In Linux 2.6.8, these /proc interfaces were replaced by the RLIMIT_SIGPENDING
+       resource limit, which specifies a per-user limit for queued signals; see setrlimit(2)  for further details.
+
+       The addition of real-time signals required the widening of the signal set structure (sigset_t)  from 32 to 64 bits. Consequently, various system calls were superseded by new system calls that sup‐
+       ported the larger signal sets. The old and new system calls are as follows:
+       Jádro 2.0 a dřívější   Linux 2.2 and later
+       sigaction(2)           rt_sigaction(2)
+       sigpending(2)          rt_sigpending(2)
+       sigprocmask(2)         rt_sigprocmask(2)
+       sigreturn(2)           rt_sigreturn(2)
+       sigsuspend(2)          rt_sigsuspend(2)
+       sigtimedwait(2)        rt_sigtimedwait(2)
+
+   Přerušení systémových volání a funkcí knihoven prostřednictvím "signal handlers"
+       Pokud je signal handler vyvolán v okamžiku, kdy je systémové volání nebo funkce knihovny blokována, pak:
+
+       •  je volání automaticky restartováno po návratu signal handleru, nebo
+
+       •  volání selže s chybou EINTR.
+
+       Která z těchto možností nastane, záleží na rozhraní a na tom, zda byl signal handler definován s pomocí vlajky SA_RESTART (viz sigaction(2)). Podrobnosti se mezi UNIXovými systémy liší; dále  jsou
+       uvedeny pro Linux.
+
+       If  a blocked call to one of the following interfaces is interrupted by a signal handler, then the call is automatically restarted after the signal handler returns if the SA_RESTART flag was used;
+       otherwise the call fails with the error EINTR:
+
+       •  read(2), readv(2), write(2), writev(2), and ioctl(2)  calls on "slow" devices. A "slow" device is one where the I/O call may block for an indefinite time, for  example,  a  terminal,  pipe,  or
+          socket.  If an I/O call on a slow device has already transferred some data by the time it is interrupted by a signal handler, then the call will return a success status (normally, the number of
+          bytes transferred). Note that a (local) disk is not a slow device according to this definition; I/O operations on disk devices are not interrupted by signals.
+
+       •  open(2), v případě, že může blokovat (např. při otevírání FIFO; viz fifo(7)).
+
+       •  wait(2), wait3(2), wait4(2), waitid(2) a waitpid(2).
+
+       •  Socket interfaces: accept(2), connect(2), recv(2), recvfrom(2), recvmmsg(2), recvmsg(2), send(2), sendto(2), and sendmsg(2), unless a timeout has been set on the socket (see below).
+
+       •  File locking interfaces: flock(2)  and the F_SETLKW and F_OFD_SETLKW operations of fcntl(2)
+
+       •  Rozhraní pro POSIXové fronty zpráv: mq_receive(3), mq_timedreceive(3), mq_send(3) a mq_timedsend(3).
+
+       •  futex(2)  FUTEX_WAIT (od jádra 2.6.22; předtím vždycky selhalo s EINTR).
+
+       •  getrandom(2).
+
+       •  pthread_mutex_lock(3), pthread_cond_wait(3), and related APIs.
+
+       •  futex(2)  FUTEX_WAIT_BITSET.
+
+       •  Rozhraní POSIXových semaforů: sem_wait(3) a sem_timedwait(3) (od jádra 2.6.22; předtím vždycky selhalo s EINTR).
+
+       •  read(2)  from an inotify(7)  file descriptor (since Linux 3.8; beforehand, always failed with EINTR).
+
+       The following interfaces are never restarted after being interrupted by a signal handler, regardless of the use of SA_RESTART; they always fail with the error EINTR when interrupted  by  a  signal
+       handler:
+
+       •  "Input"  socket  interfaces, when a timeout (SO_RCVTIMEO)  has been set on the socket using setsockopt(2): accept(2), recv(2), recvfrom(2), recvmmsg(2)  (also with a non-NULL timeout argument),
+          and recvmsg(2).
+
+       •  "Output" socket interfaces, when a timeout (SO_RCVTIMEO)  has been set on the socket using setsockopt(2): connect(2), send(2), sendto(2), and sendmsg(2).
+
+       •  Interfaces used to wait for signals: pause(2), sigsuspend(2), sigtimedwait(2), and sigwaitinfo(2).
+
+       •  Multiplexující rozhraní popisovačů souborů: epoll_wait(2), epoll_pwait(2), poll(2), ppoll(2), select(2) a pselect(2).
+
+       •  System V IPC rozhraní: msgrcv(2), msgsnd(2), semop(2) a semtimedop(2).
+
+       •  Rozhraní pro spánek: clock_nanosleep(2), nanosleep(2) a usleep(3).
+
+       •  io_getevents(2).
+
+       Funkce sleep(3) se také při přerušení signal handlerem nerestartuje, nýbrž vrátí úspěch: počet sekund, které zbývají ke spaní.
+
+       In certain circumstances, the seccomp(2)  user-space notification feature can lead to restarting of system calls that would otherwise never be  restarted  by  SA_RESTART;  for  details,  see  sec‐
+       comp_unotify(2).
+
+   Přerušení systémovách volání a funkcí knihoven signály Stop
+       V  Linuxu  mohou  některá blokující rozhraní selhat s chybou EINTR i bez signal handlerů, pokud je proces zastaven jedním ze stop signálů a poté obnoven pomocí SIGCONT. Toto chování neodporuje PO‐
+       SIX.1 a neobjevuje se v jiných systémech.
+
+       Linuxová rozhraní, v nichž se toto chování projevuje, jsou:
+
+       •  "Input" socket interfaces, when a timeout (SO_RCVTIMEO)  has been set on the socket using setsockopt(2): accept(2), recv(2), recvfrom(2), recvmmsg(2)  (also with a non-NULL  timeout  argument),
+          and recvmsg(2).
+
+       •  "Output"  socket  interfaces,  when a timeout (SO_RCVTIMEO)  has been set on the socket using setsockopt(2): connect(2), send(2), sendto(2), and sendmsg(2), if a send timeout (SO_SNDTIMEO)  has
+          been set.
+
+       •  epoll_wait(2), epoll_pwait(2).
+
+       •  semop(2), semtimedop(2).
+
+       •  sigtimedwait(2), sigwaitinfo(2).
+
+       •  Jádro 3.7 a dřívější: read(2)  z popisovače souborů inotify(7).
+
+       •  Jádro 2.6.21 a dřívější: futex(2)  FUTEX_WAIT, sem_timedwait(3), sem_wait(3).
+
+       •  Jádro 2.6.8 a dřívější: msgrcv(2), msgsnd(2).
+
+       •  Jádro 2.4 a dřívější: nanosleep(2).
+
+STANDARDY
+       POSIX.1, s uvedenými výjimkami.
+
+POZNÁMKY
+       For a discussion of async-signal-safe functions, see signal-safety(7).
+
+       The /proc/pid/task/tid/status file contains various fields that show the signals that a thread is blocking (SigBlk), catching (SigCgt), or ignoring (SigIgn). (The set of signals that are caught or
+       ignored will be the same across all threads in a process.) Other fields show the set of pending signals that are directed to the thread (SigPnd) as well as the set of pending signals that are  di‐
+       rected to the process as a whole (ShdPnd). The corresponding fields in /proc/pid/status show the information for the main thread. See proc(5)  for further details.
+
+CHYBY
+       There are six signals that can be delivered as a consequence of a hardware exception: SIGBUS, SIGEMT, SIGFPE, SIGILL, SIGSEGV, and SIGTRAP. Which of these signals is delivered, for any given hard‐
+       ware exception, is not documented and does not always make sense.
+
+       For example, an invalid memory access that causes delivery of SIGSEGV on one CPU architecture may cause delivery of SIGBUS on another architecture, or vice versa.
+
+       For  another example, using the x86 int instruction with a forbidden argument (any number other than 3 or 128)  causes delivery of SIGSEGV, even though SIGILL would make more sense, because of how
+       the CPU reports the forbidden operation to the kernel.
+
+DALŠÍ INFORMACE
+       kill(1), clone(2), getrlimit(2), kill(2), pidfd_send_signal(2), restart_syscall(2), rt_sigqueueinfo(2), setitimer(2), setrlimit(2), sgetmask(2), sigaction(2),  sigaltstack(2),  signal(2),  signal‐
+       fd(2),  sigpending(2),  sigprocmask(2),  sigreturn(2),  sigsuspend(2), sigwaitinfo(2), abort(3), bsd_signal(3), killpg(3), longjmp(3), pthread_sigqueue(3), raise(3), sigqueue(3), sigset(3), sigse‐
+       tops(3), sigvec(3), sigwait(3), strsignal(3), swapcontext(3), sysv_signal(3), core(5), proc(5), nptl(7), pthreads(7), sigevent(3type)
+
+PŘEKLAD
+       Překlad této příručky do češtiny vytvořili Marek Kubita <Kubitovi@mbox.lantanet.cz> a Pavel Heimlich <tropikhajma@gmail.com>
+
+       Tento překlad je bezplatná dokumentace; Přečtěte si GNU General Public License Version 3 nebo novější ohledně podmínek autorských práv. Neexistuje ŽÁDNÁ ODPOVĚDNOST.
+
+       Pokud narazíte na nějaké chyby v překladu této příručky, pošlete e-mail na adresu translation-team-cs@lists.sourceforge.net.
+
+Linux man-pages 6.9.1                                                                         17. června 2024                                                                                     signál(7)

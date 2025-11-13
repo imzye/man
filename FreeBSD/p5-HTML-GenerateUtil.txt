@@ -1,0 +1,318 @@
+HTML::GenerateUtil(3)                      User Contributed Perl Documentation
+
+
+NAME
+       HTML::GenerateUtil - Routines useful when generating HTML output
+
+SYNOPSIS
+         use HTML::GenerateUtil qw(escape_html generate_attributes generate_tag escape_uri :consts $H div);
+
+           my $Html = "text < with > things & that need \x{1234} escaping";
+           $Html = escape_html($Html);
+
+         Or
+
+           escape_html($Html, EH_INPLACE);
+
+         Also
+
+           my $Attr = generate_attributes({ href => 'http://...', title => 'blah' });
+           $Html = "<a $Attr>$Html</a>";
+
+         But even better
+
+           $Html = generate_tag('a', { href => 'http://...', title => 'blah' }, $Html, 0);
+
+         Also you might want something like
+
+           my $URI = 'http://host/?' . join ";", map { $_ => escape_uri($Params{$_}) } keys %Params;
+           $Html = generate_tag('a', { href => $URI }, $Html, 0);
+
+         You can shortcut that by importing a function, or using the autoloading $H object
+
+           div({ class => [ qw(a b) ] }, "div content");
+           $H->a({ href => $URI  }, "text", GT_ADDNEWLINE);
+
+         Or the newer (>= 1.20) $E object with more smarts
+
+           $E->tr(
+             [
+               \$E->th("row 1 heading with <>& nasties"),
+               \$E->td( { class => "someclassforeachrow" },
+                 "column 1",
+                 \"column <b>2</b> with trusted html",
+               )
+             ], [
+               \$E->th(\"row 2 heading with <b>trusted</b> html"),
+               \$E->td(
+                 "column 1",
+                 \"column <b>2</b> with trusted html",
+               )
+             ]
+           )
+
+DESCRIPTION
+       Provides a number of functions that make generating HTML output easier
+       and faster. All written in XS for speed.
+
+CONTEXT
+       When creating a web application in perl, you've got a couple of main
+       choices on how to actually generate the HTML that gets output:
+
+       •   Programatically generating the HTML in perl
+
+       •   Using some template system for the HTML and inserting the data
+           calculated in perl as appropriate
+
+       Your actual application, experience and environment will generally
+       determine which is the best way to.
+
+       If you go the programatic route, then you generally need some way of
+       generating the actual HTML output in perl. Again, there's generally a
+       couple of ways of doing this.
+
+       •   Just joining together text strings in perl as appropriate.
+
+             Eg. $link = "<a href="$ref">$text</a>";
+
+       •   Or using some function module like CGI
+
+             Eg. $line = a({ href => $ref }, $text);
+
+       •   More complex object systems like HTML::Table
+
+       The first seems easy, but it gets harder when you have to manually
+       escape each string to avoid placing special HTML chars (eg <, etc) in
+       strings like $text above.
+
+       With the CGI, most of this is automatically taken care of, and most
+       strings are automatically escaped to replace special HTML chars with
+       their entity equivalents.
+
+       While this is nice, CGI is written in pure perl, and can end up being a
+       bit slow, especially if you already have a fast system that generates
+       pages very heavy in tags (eg lots of table elements, links, etc)
+
+       That's where this module comes it. It provides functions useful for
+       escaping html and generating HTML tags, but it's all written in XS to
+       be very fast. It's also fully UTF-8 aware.
+
+FUNCTIONS
+       "escape_html($Str [, $Mode ])"
+           Escapes the contents of $Str to change the chars [<>&"] to '&lt;',
+           '&gt;', '&amp;' and '&quot;' repectively.
+
+           $Mode is an optional bit field with the additional options or'd
+           together:
+
+           •   "EH_INPLACE" - modify in-place, otherwise return new copy
+
+           •   "EH_LFTOBR" - convert \n to <br>
+
+           •   "EH_SPTONBSP" - convert '  ' to ' &nbsp;'
+
+           •   "EH_LEAVEKNOWN" - if & is followed by text that looks like an
+               entity reference (eg &#1234; or &#x1ab2; or &nbsp;) then it's
+               left unescaped
+
+           Useful for turning text into similar to <pre> form without actually
+           being in <pre> tags
+
+       generate_attributes($HashRef)
+           Turns the contents of $HashRef of the form:
+
+             {
+               aaa => 'bbb',
+               ccc => undef
+             }
+
+           Into a string of the form:
+
+             q{aaa="bbb" ccc}
+
+           Useful for generating HTML tags. The values of each hash entry are
+           escaped with escape_html() before being added to the final string.
+
+           If you want to use a raw value unescaped, pass it as a scalar ref
+           with a single item. Eg.
+
+             {
+               aaa => \'<blah>',
+               bbb => '<blah>'
+             }
+
+           Is turned into:
+
+             q{aaa="<blah>" bbb="&lt;blah&gt;"}
+
+           If the value is an array ref, then the individual items are joined
+           together with a space separator. Eg.
+
+             {
+               class => [ 'class1', 'class2', \'<blah>' ],
+               aaa => 'bbb'
+             }
+
+           Is turned into:
+
+             q{aaa="bbb" class="class1 class2 <blah>"}
+
+           If the value is a hash ref, then the individual keys are joined
+           together with a space separator. Eg.
+
+             {
+               class => { class1 => 1, class2 => 2 ],
+               aaa => 'bbb'
+             }
+
+           Is turned into:
+
+             q{aaa="bbb" class="class2 class1"}
+
+           Keys are always escaped since you can't have a scalar reference as
+           a key.
+
+       "generate_tag($Tag, $AttrHashRef, $Value, $Mode)"
+           Creates an HTML tag of the basic form:
+
+             <$Tag %$AttrHashRef>$Value</$Tag>
+
+           If $AttrHashRef is "undef", then no attributes are created.
+           Otherwise generate_attributes() is called to stringify the hash
+           ref.
+
+           If $Value is "undef", then no $Value is included, and no </$Tag> is
+           added.
+
+           $Mode is a bit field with the additional options:
+
+           •   "GT_ESCAPEVAL" - call escape_html on $Value
+
+           •   "GT_ADDNEWLINE" - append \n to output of string
+
+           •   "GT_CLOSETAG" - close the tag (eg <tag />). This should really
+               only be used when $Value is undef, otherwise you'll end up with
+               something like "<tag />value</tag>", which is probably not what
+               you want
+
+       "escape_uri($Uri, [ $Mode, $EscapeChars ])"
+           Escape unsafe characters in a uri.
+
+           This escapes all characters not in the unreserved character set.
+           As a regexp that is:
+
+             [^A-Za-z0-9\-_.!~*'()]
+
+           or
+
+             [\x00-\x1F "#$%&+,/:;<=>?@\[\]^`{}|\\\x7f-\xff];
+
+           And always any characters > 127. See below for more details.
+
+           Some other things to note:
+
+           •   The escaping assumes all strings with char codes > 127 are to
+               be represeted as encoded utf-8 octets. That is it first turns
+               off any utf-8 bit on the string, and then encodes each byte to
+               it's corresponding octet.
+
+           •   When encoding a uri with parameters, you'll probably want to
+               encode each parameter first and then join it to the final
+               string, something like:
+
+                 my %uri_params = ( ... )
+                 my $uri = "http://hostname.com/somepath/?" .
+                   join ";",
+                   map { $_ . "=" . escape_uri($uri_params{$_}) }
+                   keys %uri_params;
+
+               Assuming your keys don't have any unreserved characters in
+               them, a common practice in many peoples design.
+
+               Doing something like:
+
+                 my $uri = escape_uri("http://hostname.com/somepath/?a=p1");
+
+               Will escape the '?', not giving you what you expect at the
+               other end.
+
+           $Mode is a bit field with the additional options:
+
+           •   "EU_INPLACE" - modify in-place, otherwise return new copy
+
+           $EscapeChars is optional characters to escape instead of default
+           set
+
+           If supplied, only these characters (and always any ctrl or 8-bit
+           characters) are escaped rather than the unreserved set above.
+
+OBJECTS
+       $H  Shortcut object you can call to generate tags.
+
+           Basically a lightweight wrapper around generate_tag.  Attribute
+           hash ref at start is optional. Doesn't escape any values by
+           default.
+
+           Examples:
+
+             $H->tag()                 -> '<tag>'
+             $H->tag({a=>"b"})         -> '<tag a="b">'
+             $H->tag("text")           -> '<tag>text</tag>'
+             $H->tag({a=>"b"}, "text") -> '<tag a="b">text</tag>'
+             $H->tag({a=>"b"}, "t<>t") -> '<tag a="b">t<>t</tag>'
+             $H->tag({a=>"b"}, "t<>t", GT_ESCAPEVAL)
+                                       -> '<tag a="b">t&lt;&gt;t</tag>'
+
+       $E  Shortcut object you can call to generate tags.
+
+           More heavy weight than $H, but has extra smarts
+
+           •   Optional attribute hash ref at start
+
+           •   By default escapes all values. Use scalar ref to not escape
+               value
+
+           •   Multiple parameters generate multiple tags
+
+           •   Array ref item concatenates all values in array ref
+
+           To pass flags to generate_tag or escape_html, add _gtflags or
+           _ehflags item to initial attributes hash.
+
+           Examples:
+
+             $E->tag()                   -> '<tag>'
+             $E->tag({a=>"b"})           -> '<tag a="b">'
+             $E->tag("text")             -> '<tag>text</tag>'
+             $E->tag("t<>t")             -> '<tag>t&lt;&gt;t</tag>'
+             $E->tag("t<",\"t<boo>")     -> '<tag>t&lt</tag><tag>t<boo></tag>'
+             $H->tag({a=>"b"},"c","<")   -> '<tag a="b">c</tag><tag a="b">&lt;</tag>'
+             $H->tag(["a","2"])          -> '<tag>a2</tag>'
+             $H->tag(["t<", \"t<boo>"])  -> '<tag>t&lt;t<boo></tag>'
+
+BUGS AND LIMITATIONS
+       The EH_LEAVEKNOWN option is just heuristic, and accepts anything that
+       even looks like an entity reference, even if it isn't a correct one.
+       I'm not sure if this is a security issue or not.
+
+SEE ALSO
+       Apache::Util, HTML::Entities, CGI
+
+       Latest news/details can also be found at:
+
+       <http://cpan.robm.fastmail.fm/htmlgenerateutil/>
+
+       Available on github at:
+
+       <https://github.com/robmueller/html-generateutil/>
+
+AUTHOR
+       Rob Mueller <cpan@robm.fastmail.fm>
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2004-2014 by FastMail Pty Ltd
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2014-07-11             HTML::GenerateUtil(3)

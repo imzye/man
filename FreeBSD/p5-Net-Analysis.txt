@@ -1,0 +1,169 @@
+Net::Analysis(3)      User Contributed Perl Documentation     Net::Analysis(3)
+
+
+NAME
+       Net::Analysis - Modules for analysing network traffic
+
+SYNOPSIS
+       Using an existing analyser on a tcpdump/wireshark capture file:
+
+        $ perl -MNet::Analysis -e main help
+        $ perl -MNet::Analysis -e main TCP,v=1            dump.tcp # basic TCP info
+        $ perl -MNet::Analysis -e main HTTP,v=1           dump.tcp # HTTP stuff
+        $ perl -MNet::Analysis -e main Example2,regex=img dump.tcp # run an example
+
+       Or trying live capture:
+
+        # perl -MNet::Analysis -e main TCP,v=1            "port 80"
+
+       Writing your own analyser:
+
+         package MyExample;
+
+         use base qw(Net::Analysis::Listener::Base);
+
+         # Listen to events from other modules
+         sub tcp_monologue {
+             my ($self, $args) = @_;
+             my ($mono) = $args->{monologue};
+
+             my $t = $mono->t_elapsed()->as_number();
+             my $l = $mono->length();
+
+             # Emit your own event
+             $self->emit(name => 'example_event',
+                         args => { kb_sec => ($t) ? $l/($t*1024) : 'N/A' }
+                        );
+         }
+
+         # Process your own event
+         sub example_event {
+             my ($self, $args) = @_;
+
+             printf "Bandwidth: %10.2f KB/sec\n", $args->{kb_sec};
+         }
+
+         1;
+
+ABSTRACT
+       Net::Analysis is a suite of modules that parse tcpdump files,
+       reconstruct TCP sessions from the packets, and provide a very
+       lightweight framework for writing protocol anaylsers.
+
+DESCRIPTION
+       I wanted a batch version of Ethereal in Perl, so I could:
+
+       •   sift through parsed protocols with structured filters
+
+       •   write custom reports that mixed events from multiple protocols
+
+       So here it is. Net::Analysis is a stack of protocol handlers that emit,
+       and listen for, events.
+
+       At the bottom level, a combination of Net::Pcap and NetPacket emit
+       "_internal_tcp_packet" events as they are read from the input file (or
+       live capture from a network device.)
+
+       The TCP listener (Net::Analysis::Listener::TCP) picks up these packets,
+       and reconstructs TCP streams; in turn, it emits "tcp_monologue" events.
+       A monologue is a series of bytes sent in one direction in a TCP stream;
+       a TCP session will usually involve a number of monologues, back and
+       forth.
+
+       For example, a typical TCP session for HTTP will consist of two
+       monologues; the request (client to server), and then the reponse
+       (server to client). Although if you have HTTP KeepAlive/pipelining on,
+       then you may see multiple requests in the same TCP session. A typical
+       SMTP session will involve a rapid sequence of small monologues as the
+       sender talks SMTP, before sending the bulk of the (hopefully not bulk)
+       email.
+
+       The protocol analysers tend to listen for the "tcp_monologue" event and
+       build from there. For example, the HTTP listener
+       (Net::Analysis::Listener::HTTP) listens for "tcp_monologue"s, pairs
+       them up, creates "HTTP::Request" and "HTTP::Response" objects for them,
+       and emits "http_transaction" events.
+
+       If you wanted to sift for transactions to a certain website, this is
+       the event you'd listen for:
+
+         package NoseyParker;
+
+         use base qw(Net::Analysis::Listener::Base);
+
+         # Listen for HTTP things
+         sub http_transaction {
+             my ($self, $args) = @_;
+             my ($http_req) = $args->{req}; # $args documented in Listener::HTTP.pm
+
+             # Check our HTTP::Request object ...
+             if ($http_req->uri() =~ /cpan.org/) {
+                 print "Perl fan !\n";
+             }
+         }
+
+       Each event can set up whichever arguments it wants to. These are
+       documented in the module that emits the event. By convention, the event
+       name is prefixed by the protocol name (e.g. "tcp_session_start",
+       "http_transaction").
+
+       The events emitted by this base distribution are:
+
+       •   "tcp_session_start" - session established, provides socketpair
+
+       •   "tcp_session_end"
+
+       •   "_internal_tcp_packet" - might be out of order, or a duplicate
+
+       •   "tcp_monologue" - the packets glued together
+
+       •   "http_transaction" - a request and its response
+
+WHERE NEXT
+       To look at how to invoke the whole thing, to plug into your own script,
+       see the main() method in Net::Analysis.
+
+       To see how to emit (and catch) your own events, look at
+       Net::Analysis::Listener::Example1.
+
+       For a simple example that greps TCP monologue data, see
+       Net::Analysis::Listener::Example2.
+
+       For a simple example that looks at the HTTP objects emitted for each
+       HTTP transaction, see Net::Analysis::Listener::Example3.
+
+       To look at how to write a listener that maintains session state, see
+       Net::Analysis::Listener::HTTP.
+
+TODO
+       Performance - this may not be fast enough to handle busy servers in
+       real time.
+
+       More work on live capture, this is still experimental.
+
+       UDP support
+
+       Other handy protocols - DNS, SMTP, ...
+
+       Move event loop and dispatching to POE ?
+
+       Move TCP reassembly to Net::LibNIDS ?
+
+SEE ALSO
+       Net::Analysis::Listener::Example1, Net::Analysis::Listener::Example2,
+       Net::Analysis::Listener::Example3,
+       Net::Analysis::Listener::HTTPClientPerf, Net::Pcap, NetPacket.
+
+AUTHOR
+       A. B. Worrall, <worrall@cpan.org>
+
+       Please report any bugs via http://rt.cpan.org.
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2005 by A. B. Worrall
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself, either Perl version 5.8.6 or, at
+       your option, any later version of Perl 5 you may have available.
+
+perl v5.40.2                      2010-04-10                  Net::Analysis(3)

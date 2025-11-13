@@ -1,0 +1,287 @@
+COLLECTD-SNMP(5)                                                                                    collectd                                                                                   COLLECTD-SNMP(5)
+
+NAME
+       collectd-snmp - Documentation of collectd's "snmp plugin"
+
+SYNOPSIS
+         LoadPlugin snmp
+         # ...
+         <Plugin snmp>
+           <Data "powerplus_voltge_input">
+             Table false
+             Type "voltage"
+             TypeInstance "input_line1"
+             Scale 0.1
+             Values "SNMPv2-SMI::enterprises.6050.5.4.1.1.2.1"
+           </Data>
+           <Data "hr_users">
+             Table false
+             Type "users"
+             Shift -1
+             Values "HOST-RESOURCES-MIB::hrSystemNumUsers.0"
+           </Data>
+           <Data "std_traffic">
+             Table true
+             Type "if_octets"
+             TypeInstanceOID "IF-MIB::ifDescr"
+             #FilterOID "IF-MIB::ifOperStatus"
+             #FilterValues "1", "2"
+             Values "IF-MIB::ifInOctets" "IF-MIB::ifOutOctets"
+           </Data>
+           <Data "lancom_stations_total">
+               Type "counter"
+               PluginInstance "stations_total"
+               Table true
+               Count true
+               Values "SNMPv2-SMI::enterprises.2356.11.1.3.32.1.10" # SNMPv2-SMI::enterprises.lancom-systems.lcos.lcsStatus.lcsStatusWlan.lcsStatusWlanStationTableTable.lcsStatusWlanStationTableEntry.lcsStatusWlanStationTableEntryState
+           </Data>
+           <Data "lancom_stations_connected">
+               Type "counter"
+               PluginInstance "stations_connected"
+               Table true
+               Count true
+               Values "SNMPv2-SMI::enterprises.2356.11.1.3.32.1.10" # SNMPv2-SMI::enterprises.lancom-systems.lcos.lcsStatus.lcsStatusWlan.lcsStatusWlanStationTableTable.lcsStatusWlanStationTableEntry.lcsStatusWlanStationTableEntryState
+               FilterOID "SNMPv2-SMI::enterprises.2356.11.1.3.32.1.10"
+               FilterValues "3" # eConnected
+           </Data>
+
+           <Host "some.switch.mydomain.org">
+             Address "192.168.0.2"
+             Version 1
+             Community "community_string"
+             Collect "std_traffic"
+             Interval 120
+             Timeout 10
+             Retries 1
+           </Host>
+           <Host "some.server.mydomain.org">
+             Address "192.168.0.42"
+             Version 2
+             Community "another_string"
+             Collect "std_traffic" "hr_users"
+           </Host>
+           <Host "secure.router.mydomain.org">
+             Address "192.168.0.7:165"
+             Version 3
+             SecurityLevel "authPriv"
+             Username "cosmo"
+             AuthProtocol "SHA"
+             AuthPassphrase "setec_astronomy"
+             PrivacyProtocol "AES"
+             PrivacyPassphrase "too_many_secrets"
+             Collect "std_traffic"
+           </Host>
+           <Host "some.ups.mydomain.org">
+             Address "tcp:192.168.0.3"
+             Version 1
+             Community "more_communities"
+             Collect "powerplus_voltge_input"
+             Interval 300
+             Timeout 5
+             Retries 5
+           </Host>
+         </Plugin>
+
+DESCRIPTION
+       The "snmp plugin" queries other hosts using SNMP, the simple network management protocol, and translates the value it receives to collectd's internal format and dispatches them. Depending on the write
+       plugins you have loaded they may be written to disk or submitted to another instance or whatever you configured.
+
+       Because querying a host via SNMP may produce a timeout the "complex reads" polling method is used. The ReadThreads parameter in the main configuration influences the number of parallel polling jobs
+       which can be undertaken. If you expect timeouts or some polling to take a long time, you should increase this parameter. Note that other plugins also use the same threads.
+
+CONFIGURATION
+       Since the aim of the "snmp plugin" is to provide a generic interface to SNMP, its configuration is not trivial and may take some time.
+
+       Since the "Net-SNMP" library is used you can use all the environment variables that are interpreted by that package. See snmpcmd(1) for more details.
+
+       There are two types of blocks that can be contained in the "<Plugin snmp>" block: Data and Host:
+
+   The Data block
+       The Data block defines a list of values or a table of values that are to be queried. The following options can be set:
+
+       Type type
+           collectd's type that is to be used, e. g. "if_octets" for interface traffic or "users" for a user count. The types are read from the TypesDB (see collectd.conf(5)), so you may want to check for
+           which types are defined. See types.db(5) for a description of the format of this file.
+
+       Table true|false
+           Define if this is a single list of values or a table of values. The difference is the following:
+
+           When Table is set to false, the OIDs given to Values (see below) are queried using the "GET" SNMP command (see snmpget(1)) and transmitted to collectd. One value list is dispatched and,
+           eventually, one file will be written.
+
+           When Table is set to true, the OIDs given to Values, TypeInstanceOID, PluginInstanceOID, HostOID and FilterOID (see below) are queried using the "GETNEXT" SNMP command until the subtree is left.
+           After all the lists (think: all columns of the table) have been read, either (Count set to false) several value sets will be dispatched and, eventually, several files will be written, or (Count
+           set to true) one single value will be dispatched. If you configure a Type (see above) which needs more than one data source (for example "if_octets" which needs "rx" and "tx") you will need to
+           specify more than one (two, in the example case) OIDs with the Values option and can't use the Count option. This has nothing to do with the Table setting.
+
+           For example, if you want to query the number of users on a system, you can use "HOST-RESOURCES-MIB::hrSystemNumUsers.0". This is one value and belongs to one value list, therefore Table must be
+           set to false. Please note that, in this case, you have to include the sequence number (zero in this case) in the OID.
+
+           Counter example: If you want to query the interface table provided by the "IF-MIB", e. g. the bytes transmitted. There are potentially many interfaces, so you will want to set Table to true.
+           Because the "if_octets" type needs two values, received and transmitted bytes, you need to specify two OIDs in the Values setting, in this case likely "IF-MIB::ifHCInOctets" and
+           "IF-MIB::ifHCOutOctets". But, this is because of the Type setting, not the Table setting.
+
+           Since the semantic of Instance and Values depends on this setting you need to set it before setting them. Doing vice versa will result in undefined behavior.
+
+       Plugin Plugin
+           Use Plugin as the plugin name of the values that are dispatched.  Defaults to "snmp".
+
+       PluginInstance Instance
+           Sets the plugin-instance of the values that are dispatched to Instance value.
+
+           When Table is set to true and PluginInstanceOID is set then this option has no effect.
+
+           Defaults to an empty string.
+
+       TypeInstance Instance
+           Sets the type-instance of the values that are dispatched to Instance value.
+
+           When Table is set to true and TypeInstanceOID is set then this option has no effect.
+
+           Defaults to an empty string.
+
+       TypeInstanceOID OID
+       PluginInstanceOID OID
+       HostOID OID
+           If Table is set to true, OID is interpreted as an SNMP-prefix that will return a list of values. Those values are then used as the actual type-instance, plugin-instance or host of dispatched
+           metrics. An example would be the "IF-MIB::ifDescr" subtree. variables(5) from the SNMP distribution describes the format of OIDs. When option is set to empty string, then "SUBID" will be used as
+           the value.
+
+           Prefix may be set for values with use of appropriate TypeInstancePrefix, PluginInstancePrefix and HostPrefix options.
+
+           When Table is set to false or Count is set to true, these options have no effect.
+
+           Defaults: When no one of these options is configured explicitly, TypeInstanceOID defaults to an empty string.
+
+       TypeInstancePrefix
+       PluginInstancePrefix
+       HostPrefix
+           These options are intented to be used together with TypeInstanceOID, PluginInstanceOID and HostOID respectively.
+
+           If set, String is preprended to values received by querying the agent.
+
+           When Table is set to false or Count is set to true, these options have no effect.
+
+           The "UPS-MIB" is an example where you need this setting: It has voltages of the inlets, outlets and the battery of an UPS. However, it doesn't provide a descriptive column for these voltages. In
+           this case having 1, 2, ... as instances is not enough, because the inlet voltages and outlet voltages may both have the subids 1, 2, ... You can use this setting to distinguish between the
+           different voltages.
+
+       Instance Instance
+           Attention: this option exists for backwards compatibility only and will be removed in next major release. Please use TypeInstance / TypeInstanceOID instead.
+
+           The meaning of this setting depends on whether Table is set to true or false.
+
+           If Table is set to true, option behaves as TypeInstanceOID.  If Table is set to false, option behaves as TypeInstance.
+
+           Note what Table option must be set before setting Instance.
+
+       InstancePrefix String
+           Attention: this option exists for backwards compatibility only and will be removed in next major release. Please use TypeInstancePrefix instead.
+
+       Values OID [OID ...]
+           Configures the values to be queried from the SNMP host. The meaning slightly changes with the Table setting. variables(5) from the SNMP distribution describes the format of OIDs.
+
+           If Table is set to true, each OID must be the prefix of all the values to query, e. g. "IF-MIB::ifInOctets" for all the counters of incoming traffic. This subtree is walked (using "GETNEXT") until
+           a value from outside the subtree is returned.
+
+           If Table is set to false, each OID must be the OID of exactly one value, e. g. "IF-MIB::ifInOctets.3" for the third counter of incoming traffic.
+
+       Count true|false
+           Instead of dispatching one or multiple values per Table entry containing the OID(s) given in the Values option, just dispatch a single count giving the number of entries that would have been
+           dispatched. This is especially useful when combined with the filtering options (see below) to count the number of entries in a Table matching certain criteria.
+
+           When Table is set to false, this option has no effect.
+
+       Scale Value
+           The gauge-values returned by the SNMP-agent are multiplied by Value.  This is useful when values are transferred as a fixed point real number. For example, thermometers may transfer 243 but
+           actually mean 24.3, so you can specify a scale value of 0.1 to correct this. The default value is, of course, 1.0.
+
+           This value is not applied to counter-values.
+
+       Shift Value
+           Value is added to gauge-values returned by the SNMP-agent after they have been multiplied by any Scale value. If, for example, a thermometer returns degrees Kelvin you could specify a shift of
+           273.15 here to store values in degrees Celsius. The default value is, of course, 0.0.
+
+           This value is not applied to counter-values.
+
+       Ignore Value [, Value ...]
+           The ignore values allows one to ignore TypeInstances based on their name and the patterns specified by the various values you've entered. The match is a glob-type shell matching.
+
+           When Table is set to false then this option has no effect.
+
+       InvertMatch true|false(default)
+           The invertmatch value should be use in combination of the Ignore option.  It changes the behaviour of the Ignore option, from a blacklist behaviour when InvertMatch is set to false, to a whitelist
+           when specified to true.
+
+       FilterOID OID
+       FilterValues Value [, Value ...]
+       FilterIgnoreSelected true|false(default)
+           When Table is set to true, these options allow to configure filtering based on MIB values.
+
+           The FilterOID declares OID to fill table column with values.  The FilterValues declares values list to do match. Whether table row will be collected or ignored depends on the FilterIgnoreSelected
+           setting.  As with other plugins that use the daemon's ignorelist functionality, a string that starts and ends with a slash is interpreted as a regular expression.
+
+           If no selection is configured at all, all table rows are selected.
+
+           When Table is set to false then these options has no effect.
+
+           See Table and /"IGNORELISTS" for details.
+
+   The Host block
+       The Host block defines which hosts to query, which SNMP community and version to use and which of the defined Data to query.
+
+       The argument passed to the Host block is used as the hostname in the data stored by collectd.
+
+       Address IP-Address|Hostname
+           Set the address to connect to. Address may include transport specifier and/or port number.
+
+       Version 1|2|3
+           Set the SNMP version to use. When giving 2 version "2c" is actually used.
+
+       Community Community
+           Pass Community to the host. (Ignored for SNMPv3).
+
+       Username Username
+           Sets the Username to use for SNMPv3 security.
+
+       SecurityLevel authPriv|authNoPriv|noAuthNoPriv
+           Selects the security level for SNMPv3 security.
+
+       Context Context
+           Sets the Context for SNMPv3 security.
+
+       AuthProtocol MD5|SHA
+           Selects the authentication protocol for SNMPv3 security.
+
+       AuthPassphrase Passphrase
+           Sets the authentication passphrase for SNMPv3 security.
+
+       PrivacyProtocol AES|DES
+           Selects the privacy (encryption) protocol for SNMPv3 security.
+
+       PrivacyPassphrase Passphrase
+           Sets the privacy (encryption) passphrase for SNMPv3 security.
+
+       Collect Data [Data ...]
+           Defines which values to collect. Data refers to one of the Data block above. Since the config file is read top-down you need to define the data before using it here.
+
+       Interval Seconds
+           Collect data from this host every Seconds seconds. This option is meant for devices with not much CPU power, e. g. network equipment such as switches, embedded devices, rack monitoring systems and
+           so on. Since the Step of generated RRD files depends on this setting it's wise to select a reasonable value once and never change it.
+
+       Timeout Seconds
+           How long to wait for a response. The "Net-SNMP" library default is 1 second.
+
+       Retries Integer
+           The number of times that a query should be retried after the Timeout expires.  The "Net-SNMP" library default is 5.
+
+       BulkSize Integer
+           Configures the size of SNMP bulk transfers. The default is 0, which disables bulk transfers altogether.
+
+SEE ALSO
+       collectd(1), collectd.conf(5), snmpget(1), snmpgetnext(1), variables(5), unix(7)
+
+AUTHORS
+       Florian Forster <octo@collectd.org> Michael Pilat <mike@mikepilat.com>
+
+5.12.0                                                                                             2020-09-03                                                                                  COLLECTD-SNMP(5)

@@ -1,0 +1,227 @@
+FCGI_SPAWN(1)         User Contributed Perl Documentation        FCGI_SPAWN(1)
+
+
+NAME
+       fcgi_spawn - FastCGI server for CGI-like Perl applications effective
+       multiprocessing, the executable daemon of FCGI::Spawn
+
+DESCRIPTION
+       Daemon enables you to launch Perl applications originally written for
+       CGI environment. To accomplish POST input you should need to patch your
+       CGI.pm with the patch supplied in the FCGI::Spawn distribution, or the
+       application, in some rare cases (like the Bugzilla), the both.  Daemon
+       is intended to be launched  as a root ( "uid = 0" ) user, although you
+       may run it as a target user itself.  You need the FastCGI-capable web
+       server capable to work with other ('external') daemons by a FastCGI
+       protocol: the 'FastCGI requester'.  Many features supported like the
+       fine-tune on the number of processes, maximum number of requests served
+       by the each process in its lifetime, more on this on FCGI::Spawn, also
+       tested environments and comparison to the well-known Perl runtime
+       environments.  Main focus of the daemon is the system administration
+       convinience and adaptation to the OS distribution(s), as it is seen
+       from:
+
+SYNOPSIS
+       The necessary configuration for fcgi_spawn is to be located in the
+       dedicated directory, specified by -c command line parameter (by default
+       the /usr/local/etc for FreeBSD/Slackware packages; /etc for FHS-
+       compatible Linux/Cygwin packages ( RedHat, Debian, etc. ) . This
+       includes the configuration file "fcgi_spawn.conf", and optional preload
+       scripts aimed similarly as the "startup.pl" of the mod_perl: to preload
+       the modules before the process to fork, and perform necessary
+       initialization steps like environment variables setup.
+
+   Command line options
+       Consider all of them to be mandatory:
+
+         -c <config_path> Full path to the directory of configuration file, the
+       fcgi_spawn.conf ( See 'Configuration File' below );
+         -p <pid_file>    Full path and name of the process ID file name;
+         -l <log_file>    Full path and name  of the log file name;
+         -u <user>        Name of the system user to run the FastCGI applications;
+         -g <group>       Name of the system group to run the FastCGI applications;
+         -s <socket>      Name of the local UNIX socket to be created by the daemon to
+       listen for incoming connections. You should try :number or address:number or
+       host:number as a value of this option in teh case the TCP connectivity is
+       wanted;
+
+       Those are optional:
+
+         -e               Redefine the exit() Perl builtin function to prevent the
+       spawned persistent processes from exiting and starting again when your
+       application(s) exit;
+         -pl              Evaluate the:
+
+   Preload Scripts from the configuration directory
+       You can use preload scripts for modules preload and initialization,
+       similarly to the what is the apache's "startup.pl" is attended for in
+       the mod_perl's world , although "fcgi_spawn" doesn't execute them from
+       the root ( "uid = 0" ) user. ( while apache does ).  Typically, good
+       results are achieved when you try to execute the dummy index page of
+       the web aplication in them, because it loads the most necessary modules
+       of the application. If you have no errors when execute that perl script
+       ( obviously "index.pl" or "index.cgi" depending on your application )
+       as a "fcgi_spawn"'s target user and group ( specified with "-u" and
+       "-g" options ), you should give it a try. Thing to beware at this point
+       is: environment variables cause "fcgi_spawn" clears the all of the
+       environment for security purposes.
+
+       Preload scripts are to be located in the configuraion directory with
+       the names "preload_nonprepared_XX.pl" and "preload_prepared_XX.pl",
+       respectively. The "XX" here means a number of the execution sequence,
+       as you may wish to "use SomeModule" on the followed of scripts and have
+       its functionality on the scripts following after those. The difference
+       between non- and prepared scripts is: the multi-processing occurs to
+       happen in between of them ( "prepare" in FCGI::Spawn ). That means that
+       the 'nonprepared' scripts are the best place to pre-load your
+       applications' modules, but the handles like the data files, sockets,
+       database handles, etc. can exist only per single process and therefore
+       should be established in the 'prepared' scripts.
+
+       Predefined symbols for preload scripts are:
+
+       $spawn
+           the FCGI::Spawn object.
+
+           It is useful to do the trick like this for your CGI app:
+
+                   $FCGI::Spawn::fcgi = new CGI;
+                   $spawn->callout( '/path/to/your/CGI/app.pl', $FCGI::Spawn::fcgi );
+                   undef $FCGI::Spawn::fcgi;
+
+           ( "CGI.pm.patch" supplied in the source package is required for
+           this to work best. ) This loads the most of your application's code
+           into memory in the 'nonprepared' script before the daemon to fork()
+           which is the main to know about what the FCGI::Spawn's prepare is.
+
+       CALLED_OUT
+           the label to go to with the exit() Perl builtin redefined ( '-e'
+           command line parameter ).
+
+           Should be contained in the code reference supplied as a callout
+           property of the $spawn, the "FCGI::Spawn object". This is to keep
+           the exit()'ed CGI application from exiting the FastCGI connection
+           accept() loop before "max_requests" processed. The code use this
+           label like this:
+
+                   $spawn->{ callout } =  sub{ do shift;
+                   CALLED_OUT: eval ' $Bugzilla::_request_cache = { }; '
+                     if defined( $Bugzilla::_request_cache ) and scalar keys %{ $Bugzilla::_request_cache };
+                   };
+
+       $OURS
+           Hash reference to keep scalar variables in between preload eval()s.
+           Those are to be restored in preload scripts like this:
+
+                                           map{ ${ $main::{ $_ } }
+                                                           = $OURS->{  $_ } ;
+                                           } qw/webguiRoot bugzillaRoot skybillRoot/;
+
+       All of the preload scripts, if any exist, are eval()'ed after the
+       $spawn is initialized with the values from:
+
+   Configuration File
+       "fcgi_spawn.conf", to be read from the configuration directory
+       specified with "-c" command line parameter, should contain the values
+       of the FCGI::Spawn object constructor, method "new", if those need to
+       differ from the defaults. The exception is the "callout" parameter
+       which is not a constant but the CODE reference and should be set up in
+       the "preload_noprepared" scripts.
+
+       Syntax is: spaces and tabs at the begin of the line are ignored, the
+       "#" symbol before the rest means this line is ignored as a comment too,
+       key and value are separated with the space(s) or tab(s) all on the same
+       line, and if the value is multiple ( same way separated ) values, it is
+       treated as an array reference ( wanted for "sock_chown" parameter ).
+
+       Sample configuration file, "fcgi_spawn.conf.sample", is provided in the
+       source distribution.
+
+Typical CGI Applications with "fcgi_spawn"
+       "FCGI::Spawn", and therefore "fcgi_spawn", are able to work in Unix and
+       Cygwin environments, with 'properly' written CGI applications, which
+       the most of the well-known CGI applications are. This means: no much
+       assign of the global variables, incapsulation of the code in the
+       Namespace::sub()s at least, and so on.
+
+       Care should be taken about file and database handles closing and
+       networking sockets disconnection because the "END{}" block of your Perl
+       application is unlikely to be executed automatically, like it does in
+       true CGI application. You should refer to Mod_Perl code guides in
+       Chapter 6 of Practical mod_perl book:
+       <http://modperlbook.org/pdf/ch06.pdf> Commonly, if your CGI application
+       runs well with the typical "PerlRun" and "Registry" environments of the
+       Mod_Perl, it should with the "fcgi_spawn" ( and "CGI.pm.patch" supplied
+       ), too. At least as the examples below do:
+
+   WebGUI.org
+       Till version 6.9 supported CGI mode, requires the 'date' system command
+       to be present in the PATH. Fix this in preload script. You should
+       "preload_nonprepared" your "index.pl" with the $spawn's ->callout, too.
+       Demo is: <http://alpha.vereshagin.org>.
+
+   Skybill
+       Traffic accounting system was rewritten a bit, as you can see from
+       <http://skybill.sf.net>. It was ( and in many aspects is ) my old dummy
+       code but it's to show that even that is able to be
+       "fcgi_spawn"-friendly. You may want to use the "FCGI::Spawn/xinc"
+       feature not only to cache the XSLT object between request but to share
+       it among fork()ed processes, it is accomplished with callout of the
+       index.pl on your "preload_nonprepared" script automatically. Demo is:
+       <http://skybill.vereshagin.org>.
+
+   Bugzilla
+       Got to know satisfaction: this was probably a worst evil code ever
+       seen. Despite it has no problems with mod_perl, that required many
+       tricks to perform and here is the scoop:
+
+       Many exit()s on the blocks
+           Requires the exit() to be redefined with "-e" command line switch
+           for "fcgi_spawn", and the "CALLED_OUT" label to be crafted like it
+           is already described here.
+
+       CGI.pm ancesting
+           Requires the both patches to be applied, on "CGI.pm" amd
+           "Bugzilla/CGI.pm" .
+
+       Request caching
+           Bugzilla's own request cache cleans only if the mod_perl is used
+           specifically. Same about the "CALLED_OUT" here.
+
+       Environment cleaning
+           As an evil of Date::Manip ( I myself hate it too, since the
+           "DateTime.pm" infrastructure is much better ), and thus the
+           WebGUI.org too, the Bugzilla can make your system commands
+           unavailable from your applications on your PATH environment
+           variable. This is why you should also enable the "save_env" feature
+           on "fcgi_spawn.conf", if it is not enabled in FCGI::Spawn by
+           default.
+
+           Also, in some cases the Bugzilla's CGI programs use to take $0
+           instead of $ENV{ SCRIPT_NAME } which makes the URLs generated
+           pointless.
+
+       Demo is located at:
+
+BUGS And TODOs
+       <http://bugs.vereshagin.org/product/FCGI%3A%3ASpawn>
+
+       Adequate reports are accepted.
+
+Runtime Control
+       Daemon is supplied with POSIX signal handling: "USR1" makes it to
+       reopen the log file, and every other signal is passed as is to the
+       actual FCGI::ProcManager process.
+
+LICENSE
+       LGPL, as of the MANIFEST file in FCGI::Spawn's CPAN distribution. More
+       info on fcgi_spawn at: <http://fcgi-spawn.sf.net>.
+
+POD ERRORS
+       Hey! The above document had some coding errors, which are explained
+       below:
+
+       Around line 92:
+           '=item' outside of any '=over'
+
+perl v5.40.2                      2012-12-07                     FCGI_SPAWN(1)

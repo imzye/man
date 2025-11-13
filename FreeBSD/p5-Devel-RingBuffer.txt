@@ -1,0 +1,364 @@
+Devel::RingBuffer(3)  User Contributed Perl Documentation Devel::RingBuffer(3)
+
+
+NAME
+       Devel::RingBuffer - Shared memory ring buffers for Perl scripts
+       diagnosis/debug
+
+SYNOPSIS
+           #
+           #    create ringbuffer
+               #
+               use Devel::RingBuffer;
+               use Devel::RingBuffer::TieInt;
+
+               my $ringbuf = Devel::RingBuffer->new(
+                       File => 'somefile.trace',
+                       Rings => 20,
+                       Slots => 20,
+                       SlotSize => 300,
+                       MessageSize => 256,
+                       GlobalSize => 24 * 1024,
+                       StopOnCreate => 0,
+                       TraceOnCreate => 1) || die "Can't create a ring buffer.";
+
+               my $ring = $ringbuf->allocate();
+
+DESCRIPTION
+       Provides shared memory structures (using memory mapped files via
+       IPC::Mmap) to be used by diagnostic and debugger applications for Perl
+       scripts (see Devel::STrace).  Using XS/C code to maximize performance,
+       creates a set of ringbuffers with a configurable number of slots. Each
+       slot includes a field for a linenumber, a timestamp, and a fully
+       qualified subroutine name.  Each ring buffer also includes additional
+       headers and fields to support diagnostic interfaces, e.g., watched
+       expressions, command/reponse interfaces to the monitored applications,
+       etc.
+
+       Glossary
+
+       AUT - Application Under Test; the application started with "-d:STrace"
+       Monitor - monitoring application, i.e., the debugger view
+
+       Ring Buffer Structure
+
+       The ring buffer structure is configured externally using the following
+       set of environment variables:
+
+       DEVEL_RINGBUF_BUFFERS
+           the number of ring buffers (default 20).  In practice, each thread
+           of each process of the AUT allocates its own buffer from this pool,
+           so this needs to be large enough to handle the maximum number of
+           concurrent processes/threads.
+
+       DEVEL_RINGBUF_SLOTS
+           the number of slots per ring buffer (default 10)
+
+       DEVEL_RINGBUF_FILE
+           Name of the file (or the Win32 namespace).  Default is the script
+           name, sans any file qualifiers, with the PID and timestamp as the
+           file qualifier, created in the /tmp directory, e.g.,
+
+                   /tmp/somescript.2479_Apr_10_12:34:56
+
+       DEVEL_RINGBUF_GLOBALSZ
+           size in bytes of the global message area aka GMA (default 16K).
+           This area is a large buffer used for communicating large data
+           between the monitor and AUT, and is shared by all threads of the
+           AUT.
+
+       DEVEL_RINGBUF_MSGSZ
+           size in bytes of the per-thread command/response message area
+           (default 256 bytes). Each ring buffer includes a 4 byte
+           command/response tag, and an associated message area where control
+           information can be exchanged between the AUT and the monitor.  This
+           area is used, e.g., to send breakpoint information from a monitor
+           to the AUT.
+
+       DEVEL_RINGBUF_SLOTSZ
+           Sets slot size. Default size is 200 bytes, plus the integer
+           linenumber and double precision timestamp header.
+
+       DEVEL_RINGBUF_SOC
+           Sets the global Stop On Create flag. This flag causes all newly
+           created threads (including root threads of new processes) to have
+           their $DB::signal flag set, thus causing them to stop in DB::DB()
+           and wait for a command. Default is off.
+
+       DEVEL_RINGBUF_TOC
+           Sets the global Trace On Create flag. This flag causes all newly
+           created threads (including root threads of new processes) to have
+           their $DB::trace flag set, thus causing them to enter DB::DB() for
+           purposes of tracing current statement execution.
+
+       Note that monitored applications with large numbers of threads or
+       processes, and that use large msgarea fields and/or large numbers of
+       ring slots, can lead to very large memory mappings, which may cause
+       memory management issues.
+
+       The following C type definitions represent the structure of the memory
+       mapped ring buffer file (refer to ringbuffer.h for precise
+       definitions):
+
+           typedef struct {
+               int single;                  /* tied to $DB::single (global) */
+               int msgarea_sz;              /* size of RingBuffer.msgarea */
+               int max_buffers;             /* max number of buffers available */
+               int slots;                   /* number of slots per buffer */
+               int slot_sz;                 /* size of each slot (plus linenumber and timestamp header) */
+               int stop_on_create;          /* 1 => new threads created with ring.signal = 1 */
+               int trace_on_create;         /* 1 => new threads created with ring.trace = 1 */
+               int global_sz;               /* size of RingBuffers.global_buffer */
+                       int globmsg_sz;              /* size of current global msg contents */
+                       char global_buffer[];        /* global message buffer (large, >16K) */
+               char free_map[];             /* booleans to indicate if the
+                                               buffer of same index is free */
+               ring_buffer_t rings[];       /* the ringbuffers */
+           } ring_buffers_t;
+
+       A global file lock (or semaphore on Win32 platforms) is used control
+       access to some members of the memory mapped file, specifically, the
+       global message area (see below), the free ring map, and during
+       initialization of the entire file. In addition, each process in the AUT
+       uses an additional threads::shared locking variable to control thread-
+       level access.
+
+       Note that any non-char fields in these structures are pack()'ed in
+       platform specific format, and must be unpack()'d when read from the
+       structures.
+
+       •   "single" is intended to be "tie"'d to $DB::single; this provides a
+           global (i.e., all threads of all processes) single-step flag that
+           can be set by the Monitor, such that all threads will enter
+           DB::DB() for each executable statement.
+
+       •   "msgarea_sz" indicates the size of the per-thread Monitor <=> AUT
+           command/response message area. The message area consists of an
+           integer command-ready flag, a 4 byte command field, an integer
+           message length, and the message area of size
+           $ENV{DEVEL_RINGBUF_MSGSZ} (default 256 bytes).
+
+       •   "maxbuffers" indicates the number of ring buffers in the file, as
+           set by $ENV{DEVEL_RINGBUF_BUFFERS} (default 20).
+
+       •   "slots" indicates the number of ring slots per buffer, as set by
+           $ENV{DEVEL_RINGBUF_SLOTS} (default 10). The slots are used to store
+           the current call stack, and track the linenumber/timestamp of the
+           last execution within each subroutine on the stack.
+
+       •   "slot_sz" specifies the size of each slot in bytes, plus the
+           integer linenumber and double precision timestamp; as set by
+           $ENV{DEVEL_RINGBUF_SLOTSZ} (default 200). For monitor/debug
+           applications which supply significant additional information for
+           each logged slot entry (e.g., including the complete argument list
+           of a subroutine call), the default size may be insufficient.
+
+       •   "stop_on_create" indicates that newly created threads should enter
+           single step mode by setting the $DB::signal flag of their ring
+           buffer. "stop_on_create" permits the Monitor to trap and initialize
+           any per-thread context on thread creation; if not set, newly
+           created threads would simply run until (a) the Monitor detected
+           their new ring and (b) the Monitor set any of the "single",
+           "trace", or "signal" flags. May be initialized by
+           $ENV{DEVEL_RINGBUF_SOC}; default is 0 (off).
+
+       •   "trace_on_create" indicates that newly created threads should enter
+           trace mode by setting the $DB::trace flag of their ring buffer.
+           "trace_on_create" permits the Monitor to assure that all threads
+           are traced immediately upon creation.  If not set, newly created
+           threads will not be traced until the Monitor detects their new ring
+           and explicitly sets its trace flag. May be initialized by
+           $ENV{DEVEL_RINGBUF_TOC}; default is 0(off).
+
+       •   "global_sz" indicates the size of the global message area shared by
+           all threads. The intent is to provide an area for very large
+           messages (e.g., transfering a large string to the Monitor).  The
+           size of the area is set by $ENV{DEVEL_RINGBUF_GLOBALSZ} (default
+           16Kbytes).  Access to the global message area is controlled by the
+           same file level and thread-level locks as the entire ring buffer
+           file.
+
+       •   "globmsg_sz" indicates the size of the current contents of the
+           global message area. Note that some commands may cause chaining of
+           the contents of the global message area to accumulate very large
+           messages to be "chunked".
+
+       •   "global_buffer" is the global message area itself, of size
+           specified by "global_sz".
+
+       •   "free_map" is a map indicating if the ring buffer of the
+           corresponding index is free ("== 1") or in-use ("== 0"). AUT's must
+           acquire the global file lock and the process-local thread lock
+           before manipulating the free map.
+
+       •   "rings" is the the set of per-thread ring buffers (see next
+           section).
+
+       Per-thread Ring Buffer
+
+       Each thread of each process in the AUT allocates a ring buffer on its
+       first pass through either DB::DB() or DB::sub() to communicate its
+       execution state, and perform per-thread interactions with the Monitor:
+
+           typedef struct {
+               int pid;                    /* pid of slot buffer owner */
+               int tid;                    /* tid of slot buffer owner */
+               int currSlot;               /* current slot */
+               int depth;                  /* current stack depth */
+               int trace;                  /* tied to $DB::trace (per-thread/proc) */
+               int signal;                 /* tied to $DB::signal (per-thread/proc) */
+                       int baseoff;                /* offset from this struct to entire ring buffer base */
+                       watch_expr_t watches[4];    /* watch expressions */
+                       int cmdready;               /* 1 => command sent; -2 => response ready; 0 => empty */
+                       char command[4];            /* ext. command entry */
+                       int msglen;                 /* length of msg */
+                       char msgarea[];             /* ext. message area */
+               ring_slot_t slots[];        /* slots */
+           } ring_buffer_t;
+
+       When a thread exits, the DESTROY() method of the "Devel::RingBuffer" or
+       "Devel::RingBuffer::Ring" object (whichever occurs first) will free the
+       allocated ring buffer.
+
+       •   "pid" is the PID of the ring buffer owner.
+
+       •   "tid" is the thread ID of the ring buffer owner.
+
+       •   "currSlot" is the current "top" slot of the ring buffer, i.e., the
+           slot which contains the name/linenumber/timestamp of the currently
+           executing subroutine.
+
+       •   "depth" is the current depth of the stack; note that the depth may
+           exceed the number of slots, which will cause the ring buffer to
+           wrap and overwrite the oldest slots.
+
+       •   "trace" is "tie"'d to $DB::trace, thereby permitting per-thread
+           single-stepping while some/all other threads/processes continue to
+           run without interruption.
+
+       •   "signal" is "tie"'d to $DB::signal, to provide an additional
+           signaling mechanism between the Monitor and individual threads of
+           the AUT.
+
+       •   "baseoff" is the offset back to the base of the entire ring buffer.
+           This field helps optimize accesses to global information that would
+           otherwise require additional XS call parameters and SV translation.
+           The XS methods use it internally to compute the address of the ring
+           buffer header from an individual ring's address.
+
+       •   "watches" contains the watch list (see "Watch Expressions").
+           Currently, only 4 expressions per thread are supported.
+
+       •   "cmdready", "command", "msglen", and "msgarea" provide the per-
+           thread command/response message area between the AUT and Monitor,
+           as described previously.  When Monitor needs to post a command to
+           an AUT thread, it waits until "cmdready == 0", then posts the
+           command by writing to the "command", "msglen", and "msgarea"
+           fields, then setting "cmdready = 1". AUT can either test, or wait
+           for, a command by testing for "cmdready == 1", then reading the
+           command and message data and performing any needed command
+           processing, then posting any response data, and setting "cmdready
+           == 0".
+
+       •   "slots" contains the individual subroutine slots (see next
+           section).
+
+       Slots
+
+               typedef struct {
+                       int linenumber;         /* current execution linenumber in subroutine */
+                       double timestamp;       /* Time::HiRes::time() timestamp of the execution */
+                       char subroutine[1];     /* name of subroutine (as reported by $DB::sub) */
+                                       /* size determine by the slot_sz parameter */
+               } ring_slot_t;
+
+       •   "linenumber" is the script linenumber currently being executed
+           within the slot's current subroutine. This field of the current
+           slot is updated on each pass of the AUT through DB::DB().
+
+       •   "timestamp" is the Time::HiRes::time() value when the current
+           "linenumber" of the current "subroutine" was executed.  This field
+           of the current slot is updated on each pass of the AUT through
+           DB::DB().
+
+       •   "subroutine" is the name of subroutine (as reported by $DB::sub)
+           assigned to the slot; it is set by DB::sub() when a new subroutine
+           call is made.
+
+       Watch Expressions
+
+       Each ring includes a set of slots for use with watch expressions,
+       defined as
+
+               typedef struct {
+               int inuse;          /* 1 => in use, -2 => freeing, 0 => freed */
+               int exprlength;     /* length of expr text */
+               char expr[256];     /* expr text */
+               int resready;       /* 0 => monitor has read last result */
+               int reslength;      /* result length before truncation;
+                                      length < 0 the expression eval failed, with
+                                      error text in the result area;
+                                      length == 0 means result was undef */
+               char result[512];   /* result text */
+               } watch_expr_t;
+
+       The Monitor can set an expression, and each AUT thread scans its
+       watchlist for expressions to evaluate. A lazy concurrency control
+       mechanism is used to minimize locking overhead:
+
+       •   Monitor locates the first entry with "inuse == 0"
+
+       •   Monitor writes out the epxression, and sets the expression length
+
+       •   Monitor sets "inuse = 1"
+
+       •   AUT scans its thread's watch slots looking for entries with "(inuse
+           == 1) and (resready == 0)". When it finds an entry, it "eval"'s the
+           expression, writes the result to the slot (truncating if needed),
+           and sets "resready = 1". Note that the AUT won't eval the
+           expression for every pass through DB::DB(), unless $DB::single is
+           set to indicate single-stepping and the Monitor reads the watched
+           expressions after every single-step.
+
+       •   Monitor scans the watchlist looking for entries with "(inuse == 1)
+           and (resready == 1)". It reads and formats the result, then sets
+           "resready = 0" to indicate it is done with the entry.
+
+       •   To remove a watch item, Monitor sets "inuse = -2"
+
+       •   When AUT sees an entry with "inuse == -2", it acknowledges the free
+           operation by setting "inuse = 0".
+
+METHODS
+       Refer to included classdocs for summary and detailed descriptions of
+       methods.
+
+TO DO
+       •   support for 64 bit Perl/platforms
+
+       •   UTF 8 support/validation
+
+       •   More XS/C to further minimize its impact on the monitored
+           application.
+
+SEE ALSO
+       Devel::RingBuffer::Ring
+
+       Devel::STrace
+
+       IPC::Mmap
+
+       perldebguts
+
+       strace(1) (or truss(1))
+
+AUTHOR, COPYRIGHT, AND LICENSE
+       Dean Arnold <mailto:darnold@presicient.com>
+
+       Copyright(C) 2006, Dean Arnold, Presicient Corp., USA.  All rights
+       reserved.
+
+       Permission is granted to use this software under the same terms as Perl
+       itself.  Refer to the Perl Artistic License for details.
+
+perl v5.40.2                      2006-08-13              Devel::RingBuffer(3)

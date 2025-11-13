@@ -1,0 +1,494 @@
+Tickit::Widget::Table(3)                   User Contributed Perl Documentation
+
+
+NAME
+       Tickit::Widget::Table - table widget with support for scrolling/paging
+
+VERSION
+       version 0.216
+
+SYNOPSIS
+        #!/usr/bin/env perl
+        use strict;
+        use warnings;
+
+        use Tickit;
+        use Tickit::Widget::Table;
+
+        my $tbl = Tickit::Widget::Table->new;
+        $tbl->add_column(
+               label => 'Left',
+               align => 'left',
+               width => 8,
+        );
+        $tbl->add_column(
+               label => 'Second column',
+               align => 'centre'
+        );
+        $tbl->adapter->push([ map [qw(left middle)], 1..100 ]);
+        Tickit->new(root => $tbl)->run;
+
+DESCRIPTION
+       WARNING: This is still a preview release. API might be subject to
+       change in future, please get in contact if you're using this, or wait
+       for version 1.000.
+
+       This widget provides a scrollable table implementation for use on
+       larger data sets. Rather than populating the table with values, you
+       provide an adapter which implements the "count" and "get" methods, and
+       the table widget will query the adapter for the current "page" of
+       values.
+
+       This abstraction should allow access to larger datasets than would fit
+       in available memory, such as a database table or procedurally-generated
+       data.
+
+       See Adapter::Async::OrderedList::Array if your data is stored in a Perl
+       array. Other subclasses may be available if you have a different
+       source.
+
+   Transformations
+       Apply to:
+
+       •   Row
+
+       •   Column
+
+       •   Cell
+
+       Item transformations
+
+       This takes the original data item for the row, and returns one of the
+       following:
+
+       •   Future - when resolved, the items will be used as cells
+
+       •   Arrayref - holds the cells directly
+
+       The data item can be anything - an array-backed adapter would return an
+       arrayref, ORM will give you an object for basic collections.
+
+       Any number of cells may be returned from a row transformation, but you
+       may get odd results if the cell count is not consistent.
+
+       An array adapter needs no row transformation, due to the arrayref
+       behaviour. You could provide a Future alternative:
+
+        $row->apply_transformation(sub {
+         my ($item) = @_;
+         Future->wrap(
+          @$item
+         )
+        });
+
+       For the ORM example, something like this:
+
+        $row->apply_transformation(sub {
+         my ($item) = @_;
+         Future->wrap(
+          map $item->$_, qw(id name created)
+         )
+        });
+
+       Column transformations
+
+       Column transformations are used to apply styles and formats.
+
+       You get an input value, and return either a string or a Future.
+
+       Example date+colour transformation on column:
+
+        $col->apply_transformation(sub {
+         my $v = shift;
+         Future->wrap(
+          String::Tagged->new(strftime '%Y-%m-%d', $v)
+          ->apply_tag(0, 4, b => 1)
+          ->apply_tag(5, 1, fg => 8)
+          ->apply_tag(6, 2, fg => 4)
+          ->apply_tag(9, 1, fg => 8)
+         );
+        });
+
+       Cell transformations
+
+       Cell transformations are for cases where you need fine control over
+       individual components. They operate similarly to column
+       transformations, taking the input value and returning either a string
+       or a Future.
+
+       Typical example would be a spreadsheet:
+
+        $cell->apply_transformation(sub {
+         my $v = shift;
+         return $v unless blessed $v;
+         return eval $v if $v->is_formula;
+         return $v->to_string if $v->is_formatted;
+         return "$v"
+        });
+
+       View transformations
+
+       This happen every time the row is rendered. They provide the ability to
+       do view-specific modification, such as replacing long strings with an
+       elided version ("Some lengthy messa...")
+
+METHODS
+   new
+       Instantiate. Will attempt to take focus.
+
+       Takes the following named parameters:
+
+       •   on_activate - coderef to call when the user hits the Enter key,
+           will be passed the highlighted row or selection when in
+           "multi_select" mode, see "on_activate" for more details.
+
+       •   multi_select - when set, the widget will allow selection of
+           multiple rows (typically by pressing Space to toggle a given row)
+
+       •   adapter - an Adapter::Async::OrderedList::Array instance
+
+       •   data - alternative to passing an adapter, if you want to wrap an
+           existing array without creating an Adapter::Async::OrderedList
+           subclass yourself
+
+       Returns a new instance.
+
+   bus
+       Bus for event handling. Normally an Adapter::Async::Bus instance shared
+       by the adapter.
+
+METHODS - Table content
+   clear
+       Clear all data in the table.
+
+   expose_row
+       Expose the given row (provided as an index into the underlying
+       storage).
+
+        $tbl->expose_row(14);
+
+   add_column
+       Add a new column. Takes the following named parameters:
+
+       •   width - (optional) number of columns
+
+       •   type - (optional) data type, currently only supports 'text' (the
+           default)
+
+       •   align - (optional) align left, center or right
+
+       •   transform - (optional) list of transformations to apply
+
+       •   visible - (optional) true if this column should be shown
+
+       Returns $self.
+
+   selected_rows
+       Returns the selected row, or multiple rows as a list if multi_select is
+       enabled.  If multi_select is enabled it does not return the row
+       currently highlighted (unless that row is also selected).
+
+METHODS - Callbacks
+   on_activate
+       Accessor for the activation callback - if called without parameters,
+       will return the current coderef (if any), otherwise, will set the new
+       callback.
+
+       This callback will be triggered via "key_activate":
+
+        $code->($row_index, $row_data_as_arrayref)
+
+       If multiselect is enabled, the callback will have the following:
+
+        $code->(
+          [$highlight_row_index, @selected_row_indices],
+          $highlight_row_data_as_arrayref,
+          @selected_rows_as_arrayrefs
+        )
+
+       (the selected row data + index list could be empty here)
+
+   multi_select
+       Accessor for multi_select mode - when set, this allows multiple rows to
+       be selected.
+
+METHODS - Other
+   lines
+       Number of lines to request.
+
+   cols
+       Number of columns to request.
+
+   vscroll
+       True if there's a vertical scrollbar (currently there is no way to
+       disable this scrollbar).
+
+   hscroll
+       True if there's a horizontal scrollbar. There isn't one, this always
+       returns false.
+
+   row_offset
+       Current row offset (vertical scroll position).
+
+   header_rect
+       Returns the Tickit::Rect representing the header area.
+
+   body_rect
+       Returns the Tickit::Rect representing the body area.
+
+   scrollbar_rect
+       Returns the Tickit::Rect representing the scroll bar.
+
+   hide_header
+       Removes the header - the body will expand upwards to compensate.  .
+
+   show_header
+       Makes the header visible again. See "hide_header".
+
+   header_visible
+       Returns true if the header is visible, 0 otherwise.
+
+   header_lines
+       Returns the number of lines in the header. Hardcoded to 1.
+
+   body_lines
+       Returns the number of lines in the body.
+
+   body_cols
+       Returns the number of columns in the body.
+
+   idx_from_row
+       Returns a storage index from a body row index.
+
+   row_from_idx
+       Returns a body row index from a storage index.
+
+   row_cache_idx
+       Returns a row cache offset from a storage index.
+
+   idx_from_row_cache
+       Returns a storage index from a row cache offset.
+
+   highlight_row
+       Returns the index of the currently-highlighted row.
+
+   highlight_visible_row
+       Returns the position of the highlighted row taking scrollbar into
+       account.
+
+METHODS - Rendering
+   render_to_rb
+       Render the table. Called from expose events.
+
+   render_header
+       Render the header area.
+
+   render_header_cell
+       Render a specific header cell.
+
+   render_scrollbar
+       Render the scrollbar.
+
+   render_body
+       Render the table body.
+
+   render_row
+       Renders a given row, using storage index.
+
+   on_scroll
+       Update row cache to reflect a scroll event.
+
+   fold_future
+       Helper method to apply a series of coderefs to a value.
+
+   row_cache
+       Row cache accessor.
+
+   apply_view_transformations
+       Apply the transformations just before we render. Can return anything we
+       know how to render.
+
+   reshape
+       Handle reshape requests.
+
+   distribute_columns
+       Distribute space between columns.
+
+   window_gained
+       Called when a window has been assigned to the widget.
+
+   expose_rows
+       Expose the given rows.
+
+   scroll_highlight
+       Update scroll information after changing highlight position.
+
+   move_highlight
+       Move the highlighted row by the given offset (can be negative to move
+       up).
+
+   scroll_position
+       Current vertical scrollbar position.
+
+   row_count
+       Total number of rows.
+
+   sb_height
+       Current scrollbar height.
+
+   scroll_rows
+       Positions of the scrollbar indicator.
+
+   active_scrollbar_rect
+       Rectangle representing the area covered by the current scrollbar.
+
+   scroll_dimension
+       Size of the vertical scrollbar.
+
+   on_adapter_change
+       Applies a new adapter, taking care of any cleanup if there was an
+       adapter previously active.
+
+       Can be passed undef, to remove the adapter completely.
+
+   on_splice_event
+       Invoked by the adapter when data is added to or removed from the data
+       source.
+
+   on_clear_event
+       Called by the adapter when all data has been removed from the data
+       source.
+
+METHODS - Key bindings
+   key_previous_row
+       Go to the previous row.
+
+   key_next_row
+       Move to the next row.
+
+   key_first_row
+       Move to the first row.
+
+   key_last_row
+       Move to the last row.
+
+   key_previous_page
+       Go up a page.
+
+   key_next_page
+       Go down a page.
+
+   key_next_column
+       Move to the next column.
+
+   key_previous_column
+       Move to the previous column.
+
+   key_first_column
+       Move to the first column.
+
+   key_last_column
+       Move to the last column.
+
+   key_activate
+       Call the " on_activate " coderef with either the highlighted item, or
+       the selected items if we're in multiselect mode.
+
+        $on_activate->([ row indices ], [ items... ])
+
+       The items will be as returned by the storage adapter, and will not have
+       any of the data transformations applied.
+
+   key_select_toggle
+       Toggle selected row.
+
+METHODS - Filtering
+       Very broken. Ignore these for now. Sorry.
+
+   row_visibility
+       Sets the visibility of the given row (by index).
+
+       Example:
+
+        # Make row 5 hidden
+        $tbl->row_visibility(5, 0)
+        # Show row 0
+        $tbl->row_visibility(0, 1)
+
+   filter
+       This will use the given coderef to set the visibility of each row in
+       the table.  The coderef will be called once for each row, and should
+       return true for rows which should be visible, false for rows to be
+       hidden.
+
+       The coderef currently takes a single parameter: an arrayref
+       representing the columns of the row to be processed.
+
+        # Hide all rows where the second column contains the text 'OK'
+        $tbl->filter(sub { shift->[1] ne 'OK' });
+
+       Note that this does not affect row selection: if the multiselect flag
+       is enabled, it is possible to filter out rows that are selected. This
+       behaviour is by design (the idea was to allow union select via
+       different filter criteria), call the "unselect_hidden_rows" method
+       after filtering if you want to avoid this.
+
+       Also note that this is a one-shot operation. If you add or change data,
+       you'll need to reapply the filter operation manually.
+
+   unselect_hidden_rows
+       Helper method to mark any hidden rows as unselected.  Call this after
+       "filter" if you want to avoid confusing users with invisible selected
+       rows.
+
+TODO
+       Current list of pending features:
+
+       •   Column and cell highlighting modes
+
+       •   Proper widget-in-cell support
+
+       •   Better header support (more than one row, embedded widgets)
+
+       •   More efficient redraw when showing/hiding header (scroll body and
+           redraw just the header lines)
+
+SEE ALSO
+       Other tables and table-like things:
+
+       •   Tickit::Widget::Table::Paged - earlier version of this module
+           without adapter support
+
+       •   Text::ANSITable - not part of Tickit but has some impressive
+           styling capabilities.
+
+       •   Term::TablePrint - again, not part of Tickit but provides an
+           interactive table via direct terminal access.
+
+       And these are probably important background reading for formatting and
+       data source support:
+
+       •   String::Tagged - supported for applying custom formatting
+           (specifically, pen attributes)
+
+       •   Adapter::Async - API for dealing with abstract data sources
+
+       •   Adapter::Async::OrderedList - subclass of the above for our tabular
+           layout API
+
+AUTHOR
+       Tom Molesworth <TEAM@cpan.org>
+
+CONTRIBUTORS
+       With thanks to the following for contribution:
+
+       •   Paul "LeoNerd" Evans for testing and suggestions on
+           storage/abstraction handling
+
+       •   buu, for testing and patches
+
+LICENSE
+       Copyright Tom Molesworth 2012-2015. Licensed under the same terms as
+       Perl itself.
+
+perl v5.40.2                      2016-12-31          Tickit::Widget::Table(3)

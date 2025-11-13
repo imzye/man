@@ -1,0 +1,226 @@
+DBD::PgPP(3)          User Contributed Perl Documentation         DBD::PgPP(3)
+
+
+NAME
+       DBD::PgPP - Pure Perl PostgreSQL driver for the DBI
+
+SYNOPSIS
+         use DBI;
+
+         my $dbh = DBI->connect('dbi:PgPP:dbname=$dbname', '', '');
+
+         # See the DBI module documentation for full details
+
+DESCRIPTION
+       DBD::PgPP is a pure-Perl client interface for the PostgreSQL database.
+       This module implements the network protocol that allows a client to
+       communicate with a PostgreSQL server, so you don't need an external
+       PostgreSQL client library like libpq for it to work.  That means this
+       module enables you to connect to PostgreSQL server from platforms where
+       there's no PostgreSQL port, or where installing PostgreSQL is
+       prohibitively hard.
+
+MODULE DOCUMENTATION
+       This documentation describes driver specific behavior and restrictions;
+       it does not attempt to describe everything you might need to use
+       DBD::PgPP.  In particular, users are advised to be familiar with the
+       DBI documentation.
+
+THE DBI CLASS
+   DBI Class Methods
+       connect
+           At a minimum, you need to use code like this to connect to the
+           database:
+
+             $dbh = DBI->connect('dbi:PgPP:dbname=$dbname', '', '');
+
+           This connects to the database $dbname on localhost without any user
+           authentication.  This may well be sufficient for some PostgreSQL
+           installations.
+
+           The following connect statement shows all possible parameters:
+
+             $dbh = DBI->connect("dbi:PgPP:dbname=$dbname", $username, $password);
+
+             $dbh = DBI->connect("dbi:PgPP:dbname=$dbname;host=$host;port=$port",
+                                 $username, $password);
+
+             $dbh = DBI->connect("dbi:PgPP:dbname=$dbname;path=$path;port=$port",
+                                 $username, $password);
+
+                 parameter | hard coded default
+                 ----------+-------------------
+                 dbname    | current userid
+                 host      | localhost
+                 port      | 5432
+                 path      | /tmp
+                 debug     | undef
+
+           If a host is specified, the postmaster on this host needs to be
+           started with the "-i" option (TCP/IP socket).
+
+           For authentication with username and password appropriate entries
+           have to be made in pg_hba.conf.  Please refer to the PostgreSQL
+           documentation for pg_hba.conf and pg_passwd for the various types
+           of authentication.
+
+DATABASE-HANDLE METHODS
+       "last_insert_id"
+               $rv = $dbh->last_insert_id($catalog, $schema, $table, $field);
+               $rv = $dbh->last_insert_id($catalog, $schema, $table, $field, \%attr);
+
+           Attempts to return the id of the last value to be inserted into a
+           table.  Since PostgreSQL uses the "sequence" type to implement such
+           things, this method finds a sequence's value using the CURRVAL()
+           PostgreSQL function.  This will fail if the sequence has not yet
+           been used in the current database connection.
+
+           DBD::PgPP ignores the $catalog and $field arguments are ignored in
+           all cases, but they're required by DBI itself.
+
+           If you don't know the name of the applicable sequence for the
+           table, you can simply provide a table name (optionally qualified by
+           a schema name), and DBD::PgPP will attempt to work out which
+           sequence will contain the correct value:
+
+               $dbh->do(q{CREATE TABLE t (id serial primary key, s text not null)});
+               my $sth = $dbh->prepare('INSERT INTO t (s) VALUES (?)');
+               for my $value (@values) {
+                   $sth->execute($value);
+                   my $id = $dbh->last_insert_id(undef, undef, 't', undef);
+                   print "Inserted $id: $value\n";
+               }
+
+           In most situations, that is the simplest approach.  However, it
+           requires the table to have at least one column which is non-null
+           and unique, and uses a sequence as its default value.  (If there is
+           more than one such column, the primary key is used.)
+
+           If those requirements aren't met in your situation, you can
+           alternatively specify the sequence name directly:
+
+               $dbh->do(q{CREATE SEQUENCE t_id_seq START 1});
+               $dbh->do(q{CREATE TABLE t (
+                 id int not null unique DEFAULT nextval('t_id_seq'),
+                 s text not null)});
+               my $sth = $dbh->prepare('INSERT INTO t (s) VALUES (?)');
+               for my $value (@values) {
+                   $sth->execute($value);
+                   my $id = $dbh->last_insert_id(undef, undef, undef, undef, {
+                       sequence => 't_id_seq',
+                   });
+                   print "Inserted $id: $value\n";
+               }
+
+           If you adopt the simpler approach, note that DBD::PgPP will have to
+           issue some queries to look things up in the system tables.
+           DBD::PgPP will then cache the appropriate sequence name for
+           subsequent calls.  Should you need to disable this caching for some
+           reason, you can supply a true value for the attribute "pgpp_cache":
+
+               my $id = $dbh->last_insert_id(undef, undef, $table, undef, {
+                   pgpp_cache => 0,
+               });
+
+           Please keep in mind that "last_insert_id" is far from foolproof, so
+           make your program uses it carefully. Specifically, "last_insert_id"
+           should be used only immediately after an insert to the table in
+           question, and that insert must not specify a value for the
+           applicable column.
+
+OTHER FUNCTIONS
+       As of DBD::PgPP 0.06, you can use the following functions to determine
+       the version of the server to which a database handle is connected.
+       Note the unusual calling convention; it may be changed in the future.
+
+       DBD::PgPP::pgpp_server_identification($dbh)
+           The server's version identification string, as returned by the
+           standard version() function available in PostgreSQL 7.2 and above.
+           If the server doesn't support that function, returns an empty
+           string.
+
+       DBD::PgPP::pgpp_server_version($dbh)
+           The server's version string, as parsed out of the return value of
+           the standard version() function available in PostgreSQL 7.2 and
+           above.  For example, returns the string 8.3.5 if the server is
+           release 8.3.5.  If the server doesn't support version(), returns
+           the string 0.0.0.
+
+       DBD::PgPP::pgpp_server_version_num($dbh)
+           A number representing the server's version number, as parsed out of
+           the return value of the standard version() function available in
+           PostgreSQL 7.2 and above.  For example, returns 80305 if the server
+           is release 8.3.5.  If the server doesn't support version(), returns
+           zero.
+
+BUGS, LIMITATIONS, AND TODO
+       •   The "debug" DSN parameter is incorrectly global: if you enable it
+           for one database handle, it gets enabled for all database handles
+           in the current Perl interpreter.  It should probably be removed
+           entirely in favour of DBI's built-in and powerful tracing
+           mechanism, but that's too hard to do in the current architecture.
+
+       •   No support for Kerberos or SCM Credential authentication; and
+           there's no support for crypt authentication on some platforms.
+
+       •   Can't use SSL for encrypted connections.
+
+       •   Using multiple semicolon-separated queries in a single statement
+           will cause DBD::PgPP to fail in a way that requires you to
+           reconnect to the server.
+
+       •   No support for COPY, or LISTEN notifications, or for cancelling in-
+           progress queries.  (There's also no support for the "explicit
+           function call" part of the protocol, but there's nothing you can do
+           that way that isn't more easily achieved by writing SQL to call the
+           function.)
+
+       •   There's currently no way to get informed about any warnings
+           PostgreSQL may issue for your queries.
+
+       •   No support for BLOB data types or long objects.
+
+       •   Currently assumes that the Perl code and the database use the same
+           encoding for text; probably also assumes that the encoding uses
+           eight bits per character.  Future versions are expected to support
+           UTF-8-encoded Unicode (in a way that's compatible with Perl's own
+           string encodings).
+
+       •   You can't use any data type that (like bytea) requires
+           "$dbh->quote" to use any syntax other than standard string
+           literals.  Using booleans and numbers works to the extent that
+           PostgreSQL supports string-ish syntax for them, but that varies
+           from one version to another.  The only reliable way to solve this
+           and still support PostgreSQL 7.3 and below is to use the DBI
+           "bind_param" mechanism and say which type you want; but typed
+           bind_param ignores the type at the moment.
+
+DEPENDENCIES
+       This module requires Perl 5.8 or higher.  (If you want it to work under
+       earlier Perl versions, patches are welcome.)
+
+       The only module used (other than those which ship with supported Perl
+       versions) is DBI.
+
+SEE ALSO
+       DBI, DBD::Pg,
+       <http://developer.postgresql.org/docs/postgres/protocol.html>
+
+AUTHOR
+       Hiroyuki OYAMA <oyama@module.jp>
+
+COPYRIGHT AND LICENCE
+       Copyright (C) 2004 Hiroyuki OYAMA.  All rights reserved.  Copyright (C)
+       2004, 2005, 2009, 2010 Aaron Crane.  All rights reserved.
+
+       DBD::PgPP is free software; you can redistribute it and/or modify it
+       under the terms of Perl itself, that is to say, under the terms of
+       either:
+
+       •   The GNU General Public License as published by the Free Software
+           Foundation; either version 2, or (at your option) any later
+           version, or
+
+       •   The "Artistic License" which comes with Perl.
+
+perl v5.40.2                      2010-01-09                      DBD::PgPP(3)

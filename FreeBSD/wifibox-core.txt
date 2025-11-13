@@ -1,0 +1,248 @@
+WIFIBOX(8)              FreeBSD System Manager's Manual             WIFIBOX(8)
+
+NAME
+     wifibox – embedded (virtualized) wireless router
+
+SYNOPSIS
+     wifibox start [guest | netif | vmm]
+     wifibox stop [guest | netif | vmm]
+     wifibox restart [guest | netif | vmm]
+     wifibox status
+     wifibox console
+     wifibox version
+
+DESCRIPTION
+     wifibox deploys a Linux guest operating system with the help of bhyve(8)
+     and attaches its driver to a wireless network device on the host system
+     via the PCI pass-through capabilities of the vmm(4) kernel module.  This
+     way the original FreeBSD PCI wireless network card driver can be replaced
+     for the performance and stability of the one provided by the Linux
+     kernel, or put into use if the device is not supported by FreeBSD at all.
+
+     Once the guest has been started up successfully, wifibox exposes the
+     wifibox0 bridge(4) networking interface, which needs to be configured
+     further with the help of rc.conf(5), so that the traffic could start
+     flowing through the wireless card.
+
+     There is a wifibox system service provided that can be used to start the
+     appliance on boot and stop on shutdown.
+
+     Note that wifibox is only responsible for managing and supervising the
+     Linux guest.  Due to its design, it does not have any knowledge about how
+     the traffic is presented to the host.  It might be based on Network
+     Address Translation (NAT) or it might implement bridged networking.
+     Please check the wifibox-guest(5) manual page for more information to
+     learn about the actual approach.
+
+CONFIGURATION
+     After the installation, review and revisit the sample configuration files
+     provided in the /usr/local/etc/wifibox directory and follow the
+     instructions to create a working configuration.  The directory layout and
+     the contents of the files depend on the guest used.  Make sure that the
+     networking configuration does not conflict with that of the host in any
+     case.
+
+     By default, PCI pass-through is disabled for AMD-based hardware, hence it
+     must be explicitly enabled via the corresponding sysctl(8) variable.
+     This can be done by adding the following line to either /etc/sysctl.conf
+     or /boot/loader.conf depending on whether vmm(4) is going to be loaded by
+     wifibox or it is already loaded at boot.
+
+           hw.vmm.amdvi.enable=1
+
+     In order to make wifibox work as a system service, the following line has
+     to be added to rc.conf(5).
+
+           wifibox_enable="YES"
+
+     At the same time, make sure that no FreeBSD driver is configured for the
+     same device and remove all the related settings from there.  The
+     devmatch(8) utility might be used to stop any conflicting drivers from
+     loading automatically.  For example, the iwm(4) and iwlwifi(4) native
+     drivers could be disabled in rc.conf(5) as shown below.
+
+           devmatch_enable="YES"
+           devmatch_blocklist="if_iwm if_iwlwifi"
+
+     Note these settings will only take effect on the next boot.  Until then
+     the devmatch service must be started and the drivers should be removed
+     manually by using kldunload(8).
+
+           # service devmatch start
+           # kldunload if_iwm if_iwlwifi
+
+     The wifibox service can be then started up as follows.
+
+           # service wifibox start
+
+     After wifibox started successfully, IP addresses for the corresponding
+     networking interface need to be configured in rc.conf(5).  For example,
+     assignment of a dynamic IPv4 address can be requested by adding this line
+     below.
+
+           ifconfig_wifibox0="SYNCDHCP"
+
+     In addition to this, to reduce boot times, dhclient(8) can be instructed
+     to run in the background and not to wait for a positive link and issuing
+     an IPv4 address after it has been launched.
+
+           background_dhclient_wifibox0="YES"
+           defaultroute_delay="0"
+
+     If preferred, static IPv4 address configuration is possible with this
+     method.  Assume that wifibox0 is configured as 10.0.0.1/24 on the guest's
+     side, and the host wants to use the 10.0.0.2/24 IPv4 address.
+
+           defaultrouter="10.0.0.1"
+           ifconfig_wifibox0="inet 10.0.0.2/24"
+
+     The wifibox0 networking interface can be brought up with the use of the
+     netif service.
+
+           # service netif start wifibox0
+
+     For static IPv4 address configurations, the routing service has to be
+     restarted as well.
+
+           # service routing restart
+
+     In case of IPv6, a unique local address has to be configured for the
+     interface along with accepting ICMP Router Advertisements and an
+     automatically generated link-local address.
+
+           ifconfig_wifibox0_ipv6="inet6 fd00::1/64 accept_rtadv auto_linklocal"
+
+     Note that since wifibox0 becomes managed by netif this way, wifibox has
+     to be restarted every time when the networking interfaces are recreated
+     by netif, otherwise the link will stop working.
+
+           # service netif stop
+           # service wifibox restart
+           # service netif start
+
+     In addition to that, because a devd.conf(5) file might be installed as
+     part of the application, devd(8) may have to be restarted so the
+     additional configuration file can be read.  These bits are responsible to
+     managing the recovery in case of suspend/resume events.  When this
+     feature is not in use, or not required, for example, for FreeBSD 14.0 or
+     later, this step may be safely omitted.
+
+           # service devd restart
+
+COMMANDS
+     The wifibox system service and devd(8) can manage the following actions
+     by themselves, but the commands for the wifibox script itself are listed
+     below for the reference.
+
+     For the start, stop, and restart commands, it is possible to specify a
+     target, therefore limit the scope of the operation in different ways.
+
+     guest    Guest only, maintain the console device and the networking
+              interface.
+
+     netif    Networking interface and guest.  That latter is required because
+              the networking interface is bound to the virtual machine that
+              runs the guest.
+
+     vmm      The vmm(4) kernel module, maintain the console device and the
+              networking interface.
+
+     The commands are as follows.
+
+     start [guest | netif | vmm]
+              Start wifibox.  By default, the wifibox0 interface is created
+              and the guest is attached to the configured PCI wireless network
+              device.  The network interface of the FreeBSD driver on the same
+              device must not be configured.  Note that the guest target can
+              work only if wifibox0 networking interface has already been
+              created.
+
+     stop [guest | netif | vmm]
+              Stop wifibox.  Without the guest parameter, the wifibox0
+              interface is destroyed and the guest is detached from the
+              configured PCI wireless network device.  After that, the FreeBSD
+              driver is free to take over the device.
+
+     restart [guest | netif | vmm]
+              Restart wifibox, which is the sequential composition of the stop
+              and start commands by default.  The guest parameter is for the
+              guest only.  This is recommended for applying system-level
+              updates to the guest.  The netif parameter is to recreate the
+              networking interface and restart the guest.  The vmm parameter
+              is to restart the guest while reloading the vmm(4) kernel
+              module, maintain the console device and the networking
+              interface.  This is a workaround for the guest to recover from a
+              state where the wireless device becomes unresponsive after the
+              ACPI resume event.
+
+     status   Check and display if wifibox is still running.
+
+     console  Attach to the running guest with cu(1) through a virtual serial
+              port, implemented by nmdm(4).  This is recommended for
+              troubleshooting problems with the guest in an interactive
+              fashion.  This has to be configured specifically in order to
+              work.  The actual way of logging into the system as an
+              administrator depends on the VM image in use.  Most of the time
+              the root user with a blank password works.  See wifibox-guest(5)
+              for more information.
+
+     version  Display version of wifibox and the SHA-256 hash of the guest
+              disk image.  The output is suitable for reporting errors.  Note
+              that custom images are not supported.
+
+EXIT STATUS
+     The exit status is 0 on success, and >0 if any of the commands fail.
+
+DIAGNOSTICS
+     If wifibox does not have behave in the expected way, check
+     /var/log/wifibox.log for errors.  This file holds messages about the
+     progress of each executed command, and their amount depends on the
+     configured level of logging.  The level of logging could be configured in
+     /usr/local/etc/wifibox/core.conf, please consult this file for the
+     details.
+
+     The log files of the guest are exported to the host and they are made
+     available under the /var/run/wifibox/appliance/log directory.  There it
+     is recommended to check the /var/run/wifibox/appliance/log/dmesg file for
+     messages related to the boot sequence, such as driver initialization, and
+     the /var/run/wifibox/appliance/log/messages file for the run-time system
+     messages, which are usually emitted by the daemons.  If all else fails,
+     use the console command to connect to the guest.  In that case, please
+     study the wifibox-guest(5) manual page before proceeding.
+
+SEE ALSO
+     cu(1), bridge(4), nmdm(4), vmm(4), devd.conf(5), loader.conf(5),
+     rc.conf(5), sysctl.conf(5), wifibox-guest(5), bhyve(8), devd(8),
+     devmatch(8), kldunload(8), sysctl(8)
+
+AUTHORS
+     Gábor Páli <pali.gabor@gmail.com>
+
+CAVEATS
+     wifibox supports only a single wireless network device at a time, and it
+     has to be a PCI one.  USB devices are not supported, and wifibox cannot
+     be launched multiple times.
+
+     The restart vmm command should be used with caution, because it may crash
+     the system when it has not been in a sleep state.  Hence it is best to
+     use in combination with devd(8).
+
+     The restart vmm command will not probably work on systems where other
+     bhyve(8) guests are running in parallel as vmm(4) kernel module could not
+     be unloaded in such cases.
+
+     The restart vmm command may not work properly on some systems and its
+     repeated use can cause the PCI device to be lost completely until the
+     next boot.  As a workaround, it is worth to use the combination of stop
+     guest (on suspend) and start guest (on resume) instead.  In some other
+     cases, it is better to unload the vmm(4) kernel module to suspend with
+     the stop vmm command, and then load it again on resume by the start vmm
+     command.
+
+     The PCI pass-through implementation of bhyve(8) may not be able to
+     cooperate with the Linux system in the guest due to lack of emulation of
+     certain quirks and features that are required to make the driver work.
+     Sometimes this can cause strange and unexpected error messages.  Always
+     try the latest available version of bhyve(8) when this happens.
+
+FreeBSD 14.1-RELEASE            January 8, 2025           FreeBSD 14.1-RELEASE

@@ -1,0 +1,883 @@
+SPOPS(3)              User Contributed Perl Documentation             SPOPS(3)
+
+
+NAME
+       SPOPS -- Simple Perl Object Persistence with Security
+
+SYNOPSIS
+        # Define an object completely in a configuration file
+
+        my $spops = {
+          myobject => {
+           class   => 'MySPOPS::Object',
+           isa     => qw( SPOPS::DBI ),
+           ...
+          }
+        };
+
+        # Process the configuration and initialize the class
+
+        SPOPS::Initialize->process({ config => $spops });
+
+        # create the object
+
+        my $object = MySPOPS::Object->new;
+
+        # Set some parameters
+
+        $object->{ $param1 } = $value1;
+        $object->{ $param2 } = $value2;
+
+        # Store the object in an inherited persistence mechanism
+
+        eval { $object->save };
+        if ( $@ ) {
+          print "Error trying to save object: $@\n",
+                "Stack trace: ", $@->trace->as_string, "\n";
+        }
+
+OVERVIEW
+       SPOPS -- or Simple Perl Object Persistence with Security -- allows you
+       to easily define how an object is composed and save, retrieve or remove
+       it any time thereafter. It is intended for SQL databases (using the
+       DBI), but you should be able to adapt it to use any storage mechanism
+       for accomplishing these tasks.  (An early version of this used GDBM,
+       although it was not pretty.)
+
+       The goals of this package are fairly simple:
+
+       •   Make it easy to define the parameters of an object
+
+       •   Make it easy to do common operations (fetch, save, remove)
+
+       •   Get rid of as much SQL (or other domain-specific language) as
+           possible, but...
+
+       •   ... do not impose a huge cumbersome framework on the developer
+
+       •   Make applications easily portable from one database to another
+
+       •   Allow people to model objects to existing data without modifying
+           the data
+
+       •   Include flexibility to allow extensions
+
+       •   Let people simply issue SQL statements and work with normal
+           datasets if they want
+
+       So this is a class from which you can derive several useful methods.
+       You can also abstract yourself from a datasource and easily create new
+       objects.
+
+       The subclass is responsible for serializing the individual objects, or
+       making them persistent via on-disk storage, usually in some sort of
+       database. See "Object Oriented Perl" by Conway, Chapter 14 for much
+       more information.
+
+       The individual objects or the classes should not care how the objects
+       are being stored, they should just know that when they call fetch()
+       with a unique ID that the object magically appears. Similarly, all the
+       object should know is that it calls save() on itself and can reappear
+       at any later date with the proper invocation.
+
+DESCRIPTION
+       This module is meant to be overridden by a class that will implement
+       persistence for the SPOPS objects. This persistence can come by way of
+       flat text files, LDAP directories, GDBM entries, DBI database tables --
+       whatever. The API should remain the same.
+
+       Please see SPOPS::Manual::Intro and SPOPS::Manual::Object for more
+       information and examples about how the objects work.
+
+API
+       The following includes methods within SPOPS and those that need to be
+       defined by subclasses.
+
+       In the discussion below, the following holds:
+
+       •   When we say base class, think SPOPS
+
+       •   When we say subclass, think of SPOPS::DBI for example
+
+       Also see the "ERROR HANDLING" section below on how we use exceptions to
+       indicate an error and where to get more detailed infromation.
+
+       new( [ \%initialize_data ] )
+
+       Implemented by base class.
+
+       This method creates a new SPOPS object. If you pass it key/value pairs
+       the object will initialize itself with the data (see initialize() for
+       notes on this). You can also implement initialize_custom() to perform
+       your own custom processing at object initialization (see below).
+
+       Note that you can use the key 'id' to substitute for the actual
+       parameter name specifying an object ID. For instance:
+
+        my $uid = $user->id;
+        if ( eval { $user->remove } ) {
+          my $new_user = MyUser->new( { id => $uid, fname = 'BillyBob' ... } );
+          ...
+        }
+
+       In this case, we do not need to know the name of the ID field used by
+       the MyUser class.
+
+       You can also pass in default values to use for the object in the
+       'default_values' key.
+
+       We use a number of parameters from your object configuration. These
+       are:
+
+       •   strict_field (bool) (optional)
+
+           If set to true, you will use the SPOPS::Tie::StrictField tie
+           implementation, which ensures you only get/set properties that
+           exist in the field listing. You can also pass a true value in for
+           "strict_field" in the parameters and achieve the same result for
+           this single object
+
+       •   column_group (\%) (optional)
+
+           Hashref of column aliases to arrayrefs of fieldnames. If defined
+           objects of this class will use "LAZY LOADING", and the different
+           aliases you define can typically be used in a fetch(),
+           fetch_group() or fetch_iterator() statement. (Whether they can be
+           used depends on the SPOPS implementation.)
+
+       •   field_map (\%) (optional)
+
+           Hashref of field alias to field name. This allows you to get/set
+           properties using a different name than how the properties are
+           stored. For instance, you might need to retrofit SPOPS to an
+           existing table that contains news stories. Retrofitting is not a
+           problem, but another wrinkle of your problem is that the news
+           stories need to fit a certain interface and the property names of
+           the interface do not match the fieldnames in the existing table.
+
+           All you need to do is create a field map, defining the interface
+           property names as the keys and the database field names as the
+           values.
+
+       •   default_values (\%) (optional)
+
+           Hashref of field names and default values for the fields when the
+           object is initialized with new().
+
+           Normally the values of the hashref are the defaults to which you
+           want to set the fields. However, there are two special cases of
+           values:
+
+           'NOW'
+               This string will insert the current timestamp in the format
+               "yyyy-mm-dd hh:mm:ss".
+
+           \%  A hashref with the keys 'class' and 'method' will get executed
+               as a class method and be passed the name of the field for which
+               we want a default. The method should return the default value
+               for this field.
+
+           One problem with setting default values in your object
+           configuration and in your database is that the two may become
+           unsynchronized, resulting in many pulled hairs in debugging.
+
+           To get around the synchronization issue, you can set this
+           dynamically using various methods with SPOPS::ClassFactory. A
+           simple implementation, SPOPS::Tool::DBI::FindDefaults, is shipped
+           with SPOPS.
+
+       As the very last step before the object is returned we call
+       initialize_custom( \%initialize_data ). You can override this method
+       and perform any processing you wish. The parameters from
+       "\%initialize_data" will already be set in the object, and the
+       'changed' flag will be cleared for all parameters and the 'saved' flag
+       cleared.
+
+       Returns on success: a tied hashref object with any passed data already
+       assigned. The 'changed' flag is set and the and 'saved' flags is
+       cleared on the returned object.
+
+       Returns on failure: undef.
+
+       Examples:
+
+        # Simplest form...
+        my $data = MyClass->new();
+
+        # ...with initialization
+        my $data = MyClass->new({ balance => 10532,
+                                  account => '8917-918234' });
+
+       clone( \%params )
+
+       Returns a new object from the data of the first. You can override the
+       original data with that in the "\%params" passed in. You can also clone
+       an object into a new class by passing the new class name as the
+       '_class' parameter -- of course, the interface must either be the same
+       or there must be a 'field_map' to account for the differences.
+
+       Note that the ID of the original object will not be copied; you can set
+       it explicitly by setting 'id' or the name of the ID field in
+       "\%params".
+
+       Examples:
+
+        # Create a new user bozo
+
+        my $bozo = $user_class->new;
+        $bozo->{first_name} = 'Bozo';
+        $bozo->{last_name}  = 'the Clown';
+        $bozo->{login_name} = 'bozosenior';
+        eval { $bozo->save };
+        if ( $@ ) { ... report error .... }
+
+        # Clone bozo; first_name is 'Bozo' and last_name is 'the Clown',
+        # as in the $bozo object, but login_name is 'bozojunior'
+
+        my $bozo_jr = $bozo->clone({ login_name => 'bozojunior' });
+        eval { $bozo_jr->save };
+        if ( $@ ) { ... report error ... }
+
+        # Copy all users from a DBI datastore into an LDAP datastore by
+        # cloning from one and saving the clone to the other
+
+        my $dbi_users = DBIUser->fetch_group();
+        foreach my $dbi_user ( @{ $dbi_users } ) {
+            my $ldap_user = $dbi_user->clone({ _class => 'LDAPUser' });
+            $ldap_user->save;
+        }
+
+       initialize( \%initialize_data )
+
+       Implemented by base class; do your own customization using
+       initialize_custom().
+
+       Cycle through the parameters inn "\%initialize_data" and set any fields
+       necessary in the object. This allows you to construct the object with
+       existing data. Note that the tied hash implementation optionally
+       ensures (with the 'strict_field' configuration key set to true) that
+       you cannot set infomration as a parameter unless it is in the field
+       list for your class. For instance, passing the information:
+
+        firt_name => 'Chris'
+
+       should likely not set the data, since 'firt_name' is the misspelled
+       version of the defined field 'first_name'.
+
+       Note that we also set the 'loaded' property of all fields to true, so
+       if you override this method you need to simply call:
+
+        $self->set_all_loaded();
+
+       somewhere in the overridden method.
+
+       initialize_custom( \%initialize_data )
+
+       Called as the last step of new() so you can perform customization as
+       necessary. The default does nothing.
+
+       Returns: nothing
+
+   Accessors/Mutators
+       You should use the hash interface to get and set values in your object
+       -- it is easier. However, SPOPS will also create an
+       accessor/mutator/clearing-mutator for you on demand -- just call a
+       method with the same name as one of your properties and two methods
+       ('${fieldname}' and '${fieldname}_clear') will be created. Similar to
+       other libraries in Perl (e.g., Class::Accessor) the accessor and
+       mutator share a method, with the mutator only being used if you pass a
+       defined value as the second argument:
+
+        # Accessor
+        my $value = $object->fieldname;
+
+        # Mutator
+        $object->fieldname( 'new value' );
+
+        # This won't do what you want (clear the field value)...
+        $object->fieldname( undef );
+
+        # ... but this will
+        $object->fieldname_clear;
+
+       The return value of the mutator is the new value of the field which is
+       the same value you passed in.
+
+       Generic accessors (get()) and mutators (set()) are available but
+       deprecated, probably to be removed before 1.0:
+
+       You can modify how the accessors/mutators get generated by overriding
+       the method:
+
+        sub _internal_create_field_methods {
+            my ( $self, $class, $field_name ) = @_;
+            ...
+        }
+
+       This method must create two methods in the class namespace,
+       '${fieldname}' and '${fieldname}_clear'. Since the value returned from
+       "AUTOLOAD" depends on these methods being created, failure to create
+       them will probably result in an infinite loop.
+
+       get( $fieldname )
+
+       Returns the currently stored information within the object for
+       $fieldname.
+
+        my $value = $obj->get( 'username' );
+        print "Username is $value";
+
+       It might be easier to use the hashref interface to the same data, since
+       you can inline it in a string:
+
+        print "Username is $obj->{username}";
+
+       You may also use a shortcut of the parameter name as a method call for
+       the first instance:
+
+        my $value = $obj->username();
+        print "Username is $value";
+
+       set( $fieldname, $value )
+
+       Sets the value of $fieldname to $value. If value is empty, $fieldname
+       is set to undef.
+
+        $obj->set( 'username', 'ding-dong' );
+
+       Again, you can also use the hashref interface to do the same thing:
+
+        $obj->{username} = 'ding-dong';
+
+       You can use the fieldname as a method to modify the field value here as
+       well:
+
+        $obj->username( 'ding-dong' );
+
+       Note that if you want to set the field to "undef" you will need to use
+       the hashref interface:
+
+        $obj->{username} = undef;
+
+       id()
+
+       Returns the ID for this object. Checks in its config variable for the
+       ID field and looks at the data there.  If nothing is currently stored,
+       you will get nothing back.
+
+       Note that we also create a subroutine in the namespace of the calling
+       class so that future calls take place more quickly.
+
+   Serialization
+       fetch( $object_id, [ \%params ] )
+
+       Implemented by subclass.
+
+       This method should be called from either a class or another object with
+       a named parameter of 'id'.
+
+       Returns on success: an SPOPS object.
+
+       Returns on failure: undef; if the action failed (incorrect fieldname in
+       the object specification, database not online, database user cannot
+       select, etc.) a SPOPS::Exception object (or one of its subclasses) will
+       be thrown to raise an error.
+
+       The \%params parameter can contain a number of items -- all are
+       optional.
+
+       Parameters:
+
+       •   (datasource) (obj) (optional)
+
+           For most SPOPS implementations, you can pass the data source (a DBI
+           database handle, a GDBM tied hashref, etc.) into the routine. For
+           DBI this variable is "db", for LDAP it is "ldap", but for other
+           implementations it can be something else.
+
+       •   data (\%) (optional)
+
+           You can use fetch() not just to retrieve data, but also to do the
+           other checks it normally performs (security, caching, rulesets,
+           etc.). If you already know the data to use, just pass it in using
+           this hashref. The other checks will be done but not the actual data
+           retrieval. (See the "fetch_group" routine in SPOPS::DBI for an
+           example.)
+
+       •   skip_security (bool) (optional)
+
+           A true value skips security checks, false or default value keeps
+           them.
+
+       •   skip_cache (bool) (optional)
+
+           A true value skips any use of the cache, always hitting the data
+           source.
+
+       In addition, specific implementations may allow you to pass in other
+       parameters. (For example, you can pass in 'field_alter' to the
+       SPOPS::DBI implementation so you can format the returned data.)
+
+       Example:
+
+        my $id = 90192;
+        my $data = eval { MyClass->fetch( $id ) };
+
+        # Read in a data file and retrieve all objects matching IDs
+
+        my @object_list = ();
+        while ( <DATA> ) {
+          chomp;
+          next if ( /\D/ );
+          my $obj = eval { ObjectClass->fetch( $_ ) };
+          if ( $@ ) { ... report error ... }
+          else      { push @object_list, $obj  if ( $obj ) }
+        }
+
+       fetch_determine_limit()
+
+       This method has been moved to SPOPS::Utility.
+
+       save( [ \%params ] )
+
+       Implemented by subclass.
+
+       This method should save the object state in whatever medium the module
+       works with. Note that the method may need to distinguish whether the
+       object has been previously saved or not -- whether to do an add versus
+       an update. See the section "TRACKING CHANGES" for how to do this. The
+       application should not care whether the object is new or pre-owned.
+
+       Returns on success: the object itself.
+
+       Returns on failure: undef, and a SPOPS::Exception object (or one of its
+       subclasses) will be thrown to raise an error.
+
+       Example:
+
+        eval { $obj->save };
+        if ( $@ ) {
+          warn "Save of ", ref $obj, " did not work properly -- $@";
+        }
+
+       Since the method returns the object, you can also do chained method
+       calls:
+
+        eval { $obj->save()->separate_object_method() };
+
+       Parameters:
+
+       •   (datasource) (obj) (optional)
+
+           For most SPOPS implementations, you can pass the data source (a DBI
+           database handle, a GDBM tied hashref, etc.) into the routine.
+
+       •   is_add (bool) (optional)
+
+           A true value forces this to be treated as a new record.
+
+       •   skip_security (bool) (optional)
+
+           A true value skips the security check.
+
+       •   skip_cache (bool) (optional)
+
+           A true value skips any caching.
+
+       •   skip_log (bool) (optional)
+
+           A true value skips the call to 'log_action'
+
+       remove()
+
+       Implemented by subclass.
+
+       Permanently removes the object, or if called from a class removes the
+       object having an id matching the named parameter of 'id'.
+
+       Returns: status code based on success (undef == failure).
+
+       Parameters:
+
+       •   (datasource) (obj) (optional)
+
+           For most SPOPS implementations, you can pass the data source (a DBI
+           database handle, a GDBM tied hashref, etc.) into the routine.
+
+       •   skip_security (bool) (optional)
+
+           A true value skips the security check.
+
+       •   skip_cache (bool) (optional)
+
+           A true value skips any caching.
+
+       •   skip_log (bool) (optional)
+
+           A true value skips the call to 'log_action'
+
+       Examples:
+
+        # First fetch then remove
+
+        my $obj = MyClass->fetch( $id );
+        my $rv = $obj->remove();
+
+       Note that once you successfully call remove() on an object, the object
+       will still exist as if you had just called new() and set the properties
+       of the object. For instance:
+
+        my $obj = MyClass->new();
+        $obj->{first_name} = 'Mario';
+        $obj->{last_name}  = 'Lemieux';
+        if ( $obj->save ) {
+            my $saved_id = $obj->{player_id};
+            $obj->remove;
+            print "$obj->{first_name} $obj->{last_name}\n";
+        }
+
+       Would print:
+
+        Mario Lemieux
+
+       But trying to fetch an object with $saved_id would result in an
+       undefined object, since it is no longer in the datastore.
+
+   Object Information
+       object_description()
+
+       Returns a hashref with metadata about a particular object. The keys of
+       the hashref are:
+
+       •   class ($)
+
+           Class of this object
+
+       •   object_id ($)
+
+           ID of this object. (Also under 'oid' for compatibility.)
+
+       •   id_field ($)
+
+           Field used for the ID.
+
+       •   name ($)
+
+           Name of this general class of object (e.g., 'News')
+
+       •   title ($)
+
+           Title of this particular object (e.g., 'Man bites dog, film at 11')
+
+       •   url ($)
+
+           URL that will display this object. Note that the URL might not
+           necessarily work due to security reasons.
+
+           url_edit ($)
+
+           URL that will display this object in editable form. Note that the
+           URL might not necessarily work due to security reasons.
+
+       You control what's used in the 'display' class configuration variable.
+       In it you can have the keys 'url', which should be the basis for a URL
+       to display the object and optionally 'url_edit', the basis for a URL to
+       display the object in editable form. A query string with 'id_field=ID'
+       will be appended to both, and if 'url_edit' is not specified we create
+       it by adding a 'edit=1' to the 'url' query string.
+
+       So with:
+
+        display => {
+          url      => '/Foo/display/',
+          url_edit => '/Foo/display_form',
+        }
+
+       The defaults put together by SPOPS by reading your configuration file
+       might not be sufficiently dynamic for your object. In that case, just
+       override the method and substitute your own. For instance, the
+       following adds some sort of sales adjective to the beginning of every
+       object title:
+
+         package My::Object;
+
+         sub object_description {
+             my ( $self ) = @_;
+             my $info = $self->SUPER::object_description();
+             $info->{title} = join( ' ', sales_adjective_of_the_day(),
+                                         $info->{title} );
+             return $info;
+         }
+
+       And be sure to include this class in your 'code_class' configuration
+       key. (See SPOPS::ClassFactory and SPOPS::Manual::CodeGeneration for
+       more info.)
+
+       as_string
+
+       Represents the SPOPS object as a string fit for human consumption. The
+       SPOPS method is extremely crude -- if you want things to look nicer,
+       override it.
+
+       as_html
+
+       Represents the SPOPS object as a string fit for HTML (browser)
+       consumption. The SPOPS method is double extremely crude, since it just
+       wraps the results of as_string() (which itself is crude) in '<pre>'
+       tags.
+
+   Lazy Loading
+       is_loaded( $fieldname )
+
+       Returns true if $fieldname has been loaded from the datastore, false if
+       not.
+
+       set_loaded( $fieldname )
+
+       Flags $fieldname as being loaded.
+
+       set_all_loaded()
+
+       Flags all fieldnames (as returned by field_list()) as being loaded.
+
+   Field Checking
+       is_checking_fields()
+
+       Returns true if this class is doing field checking (setting
+       'strict_field' equal to a true value in the configuration), false if
+       not.
+
+   Modification State
+       is_changed()
+
+       Returns true if this object has been changed since being fetched or
+       created, false if not.
+
+       has_change()
+
+       Set the flag telling this object it has been changed.
+
+       clear_change()
+
+       Clear the change flag in an object, telling it that it is unmodified.
+
+   Serialization State
+       is_saved()
+
+       Return true if this object has ever been saved, false if not.
+
+       has_save()
+
+       Set the saved flag in the object to true.
+
+       clear_save()
+
+       Clear out the saved flag in the object.
+
+   Configuration
+       Most of this information can be accessed through the "CONFIG" hashref,
+       but we also need to create some hooks for subclasses to override if
+       they wish. For instance, language-specific objects may need to be able
+       to modify information based on the language abbreviation.
+
+       We have simple methods here just returning the basic CONFIG
+       information.
+
+       no_cache() (bool)
+
+       Returns a boolean based on whether this object can be cached or not.
+       This does not mean that it will be cached, just whether the class
+       allows its objects to be cached.
+
+       field() (\%)
+
+       Returns a hashref (which you can sort by the values if you wish) of
+       fieldnames used by this class.
+
+       field_list() (\@)
+
+       Returns an arrayref of fieldnames used by this class.
+
+       Subclasses can define their own where appropriate.
+
+   "Global" Configuration
+       These objects are tied together by just a few things:
+
+       global_cache
+
+       A caching object. Caching in SPOPS is not tested but should work -- see
+       Caching below.
+
+   Caching
+       Caching in SPOPS is not tested but should work. If you would like to
+       brave the rapids, then call at the beginning of your application:
+
+        SPOPS->set_global_use_cache(1);
+
+       You will also need to make a caching object accessible to all of your
+       SPOPS classes via a method global_cache(). Each class can turn off
+       caching by setting a true value for the configuration variable
+       "no_cache" or by passing in a true value for the parameter 'skip_cache'
+       as passed to "fetch", "save", etc.
+
+       The object returned by global_cache() should return an object which
+       implements the methods get(), set(), clear(), and purge().
+
+       The method get() should return the property values for a particular
+       object given a class and object ID:
+
+        $cache->get({ class => 'SPOPS-class', object_id => 'id' })
+
+       The method set() should saves the property values for an object into
+       the cache:
+
+        $cache->set({ data => $spops_object });
+
+       The method clear() should clear from the cache the data for an object:
+
+        $cache->clear({ data => $spops_object });
+        $cache->clear({ class => 'SPOPS-class', object_id => 'id' });
+
+       The method purge() should remove all items from the cache.
+
+       This is a fairly simple interface which leaves implementation pretty
+       much wide open.
+
+   Timestamp Methods
+       These have gone away (you were warned!)
+
+   Debugging
+       The previous (fragile, awkward) debugging system in SPOPS has been
+       replaced with Log::Log4perl instead. Old calls to "DEBUG", "_w", and
+       "_wm" will still work (for now) but they just use log4perl under the
+       covers.
+
+       Please see SPOPS::Manual::Configuration under LOGGING for information
+       on how to configure it.
+
+NOTES
+       There is an issue using these modules with Apache::StatINC along with
+       the startup methodology that calls the "class_initialize" method of
+       each class when a httpd child is first initialized. If you modify a
+       module without stopping the webserver, the configuration variable in
+       the class will not be initialized and you will inevitably get errors.
+
+       We might be able to get around this by having most of the configuration
+       information as static class lexicals. But anything that depends on any
+       information from the CONFIG variable in request (which is generally
+       passed into the "class_initialize" call for each SPOPS implementation)
+       will get hosed.
+
+TO DO
+       Method object_description() should be more robust
+
+       In particular, the 'url' and 'url_edit' keys of object_description()
+       should be more robust.
+
+       Objects composed of many records
+
+       An idea: Make this data item framework much like the one Brian Jepson
+       discusses in Web Techniques:
+
+        http://www.webtechniques.com/archives/2000/03/jepson/
+
+       At least in terms of making each object unique (having an OID).  Each
+       object could then be simply a collection of table name plus ID name in
+       the object table:
+
+        CREATE TABLE objects (
+          oid        int not null,
+          table_name varchar(30) not null,
+          id         int not null,
+          primary key( oid, table_name, id )
+        )
+
+       Then when you did:
+
+        my $oid  = 56712;
+        my $user = User->fetch( $oid );
+
+       It would first get the object composition information:
+
+        oid    table        id
+        ===    =====        ==
+        56712  user         1625
+        56712  user_prefs   8172
+        56712  user_history 9102
+
+       And create the User object with information from all three tables.
+
+       Something to think about, anyway.
+
+BUGS
+       None known.
+
+COPYRIGHT
+       Copyright (c) 2001-2004 intes.net, inc; (c) 2003-2004-2004-2004 Chris
+       Winters. All rights reserved.
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+SEE ALSO
+       Find out more about SPOPS -- current versions, updates, rants, ideas --
+       at:
+
+        http://spops.sourceforge.net/
+
+       CVS access and mailing lists (SPOPS is currently supported by the
+       openinteract-dev list) are at:
+
+        http://sourceforge.net/projects/spops/
+
+       Also see the 'Changes' file in the source distribution for comments
+       about how the module has evolved.
+
+       SPOPSx::Ginsu - Generalized Inheritance Support for SPOPS + MySQL --
+       store inherited data in separate tables.
+
+AUTHORS
+       Chris Winters <chris@cwinters.com>
+
+       The following people have offered patches, advice, development funds,
+       etc. to SPOPS:
+
+       •   Ray Zimmerman <rz10@cornell.edu> -- has offered tons of great
+           design ideas and general help, pushing SPOPS into new domains. Too
+           much to list here.
+
+       •   Simon Ilyushchenko <simonf@cshl.edu> -- real-world usage advice,
+           work on improving the object linking semantics, lots of little
+           items.
+
+       •   Christian Lemburg <lemburg@aixonix.de> -- contributed excellent
+           documentation, too many good ideas to implement as well as design
+           help with SPOPS::Secure::Hierarchy, the rationale for moving
+           methods from the main SPOPS subclass to SPOPS::Utility
+
+       •   Raj Chandran <rc264@cornell.edu> submitted a patch to make some
+           SPOPS::SQLInterface methods work as advertised.
+
+       •   Rusty Foster <rusty@kuro5hin.org> -- was influential (and not
+           always in good ways) in the early days of this library and offered
+           up an implementation for 'limit' functionality in SPOPS::DBI
+
+       •   Rick Myers <rik@sumthin.nu> -- got rid of lots of warnings when
+           running under "-w" and helped out with permission issues with
+           SPOPS::GDBM.
+
+       •   Harry Danilevsky <hdanilevsky@DeerfieldCapital.com> -- helped out
+           with Sybase-specific issues, including inspiring
+           SPOPS::Key::DBI::Identity.
+
+       •   Leon Brocard <acme@astray.com> -- prodded better docs of
+           SPOPS::Configure, specifically the linking semantics.
+
+       •   David Boone <dave@bis.bc.ca> -- prodded the creation of
+           SPOPS::Initialize.
+
+       •   MSN Marketing Service Nordwest, GmbH -- funded development of LDAP
+           functionality, including SPOPS::LDAP, SPOPS::LDAP::MultiDatasource,
+           and SPOPS::Iterator::LDAP.
+
+perl v5.40.2                      2004-06-02                          SPOPS(3)

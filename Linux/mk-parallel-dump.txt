@@ -1,0 +1,591 @@
+MK-PARALLEL-DUMP(1)                                                                   User Contributed Perl Documentation                                                                   MK-PARALLEL-DUMP(1)
+
+NAME
+       mk-parallel-dump - (DEPRECATED) Dump MySQL tables in parallel.
+
+SYNOPSIS
+       This tool is deprecated because after several complete redesigns, we concluded that Perl is the wrong technology for this task.  Read "RISKS" before you use it, please.  It remains useful for some
+       people who we know aren't depending on it in production, and therefore we are not removing it from the distribution.
+
+       Usage: mk-parallel-dump [OPTION...] [DSN]
+
+       mk-parallel-dump dumps MySQL tables in parallel to make some data loading operations more convenient.  IT IS NOT A BACKUP TOOL!
+
+       Dump all databases and tables to the current directory:
+
+         mk-parallel-dump
+
+       Dump all databases and tables via SELECT INTO OUTFILE to /tmp/dumps:
+
+         mk-parallel-dump --tab --base-dir /tmp/dumps
+
+       Dump only table db.foo in chunks of ten thousand rows using 8 threads:
+
+         mk-parallel-dump --databases db --tables foo \
+            --chunk-size 10000 --threads 8
+
+       Dump tables in chunks of approximately 10kb of data (not ten thousand rows!):
+
+         mk-parallel-dump --chunk-size 10k
+
+RISKS
+       The following section is included to inform users about the potential risks, whether known or unknown, of using this tool.  The two main categories of risks are those created by the nature of the tool
+       (e.g. read-only tools vs. read-write tools) and those created by bugs.
+
+       mk-parallel-dump is not a backup program!  It is only designed for fast data exports, for purposes such as quickly loading data into test systems.  Do not use mk-parallel-dump for backups.
+
+       At the time of this release there is a bug that prevents "--lock-tables" from working correctly, an unconfirmed bug that prevents the tool from finishing, a bug that causes the wrong character set to
+       be used, and a bug replacing default values.
+
+       The authoritative source for updated information is always the online issue tracking system.  Issues that affect this tool will be marked as such.  You can see a list of such issues at the following
+       URL: <http://www.maatkit.org/bugs/mk-parallel-dump>.
+
+       See also "BUGS" for more information on filing bugs and getting help.
+
+DESCRIPTION
+       mk-parallel-dump connects to a MySQL server, finds database and table names, and dumps them in parallel for speed.  Only tables and data are dumped; view definitions or any kind of stored code
+       (triggers, events, routines, procedures, etc.) are not dumped.  However, if you dump the "mysql" database, you'll be dumping the stored routines anyway.
+
+       Exit status is 0 if everything went well, 1 if any chunks failed, and any other value indicates an internal error.
+
+       To dump all tables to uncompressed text files in the current directory, each database with its own directory, with a global read lock, flushing and recording binary log positions, each table in a
+       single file:
+
+         mk-parallel-dump
+
+       To dump tables elsewhere:
+
+         mk-parallel-dump --base-dir /path/to/elsewhere
+
+       To dump to tab-separated files with "SELECT INTO OUTFILE", each table with separate data and SQL files:
+
+         mk-parallel-dump --tab
+
+       mk-parallel-dump doesn't clean out any destination directories before dumping into them.  You can move away the old destination, then remove it after a successful dump, with a shell script like the
+       following:
+
+          #!/bin/sh
+          CNT=`ls | grep -c old`;
+          if [ -d default ]; then mv default default.old.$CNT;
+          mk-parallel-dump
+          if [ $? != 0 ]
+          then
+             echo "There were errors, not purging old sets."
+          else
+             echo "No errors during dump, purging old sets."
+             rm -rf default.old.*
+          fi
+
+       mk-parallel-dump checks whether files have been created before dumping.  If the file has been created, it skips the table or chunk that would have created the file.  This makes it possible to resume
+       dumps.  If you don't want this behavior, and instead you want a full dump, then move away the old files or specify "--[no]resume".
+
+CHUNKS
+       mk-parallel-dump can break your tables into chunks when dumping, and put approximately the amount of data you specify into each chunk.  This is useful for two reasons:
+
+       •   A table that is dumped in chunks can be dumped in many threads simultaneously.
+
+       •   Dumping in chunks creates small files, which can be imported more efficiently and safely.  Importing a single huge file can be a lot of extra work for transactional storage engines like InnoDB.  A
+           huge file can create a huge rollback segment in your tablespace.  If the import fails, the rollback can take a very long time.
+
+       To dump in chunks, specify the "--chunk-size" option.  This option is an integer with an optional suffix.  Without the suffix, it's the number of rows you want in each chunk.  With the suffix, it's
+       the approximate size of the data.
+
+       mk-parallel-dump tries to use index statistics to calculate where the boundaries between chunks should be.  If the values are not evenly distributed, some chunks can have a lot of rows, and others may
+       have very few or even none.  Some chunks can exceed the size you want.
+
+       When you specify the size with a suffix, the allowed suffixes are k, M and G, for kibibytes, mebibytes, and gibibytes, respectively.  mk-parallel-dump doesn't know anything about data size.  It asks
+       MySQL (via "SHOW TABLE STATUS") how long an average row is in the table, and converts your option to a number of rows.
+
+       Not all tables can be broken into chunks.  mk-parallel-dump looks for an index whose leading column is numeric (integers, real numbers, and date and time types).  It prefers the primary key if its
+       first column is chunk-able.  Otherwise it chooses the first chunk-able column in the table.
+
+       Generating a series of "WHERE" clauses to divide a table into evenly-sized chunks is difficult.  If you have any ideas on how to improve the algorithm, please write to the author (see "BUGS").
+
+OUTPUT
+       Output depends on "--verbose", "--progress", "--dry-run" and "--quiet".  If "--dry-run" is specified mk-parallel-dump prints the commands or SQL statements that it would use to dump data but it does
+       not actually dump any data.  If "--quiet" is specified there is no output; this overrides all other options that affect the output.
+
+       The default output is something like the following example:
+
+         CHUNK  TIME  EXIT  SKIPPED DATABASE.TABLE
+            db  0.28     0        0 sakila
+           all  0.28     0        0 -
+
+       CHUNK
+           The CHUNK column signifies what kind of information is in the line:
+
+             Value  Meaning
+             =====  ========================================================
+             db     This line contains summary information about a database.
+             tbl    This line contains summary information about a table.
+             <int>  This line contains information about the Nth chunk of a
+                    table.
+
+           The types of lines you'll see depend on the "--chunk-size" option and "--verbose" options.  mk-parallel-dump treats everything as a chunk.  If you don't specify "--chunk-size", then each table is
+           one big chunk and each database is a chunk (of all its tables).  Thus, there is output for numbered table chunks ("--chunk-size"), table chunks, and database chunks.
+
+       TIME
+           The TIME column shows the wallclock time elapsed while the chunk was dumped.  If CHUNK is "db" or "tbl", this time is the total wallclock time elapsed for the database or table.
+
+       EXIT
+           The EXIT column shows the exit status of the chunk.  Any non-zero exit signifies an error.  The cause of errors are usually printed to STDERR.
+
+       SKIPPED
+           The SKIPPED column shows how many chunks were skipped.  These are not errors.  Chunks are skipped if the dump can be resumed.  See "--[no]resume".
+
+       DATABASE.TABLE
+           The DATABASE.TABLE column shows to which table the chunk belongs.  For "db" chunks, this shows just the database.  Chunks are printed when they complete, and this is often out of the order you'd
+           expect.  For example, you might see a chunk for db1.table_1, then a chunk for db2.table_2, then another chunk for db1.table_1, then the "db" chunk summary for db2.
+
+       PROGRESS
+           If you specify "--progress", then the tool adds a PROGRESS column after DATABASE.TABLE, which contains text similar to the following:
+
+             PROGRESS
+             4.10M/4.10M 100.00% ETA ... 00:00 (2009-10-16T15:37:49)
+             done at 2009-10-16T15:37:48, 1 databases, 16 tables, 16 chunks
+
+           This column shows information about the amount of data dumped so far, the amount of data left to dump, and an ETA ("estimated time of arrival").  The ETA is a best-effort prediction when
+           everything will be finished dumping.  Sometimes the ETA is very accurate, but at other times it can be significantly wrong.
+
+       The final line of the output is special: it summarizes all chunks (all table chunks, tables and databases).
+
+       If you specify "--verbose" once, then the output includes "tbl" CHUNKS:
+
+         CHUNK  TIME  EXIT  SKIPPED DATABASE.TABLE
+           tbl  0.07     0        0 sakila.payment
+           tbl  0.08     0        0 sakila.rental
+           tbl  0.03     0        0 sakila.film
+            db  0.28     0        0 sakila
+           all  0.28     0        0 -
+
+       And if you specify "--verbose" twice in conjunction with "--chunk-size", then the output includes the chunks:
+
+         CHUNK  TIME  EXIT  SKIPPED DATABASE.TABLE
+             0  0.03     0        0 sakila.payment
+             1  0.03     0        0 sakila.payment
+           tbl  0.10     0        0 sakila.payment
+             0  0.01     0        1 sakila.store
+           tbl  0.02     0        1 sakila.store
+            db  0.20     0        1 sakila
+           all  0.21     0        1 -
+
+       The output shows that "sakila.payment" was dumped in two chunks, and "sakila.store" was dumped in one chunk that was skipped.
+
+SPEED OF PARALLEL DUMPS
+       How much faster is it to dump in parallel?  That depends on your hardware and data.  You may be able dump files twice as fast, or more if you have lots of disks and CPUs.  At the time of writing, no
+       benchmarks exist for the current release.  User-contributed results for older versions of mk-parallel-dump showed very good speedup depending on the hardware.  Here are two links you can use as
+       reference:
+
+       •   <http://www.paragon-cs.com/wordpress/?p=52>
+
+       •   <http://mituzas.lt/2009/02/03/mydumper/>
+
+OPTIONS
+       "--lock-tables" and "--[no]flush-lock" are mutually exclusive.
+
+       This tool accepts additional command-line arguments.  Refer to the "SYNOPSIS" and usage information for details.
+
+       --ask-pass
+           Prompt for a password when connecting to MySQL.
+
+       --base-dir
+           type: string
+
+           The base directory in which files will be stored.
+
+           The default is the current working directory.  Each database gets its own directory under the base directory.  So if the base directory is "/tmp" and database "foo" is dumped, then the directory
+           "/tmp/foo" is created which contains all the table dump files for "foo".
+
+       --[no]biggest-first
+           default: yes
+
+           Process tables in descending order of size (biggest to smallest).
+
+           This strategy gives better parallelization.  Suppose there are 8 threads and the last table is huge.  We will finish everything else and then be running single-threaded while that one finishes.
+           If that one runs first, then we will have the max number of threads running at a time for as long as possible.
+
+       --[no]bin-log-position
+           default: yes
+
+           Dump the master/slave position.
+
+           Dump binary log positions from both "SHOW MASTER STATUS" and "SHOW SLAVE STATUS", whichever can be retrieved from the server.  The data is dumped to a file named 00_master_data.sql in the
+           "--base-dir".
+
+           The file also contains details of each table dumped, including the WHERE clauses used to dump it in chunks.
+
+       --charset
+           short form: -A; type: string
+
+           Default character set.  If the value is utf8, sets Perl's binmode on STDOUT to utf8, passes the mysql_enable_utf8 option to DBD::mysql, and runs SET NAMES UTF8 after connecting to MySQL.  Any
+           other value sets binmode on STDOUT without the utf8 layer, and runs SET NAMES after connecting to MySQL.
+
+       --chunk-size
+           type: string
+
+           Number of rows or data size to dump per file.
+
+           Specifies that the table should be dumped in segments of approximately the size given.  The syntax is either a plain integer, which is interpreted as a number of rows per chunk, or an integer with
+           a suffix of G, M, or k, which is interpreted as the size of the data to be dumped in each chunk.  See "CHUNKS" for more details.
+
+       --client-side-buffering
+           Fetch and buffer results in memory on client.
+
+           By default this option is not enabled because it causes data to be completely fetched from the server then buffered in-memory on the client.  For large dumps this can require a lot of memory
+
+           Instead, the default (when this option is not specified) is to fetch and dump rows one-by-one from the server.  This requires a lot less memory on the client but can keep the tables on the server
+           locked longer.
+
+           Use this option only if you're sure that the data being dumped is relatively small and the client has sufficient memory.  Remember that, if this option is specified, all "--threads" will buffer
+           their results in-memory, so memory consumption can increase by a factor of N "--threads".
+
+       --config
+           type: Array
+
+           Read this comma-separated list of config files; if specified, this must be the first option on the command line.
+
+       --csv
+           Do "--tab" dump in CSV format (implies "--tab").
+
+           Changes "--tab" options so the dump file is in comma-separated values (CSV) format.  The SELECT INTO OUTFILE statement looks like the following, and can be re-loaded with the same options:
+
+              SELECT * INTO OUTFILE %D.%N.%6C.txt
+              FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'
+              LINES TERMINATED BY '\n' FROM %D.%N;
+
+       --databases
+           short form: -d; type: hash
+
+           Dump only this comma-separated list of databases.
+
+       --databases-regex
+           type: string
+
+           Dump only databases whose names match this Perl regex.
+
+       --defaults-file
+           short form: -F; type: string
+
+           Only read mysql options from the given file.  You must give an absolute pathname.
+
+       --dry-run
+           Print commands instead of executing them.
+
+       --engines
+           short form: -e; type: hash
+
+           Dump only tables that use this comma-separated list of storage engines.
+
+       --[no]flush-lock
+           Use "FLUSH TABLES WITH READ LOCK".
+
+           This is enabled by default.  The lock is taken once, at the beginning of the whole process and is released after all tables have been dumped.  If you want to lock only the tables you're dumping,
+           use "--lock-tables".
+
+       --flush-log
+           Execute "FLUSH LOGS" when getting binlog positions.
+
+           This option is NOT enabled by default because it causes the MySQL server to rotate its error log, potentially overwriting error messages.
+
+       --[no]gzip
+           default: yes
+
+           Compress (gzip) SQL dump files; does not work with "--tab".
+
+           The IO::Compress::Gzip Perl module is used to compress SQL dump files as they are written to disk.  The resulting dump files have a ".gz" extension, like "table.000000.sql.gz".  They can be
+           uncompressed with gzip.  mk-parallel-restore will automatically uncompress them, too, when restoring.
+
+           This option does not work with "--tab" because the MySQL server writes the tab dump files directly using "SELECT INTO OUTFILE".
+
+       --help
+           Show help and exit.
+
+       --host
+           short form: -h; type: string
+
+           Connect to host.
+
+       --ignore-databases
+           type: Hash
+
+           Ignore this comma-separated list of databases.
+
+       --ignore-databases-regex
+           type: string
+
+           Ignore databases whose names match this Perl regex.
+
+       --ignore-engines
+           type: Hash; default: FEDERATED,MRG_MyISAM
+
+           Do not dump tables that use this comma-separated list of storage engines.
+
+           The schema file will be dumped as usual.  This prevents dumping data for Federated tables and Merge tables.
+
+       --ignore-tables
+           type: Hash
+
+           Ignore this comma-separated list of table names.
+
+           Table names may be qualified with the database name.
+
+       --ignore-tables-regex
+           type: string
+
+           Ignore tables whose names match the Perl regex.
+
+       --lock-tables
+           Use "LOCK TABLES" (disables "--[no]flush-lock").
+
+           Disables "--[no]flush-lock" (unless it was explicitly set) and locks tables with "LOCK TABLES READ".  The lock is taken and released for every table as it is dumped.
+
+       --lossless-floats
+           Dump float types with extra precision for lossless restore (requires "--tab").
+
+           Wraps these types with a call to "FORMAT()" with 17 digits of precision.  According to the comments in Google's patches, this will give lossless dumping and reloading in most cases.  (I
+           shamelessly stole this technique from them.  I don't know enough about floating-point math to have an opinion).
+
+           This works only with "--tab".
+
+       --password
+           short form: -p; type: string
+
+           Password to use when connecting.
+
+       --pid
+           type: string
+
+           Create the given PID file.  The file contains the process ID of the script.  The PID file is removed when the script exits.  Before starting, the script checks if the PID file already exists.  If
+           it does not, then the script creates and writes its own PID to it.  If it does, then the script checks the following: if the file contains a PID and a process is running with that PID, then the
+           script dies; or, if there is no process running with that PID, then the script overwrites the file with its own PID and starts; else, if the file contains no PID, then the script dies.
+
+       --port
+           short form: -P; type: int
+
+           Port number to use for connection.
+
+       --progress
+           Display progress reports.
+
+           Progress is displayed each time a table or chunk of a table finishes dumping.  Progress is calculated by measuring the average data size of each full chunk and assuming all bytes are created
+           equal.  The output is the completed and total bytes, the percent completed, estimated time remaining, and estimated completion time.  For example:
+
+             40.72k/112.00k  36.36% ETA 00:00 (2009-10-27T19:17:53)
+
+           If "--chunk-size" is not specified then each table is effectively one big chunk and the progress reports are pretty accurate.  When "--chunk-size" is specified the progress reports can be skewed
+           because of averaging.
+
+           Progress reports are inaccurate when a dump is resumed.  This is known issue and will be fixed in a later release.
+
+       --quiet
+           short form: -q
+
+           Quiet output; disables "--verbose".
+
+       --[no]resume
+           default: yes
+
+           Resume dumps.
+
+       --set-vars
+           type: string; default: wait_timeout=10000
+
+           Set these MySQL variables.  Immediately after connecting to MySQL, this string will be appended to SET and executed.
+
+       --socket
+           short form: -S; type: string
+
+           Socket file to use for connection.
+
+       --stop-slave
+           Issue "STOP SLAVE" on server before dumping data.
+
+           This ensures that the data is not changing during the dump.  Issues "START SLAVE" after the dump is complete.
+
+           If the slave is not running, throws an error and exits.  This is to prevent possibly bad things from happening if the slave is not running because of a problem, or because someone intentionally
+           stopped the slave for maintenance or some other purpose.
+
+       --tab
+           Dump tab-separated (sets "--umask" 0).
+
+           Dump via "SELECT INTO OUTFILE", which is similar to what "mysqldump" does with the "--tab" option, but you're not constrained to a single database at a time.
+
+           Before you use this option, make sure you know what "SELECT INTO OUTFILE" does!  I recommend using it only if you're running mk-parallel-dump on the same machine as the MySQL server, but there is
+           no protection if you don't.
+
+           This option sets "--umask" to zero so auto-created directories are writable by the MySQL server.
+
+       --tables
+           short form: -t; type: hash
+
+           Dump only this comma-separated list of table names.
+
+           Table names may be qualified with the database name.
+
+       --tables-regex
+           type: string
+
+           Dump only tables whose names match this Perl regex.
+
+       --threads
+           type: int; default: 2
+
+           Number of threads to dump concurrently.
+
+           Specifies the number of parallel processes to run.  The default is 2 (this is mk-parallel-dump, after all -- 1 is not parallel).  On GNU/Linux machines, the default is the number of times
+           'processor' appears in /proc/cpuinfo.  On Windows, the default is read from the environment.  In any case, the default is at least 2, even when there's only a single processor.
+
+       --[no]tz-utc
+           default: yes
+
+           Enable TIMESTAMP columns to be dumped and reloaded between different time zones.  mk-parallel-dump sets its connection time zone to UTC and adds "SET TIME_ZONE='+00:00'" to the dump file.  Without
+           this option, TIMESTAMP columns are dumped and reloaded in the time zones local to the source and destination servers, which can cause the values to change.  This option also protects against
+           changes due to daylight saving time.
+
+           This option is identical to "mysqldump --tz-utc".  In fact, the above text was copied from mysqldump's man page.
+
+       --umask
+           type: string
+
+           Set the program's "umask" to this octal value.
+
+           This is useful when you want created files and directories to be readable or writable by other users (for example, the MySQL server itself).
+
+       --user
+           short form: -u; type: string
+
+           User for login if not current user.
+
+       --verbose
+           short form: -v; cumulative: yes
+
+           Be verbose; can specify multiple times.
+
+           See "OUTPUT".
+
+       --version
+           Show version and exit.
+
+       --wait
+           short form: -w; type: time; default: 5m
+
+           Wait limit when the server is down.
+
+           If the MySQL server crashes during dumping, waits until the server comes back and then continues with the rest of the tables.  "mk-parallel-dump" will check the server every second until this time
+           is exhausted, at which point it will give up and exit.
+
+           This implements Peter Zaitsev's "safe dump" request: sometimes a dump on a server that has corrupt data will kill the server.  mk-parallel-dump will wait for the server to restart, then keep
+           going.  It's hard to say which table killed the server, so no tables will be retried.  Tables that were being concurrently dumped when the crash happened will not be retried.  No additional locks
+           will be taken after the server restarts; it's assumed this behavior is useful only on a server you're not trying to dump while it's in production.
+
+       --[no]zero-chunk
+           default: yes
+
+           Add a chunk for rows with zero or zero-equivalent values.  The only has an effect when "--chunk-size" is specified.  The purpose of the zero chunk is to capture a potentially large number of zero
+           values that would imbalance the size of the first chunk.  For example, if a lot of negative numbers were inserted into an unsigned integer column causing them to be stored as zeros, then these
+           zero values are captured by the zero chunk instead of the first chunk and all its non-zero values.
+
+DSN OPTIONS
+       These DSN options are used to create a DSN.  Each option is given like "option=value".  The options are case-sensitive, so P and p are not the same option.  There cannot be whitespace before or after
+       the "=" and if the value contains whitespace it must be quoted.  DSN options are comma-separated.  See the maatkit manpage for full details.
+
+       •   A
+
+           dsn: charset; copy: yes
+
+           Default character set.
+
+       •   D
+
+           dsn: database; copy: yes
+
+           Default database.
+
+       •   F
+
+           dsn: mysql_read_default_file; copy: yes
+
+           Only read default options from the given file
+
+       •   h
+
+           dsn: host; copy: yes
+
+           Connect to host.
+
+       •   p
+
+           dsn: password; copy: yes
+
+           Password to use when connecting.
+
+       •   P
+
+           dsn: port; copy: yes
+
+           Port number to use for connection.
+
+       •   S
+
+           dsn: mysql_socket; copy: yes
+
+           Socket file to use for connection.
+
+       •   u
+
+           dsn: user; copy: yes
+
+           User for login if not current user.
+
+DOWNLOADING
+       You can download Maatkit from Google Code at <http://code.google.com/p/maatkit/>, or you can get any of the tools easily with a command like the following:
+
+          wget http://www.maatkit.org/get/toolname
+          or
+          wget http://www.maatkit.org/trunk/toolname
+
+       Where "toolname" can be replaced with the name (or fragment of a name) of any of the Maatkit tools.  Once downloaded, they're ready to run; no installation is needed.  The first URL gets the latest
+       released version of the tool, and the second gets the latest trunk code from Subversion.
+
+ENVIRONMENT
+       The environment variable "MKDEBUG" enables verbose debugging output in all of the Maatkit tools:
+
+          MKDEBUG=1 mk-....
+
+SYSTEM REQUIREMENTS
+       You need Perl, DBI, DBD::mysql, and some core packages that ought to be installed in any reasonably new version of Perl.
+
+       This program works best on GNU/Linux.  Filename quoting might not work well on Microsoft Windows if you have spaces or funny characters in your database or table names.
+
+BUGS
+       For a list of known bugs see <http://www.maatkit.org/bugs/mk-parallel-dump>.
+
+       Please use Google Code Issues and Groups to report bugs or request support: <http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to discuss Maatkit.
+
+       Please include the complete command-line used to reproduce the problem you are seeing, the version of all MySQL servers involved, the complete output of the tool when run with "--version", and if
+       possible, debugging output produced by running with the "MKDEBUG=1" environment variable.
+
+COPYRIGHT, LICENSE AND WARRANTY
+       This program is copyright 2007-2011 Baron Schwartz.  Feedback and improvements are welcome.
+
+       THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+       This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2; OR the Perl Artistic
+       License.  On UNIX and similar systems, you can issue `man perlgpl' or `man perlartistic' to read these licenses.
+
+       You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA.
+
+SEE ALSO
+       See also mk-parallel-restore.
+
+AUTHOR
+       Baron Schwartz
+
+ABOUT MAATKIT
+       This tool is part of Maatkit, a toolkit for power users of MySQL.  Maatkit was created by Baron Schwartz; Baron and Daniel Nichter are the primary code contributors.  Both are employed by Percona.
+       Financial support for Maatkit development is primarily provided by Percona and its clients.
+
+VERSION
+       This manual page documents Ver 1.0.28 Distrib 7540 $Revision: 7460 $.
+
+perl v5.34.0                                                                                       2021-07-22                                                                               MK-PARALLEL-DUMP(1)

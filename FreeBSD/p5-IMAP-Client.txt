@@ -1,0 +1,1513 @@
+IMAP::Client(3)       User Contributed Perl Documentation      IMAP::Client(3)
+
+
+NAME
+           IMAP::Client - Advanced manipulation of IMAP services w/ referral support
+
+SYNOPSIS
+           use IMAP::Client
+
+           my $imap = new IMAP::Client($server);
+           unless (ref $imap) {
+               die "Failed to create object: $imap\n";
+           }
+       (or)
+           my $imap = new IMAP::Client();
+           $imap->connect(PeerAddr => $server,
+                         ConnectMethod => 'SSL STARTTLS PLAIN',
+                         )
+           or die "Unable to connect to [$server]: ".$imap->error();
+
+           $imap->onfail('ERROR');
+           $imap->errorstyle('STACK');
+           $imap->debuglevel(1);
+           $imap->capability_checking(1);
+
+               sub showstats ($) {
+               my $resp = shift;
+                   foreach my $attr (keys %{$resp}) {
+                               print "$attr: $resp->{$attr}\n";
+                   }
+               }
+               $imap->register_mailbox_update(\&showstats);
+
+           $imap->authenticate($user,$pass)
+               or die "Unable to authenticate as $user ".$imap->error()."\n";
+       (or)
+           $imap->authenticate($user,$pass,$authas_user)
+               or die "Unable to authenticate as $user on behalf of $authas_user: ".$imap->error()."\n";
+
+           $imap->id() or die $imap->error();
+           $imap->capability() or die $imap->error();
+           $imap->noop() or die $imap->error();
+
+        FIXME: more examples here
+
+IMPORTANT! READ THIS FIRST IF YOU ARE UPGRADING FROM PRE-0.10 TO 0.10 OR
+       ABOVE!
+       As of IMAP::Client 0.10, the "_active_server" mechanism has been
+       removed, replaced instead by a class-wide monitoring of objects.  This
+       means that if you have any code that utilizes the active_server
+       functionality (using more than one connection in an instance of
+       IMAP::Client), you will need to change your code to create seperate
+       instances for each connection.
+
+       Unfortunately, backward compatibility could not be maintained with this
+       change.  However since tracking is now behind-the-scenes, this style
+       should be the final one.
+
+DESCRIPTION
+       This module was created as a low-level inteface to any IMAP server.  It
+       was built to be a 'clear box' solution to working with an IMAP
+       environment.  The idea is that anything an IMAP client should be able
+       to do, and any information available via the IMAP specs, should be
+       available to a client interface and user.  This way, the full strength
+       of the IMAP protocol and data can be utilized, ideally in the most
+       network-efficient mannger possible, rather than being contrained only
+       to a subset of commands or data-limited responses.  If the server says
+       it, the client should be able to see it.
+
+       This module also takes steps to be able to handle anticipated
+       situations for the user rather than forcing a per-implementation
+       behavior for such expected events, such as referrals.  IMAP::Client
+       will fully support referrals, and will transparently handle them for
+       whatever command is issued to them (so long as the referral s for
+       anonymous or the same user with the same password - a new user or
+       different password would require a new username/password to be
+       obtained.  As of 0.01, this is not supported, however the framework is
+       down.
+
+       This module also tries to follow the various RFCs for IMAPrev1
+       communications very closely, enforcing client-side responsabilities
+       where appropriate.  The complete lists of RFCs referenced for this
+       module include:
+
+       •   RFC 3501 - INTERNET MESSAGE ACCESS PROTOCOL - VERSION 4rev1
+           (partial)
+
+       •   RFC 2086 - IMAP4 ACL extension (0.01)
+
+       •   RFC 2087 - IMAP4 QUOTA extension (0.01)
+
+       •   RFC 2088 - IMAP4 non-synchronizing literals (0.01)
+
+       •   RFC 2177 - IMAP4 IDLE command (Not supported yet)
+
+       •   RFC 2192 - IMAP4 URL Scheme (0.01)
+
+       •   RFC 2193 - IMAP4 Mailbox Referrals (0.01 [Partial])
+
+       •   RFC 2342 - IMAP4 Namespace (Not directly supported yet)
+
+       •   RFC 2359 - IMAP4 UIDPLUS extension (Partial in 0.01 - UID EXPUNGE
+           check ok, need COPYUID and APPENDUID support)
+
+       •   RFC 2971 - IMAP4 ID extension (0.01)
+
+       •   RFC 3348 - IMAP4 Child Mailbox Extention (Not directly supported
+           yet)
+
+       •   RFC 3502 - IMAP MULTIAPPEND extention (Not directly supported yet)
+
+       •   RFC 3516 - Binary Content Extention (Not directly supported yet)
+
+       •   RFC 3691 - Internet Message Access Protocol (IMAP) UNSELECT command
+           (Not directly supported yet)
+
+       In addition, the following drafts functionalities are also included.
+       While functionality is included for these drafts (because a server is
+       using them), drafts expire after 6 months, and thus functionality from
+       the server side may be spotty at best.
+
+       •   draft-ietf-imapext-annotate-15 - IMAP ANNOTATE Extension (Not
+           directly supported yet)
+
+       •   draft-daboo-imap-annotatemore-08 - IMAP ANNOTATEMORE Extension
+           (Partial in 0.12 - GETANNOTATION works)
+
+DEFINITIONS
+       •   sequence set - A comma-seperated list of numbers and number ranges.
+           A number range is in the format number:number, such as "2:4",
+           meaning messages 2 through 4.
+
+METHODS - SUBINTERFACE
+       These are the lowest-level functions for use by the program.  These
+       offer the most raw access for interacting with an IMAP service, short
+       of doing it manually.
+
+       imap_send($string)
+           Sends the string argument provided to the server.  A tag is
+           automatically prepended to the command.
+
+       imap_send_tagless($string)
+           Send the string argument provided to the server without a tag.
+           This is needed for some operations.
+
+       imap_receive()
+           Accept responses from the server until the previous tag is
+           encountered, at which point return the entire response.  CAUTION:
+           can cause your program to hang if a tagged response isn't given.
+           For example, if the command expects more input and issues a '+'
+           response, and waits for input, this function will never return.
+
+       imap_receive_tagless()
+           Accept a line of response, regardless if a tag is provided.  Misuse
+           of this function can cause the module to be confused, especially if
+           it received a tagged response and imap_receive() is subsequently
+           used before another imap_send().  Applicable use of this function
+           would be to read an (expected) untagged '+ go ahead' response.  If
+           a tagged response is (unexpectedly) received, such as in a NO or
+           BAD response, an imap_send() must be used before the next
+           imap_receive().  You have been warned.
+
+METHODS - INTERFACE
+       These are the methods for manipulating the object or retrieving
+       information from the object.
+
+           new()
+
+           new($server)
+
+           Creates a new IMAP object.  You can optionally specify the server
+           to connect to, using default parameters (see connect() for
+           details).  On success, an IMAP object reference is returned - on
+           failure, a string is returned detailing the error.
+
+           debuglevel($level)
+
+           Set the debug level.  Debug levels are set on a bitmask, and all
+           debug output is to STDERR.  Valid bits are as follows:
+
+           0x01 - Communications dump
+                 This will output all IMAP communications, with >> showing the
+                 sent data, and << showing the received data.
+
+           0x02 - Fetch-parsing dump
+                 This dumps a *lot* of data about the parsing of a fetch
+                 statement.
+
+               = item 0x04 - Annotations dump
+
+                 This will print debugging information about processing
+                 getannotations and setannotations\n";
+
+           onfail($action)
+
+           Tell the object what to do when a command fails, either in the
+           object, or if a !OK response is received (i.e. NO or BAD).  Valid
+           values are 'ERROR' (return undef, set error()) or 'ABORT' (abort,
+           printing error to stderr).  Default is ERROR.  Values are case
+           insensitive.
+
+           errorstyle($action)
+
+           Controls how errors are handled when onfail is 'ERROR'.  Valid
+           values are 'LAST', for only storing the last error, or 'STACK',
+           where all errors are saved until the next call to error().  STACK
+           is most useful for those programs that tend to call nested
+           functions, and finding where a program is truly failed (so the last
+           error doesn't erase the original error that caused the problem).
+           Default is 'STACK'
+
+           error()
+
+           Prints the last error encountered by the imap object.  If you
+           executed a command and received an undef in response, this is where
+           the error description can be found.
+
+           capability_checking()
+
+           Enable or disable capability checking for those commands that
+           support it.  If enabled, a supported command will first check to
+           see that the appropriate atom, as specified in the command's
+           respective RFC, appears in the capability string.  If it does not,
+           the command will not be sent to the server, but immediately fail.
+           If disabled, all commands will assume any required atom exists, and
+           the command will be sent to the server.
+
+           Any valid 'true' value will enable the checking, while any 'false'
+           value will disable it.
+
+           _imap_command($command, $arguments, <$continuation, ...)>
+
+           Execute an IMAP command, wait for and return the response.  The
+           function accepts the command as the first argument, arguments to
+           that command as the second argument, followed by continuation
+           responses for if/when the server issues a '+' response, such as '+
+           go ahead'.  If there are less continuations specified than the
+           server requests, the command will fail in the normal manner.  If
+           there are more continuations specified than the server requests, a
+           warning is printed, however the response is parsed as usual - if it
+           was OK then the command will be considered successful.
+
+           The function returns the server response on success, and undef on
+           failure, setting error().
+
+           connect(%args)
+
+           Connect to the supplied IMAP server.  Inerits all the options of
+           IO::Socket::SSL (and thusly, IO::Socket::INET), and adds the
+           following custom options:
+
+           ConnectMethod
+                 Sets the priority of the login methods via a space seperated
+                 priority-ordered list.  Valid methods are 'SSL', 'STARTTLS',
+                 and 'PLAIN'.  The default is to try loggin in via SSL, then
+                 connecting to the standard IMAP port and negotiating
+                 STARTTLS.  'PLAIN' is entirly unencrypted, and is not a
+                 default option - it must be specified if desired.
+
+                 The 'STARTTLS' method uses the starttls() command to
+                 negotiate the insecure connection to a secure status - it is
+                 functionally equivlant to using the 'PLAIN' method and
+                 subsequently calling starttls() within the program.
+
+           IMAPSPort
+                 Set the IMAPS port to use when connecting via the SSL method
+                 (default 993).
+
+           IMAPPort
+                 Set the IMAP port to use when connecting via the STARTTLS or
+                 PLAIN methods (default 143).
+
+           The error logs are cleared during a connection attempt, since
+           (re)connecting essentially is a new session, and any previous
+           errors cannot have any relation the current operation.  Also, the
+           act of finding the proper method of connecting can generate
+           internal errors that are of no concern (as long as it ultimately
+           connects).  Should the connection fail, the error() log will
+           contain the appropriate errors generated while attempting to
+           connect.  Should the connection succeed, the error log will be
+           clear.
+
+           Returns 1 on success, and undef on failure, setting error().
+
+           disconnect()
+
+           Disconnect from the server.  This command can safely be used on an
+           already-disconnected server.
+
+           register_mailbox_update(&subfunction)
+
+           This function sets up a callback function for when the IMAP server
+           sends back a Server Response in accordance with RFC3501 Section
+           7.3, which stiuplates that while select()ed or examine()ing a
+           mailbox, updates as to the mailbox content can be sent back after
+           any command as tagless responses.
+
+           The subfunction will be passed one hash argument.  The hash
+           argument will contain keys that represent the data type (EXISTS,
+           RECENT), and their respective values will be the values returned by
+           the server.
+
+           If no function is registered via this method, or this method is
+           called with an 'undef' argument, no special action will be taken
+           should these server responses be encountered by the library.
+
+METHODS - COMMANDS
+       These are the standard IMAP commands from the IMAP::Client object.
+       Methods return various structures, simple and complex, depending on the
+       method.  All methods return undef on failure, setting error(), barring
+       an override via the onfail() function.
+
+           capability()
+
+           Request a listing of capabilities that the server supports.  Note
+           that the object caches the response of the capability() command for
+           determining support of certain features.
+
+           noop()
+
+           Issue a "No Operation" command - i.e. do nothing.  Also used for
+           idling and checking for state changes in the select()ed mailbox
+
+           logout()
+
+           Log the current user out and return This function will not work for
+           multi-stage commands, such as those that issue a '+ go ahead' to
+           indicate the continuation to send data.the connection to the
+           unauthorized state.
+
+           starttls(%args)
+
+           Issue a STARTTLS negotiation to secure the data connection.  This
+           function will call capability() twice - once before issuing the
+           starttls() command to verify that the atom STARTTLS is listed as a
+           capability(), and once after the sucessful negotiation, per RFC
+           3501 6.2.1.  See capability() for unique rules on how this module
+           handles capability() requests.  Upon successful completion, the
+           connection will be secured.  Note that STARTTLS is not available if
+           the connection is already secure (preivous sucessful starttls(), or
+           connect() via SSL, for example).
+
+           STARTTLS is checked in capability() regardless of the value of
+           capability_checking().
+
+           Any call arguments in %args are passed onto the underlying
+           IO::Socket::SSL->start_SSL() function.
+
+           This function returns 1 on success, since there is no output to
+           return on success.  Failures are treated normally.
+
+           authenticate($login, $password)
+
+           authenticate($login, $password, $authorize_as)
+
+           authenticate2($login, $password)
+
+           authenticate2($login, $password, $authorize_as)
+
+           Login in using the AUTHENTICATE mechanism.  This mechanism supports
+           authorization as someone other than the logged in user, if said
+           user has permission to do so.  authenticate() uses a one-line login
+           sequence, while authenticate2() uses a multi-line login sequence.
+           Both are provided for compatiblity reasons.
+
+           OBSOLETE WARNING: In the future, this split-line behavior will be
+           controlled by an object function, and authenticate() will be the
+           only function.
+
+           login($username,$password)
+
+           Login using the basic LOGIN mechanism.  Passwords are sent in the
+           clear, and there is no third-party authorization support.
+
+           select($mailbox)
+
+           Open a mailbox in read-write mode so that messages in the mailbox
+           can be accessed.  This function returns a hash of the valid tagless
+           responses.  According to RFC-3501, these responses include:
+
+           •   FLAGS (<flags>)
+
+           •   <n> EXISTS
+
+           •   <n> RECENT
+
+           •   OK [UNSEEN <n>]
+
+           •   OK [PERMANENTFLAGS <flaglist>]
+
+           •   OK [UIDNEXT <n>]
+
+           If the server supports an earlier version of the protocol than
+           IMAPv4, the only flags required are FLAGS, EXISTS, and RECENT.
+
+           Finally, hash responses will have an 'OK' key that will contain the
+           current permissional status, either 'READ-WRITE' or 'READ-ONLY', if
+           returned by the server.  Returns an empty (undefined) hash on
+           error.
+
+           IMPORTANT!  You should always check to see if an ALERT was issued.
+           ALERTs should be relayed to the user if they exist!
+
+           examine($mailbox)
+
+           Identical to select(), except the mailbox is opened READ-ONLY.
+           Returns an empty (unefined) hash on error.
+
+           create($mailbox,\%properties)
+
+           Create a mailbox with the given name.  Also assigns the properties
+           given immediately upon creation.  Valid properties are:
+
+           •   quota - A hash, with the keys being the type (aka STORAGE), and
+               the values being the actual quota for that type, with size-
+               based quotas given in kb
+
+           •   permissions - initial permissions for the mailbox owner(s)
+               (equivalent to setacl), for if the owner needs different
+               permissions than the server's default
+
+           For example:
+               $imap->create("asdfasdf",{quota=>{'STORAGE',50000}, permissions
+           => 'lrws'})
+
+           delete($mailbox)
+
+           Delete an existing mailbox with the given name.  NOTE: RFC notes
+           that sub-mailboxes are not automatically deleted via this command.
+
+           rename($oldmailbox,$newmailbox)
+
+           Rename an existing mailbox from oldmailbox to newmailbox.
+
+           subscribe($mailbox)
+
+           Subscribe the authorized user to the given mailbox
+
+           unsubscribe($mailbox)
+
+           Unsubscribe the authorized user from the given mailbox
+
+           list($reference,$mailbox)
+
+           List all the local mailboxes the authorized user can see for the
+           given mailbox from the given reference.  Returns a listref of
+           hashrefs, with each list entry being one result.  Keys in the
+           hashes include FLAGS, REFERENCE, and MAILBOX, and their returned
+           values, respectivly.
+
+           lsub($reference,$mailbox)
+
+           List all the local subscriptions for the authorized user for the
+           given mailbox from the given reference. Returns a listref of
+           hashrefs, which each list entry being one result.  Keys in the
+           hashes include FLAGS, REFERENCE, and MAILBOX, and their returned
+           values, respectivly.
+
+           status($mailbox,@status)
+
+           Get the provided status items on the currently select()ed or
+           examine()d mailbox.  Each argument is a different status
+           information item to query.  According to RFC, the following tags
+           are valid for status() queries: MESSAGES, RECENT, UIDNEXT,
+           UIDVALIDITY, UNSEEN.  Since there may be future RFC declarations or
+           custom tags for various servers, this module does not restrict to
+           the above tags, but rather lets the server handle them
+           appropriately (which may be a NO or BAD response).
+
+           Upon successful completion, the return value will be a hash of the
+           queried items and their returned values.
+
+           append($mailbox, $message, $flaglist)
+
+           Append the given message to the given mailbox with the given
+           flaglist.  For information on the flaglist, see the buildflaglist()
+           method.
+
+           The append() method will do some housekeeping on any message that
+           comes in - namely, it will ensure that all lines end in 'CRLF'.
+           The reasoning is that the RFC strictly states that lines must end
+           in 'CRLF', and most *nix files end with just 'LF' - therefore
+           rather than force every program to muck with message inputs to
+           ensure compatiblity, the append() method will ensure it for them.
+
+           This 'CRLF' assurance is done for all commands - however its noted
+           here because it also does it to the message itself in this method,
+           potentially modifying data.
+
+           Unless overridden, append will check for the LITERAL+ capability()
+           atom, and use non-synchronizing literals if supported - otherwise,
+           it will use the standard IMAP dialog.
+
+           Upon successful execution, the return of this function depends on
+           the type of variable receiving the data.
+
+           check()
+
+           Request a checkpoint of the currently select()ed mailbox.  The
+           specific actions and responses by the server are on an
+           implementation-dependant basis.
+
+           close()
+
+           Close the currently select()ed mailbox, expunge()ing any messages
+           marked as \Deleted first.  Unlike expunge(), this command does not
+           return any untagged responses, and closes the mailbox upon
+           completion.
+
+           expunge()
+
+           Expunge() any messages marked as \Deleted from the currently
+           select()ed mailbox.  Will return untagged responses indicating
+           which messages have been expunge()d.
+
+           search($searchstring,<$charset)>
+
+           Search for messages in the currently select()ed or examine()d
+           mailbox matching the searchstring critera, where searchstring is a
+           valid IMAP search query.See the end of this document for valid
+           search terminology.  The charset argument is optional - undef
+           defaults to ASCII.
+
+           This function returns a listref of sequence IDs that match the
+           query when in list context, and a space-seperated list of sequence
+           IDs if in scalar context.  The scalar context allows nested calling
+           within functions that require sequences, such as
+           `fetch(search('RECENT'),undef,'FLAGS')`
+
+           fetch($sequence, [\%body, \%body, ...], @other)
+
+           Fetch message data. The first argument is a sequence set to
+           retrieve.
+
+           The second argument, the body hash ref, is designed to easily
+           create the body section of the query, and takes the following
+           arguments:
+
+           •   body
+
+               Specify the section of the body to fetch().  undef is allowed,
+               meaning no arguments to the BODY option, which will request the
+               full message (unless a header is specified - see below).
+
+           •   offset
+
+               Specify where in the body to start retrieving data, in octets.
+               Default is from the beginning (0).  If the offset is beyond the
+               end of the data, an empty string will be returned.  Must be
+               specified with the length option.
+
+           •   length
+
+               Specify how much data to retrieve starting from the offset, in
+               octets.  If the acutal data is less than the length specified,
+               the acutal data will be returned.  There is no default value,
+               and thus must be specified if offset is used.
+
+           •   header
+
+               Takes either 'ALL', 'MATCH', or 'NOT'.  'ALL' will return all
+               the headers, regardless of the contents of headerfields.
+               'MATCH' will only return those headers that match one of the
+               terms in headerfields, while 'NOT' will return only those
+               headers that *do not* match any of the terms in the
+               headerfields.
+
+           •   headerfields
+
+               Used when header is 'MATCH' or 'NOT', it specifies the headers
+               to use for comparison.  This argument is a string of space-
+               seperated terms.
+
+           •   peek
+
+               When set to 1, uses the BODY.PEEK command instead of BODY,
+               which preserves the \Seen state of the message
+
+           A single hash reference may be supplied for a single body command.
+           If multiple body commands are required, they must be passed inside
+           an array reference (i.e. [\%hash, \%hash]).
+
+           If an empty hashref is supplied as a \%body argument, it is
+           interpreted as a BODY[] request.
+
+           The third argument, other, is a string of space-seperated stand-
+           alone data items.  Valid items via RFC3501 include:
+
+           •   BODY
+
+               The non-extensible form of BODYSTRUCTURE (not to be confused
+               with the first argument - this command fetches structure, not
+               content)
+
+           •   BODYSTRUCTURE
+
+               The MIME-IMB body structure of the message.
+
+           •   ENVELOPE
+
+               The RFC-2822 envelope structure of the message.
+
+           •   FLAGS
+
+               The flags set for the message
+
+           •   INTERNALDATE
+
+               The internal date of the message
+
+           •   RFC822, RFC822.HEADER, RFC822.SIZE, RFC822.TEXT
+
+               RFC822, RFC822.HEADER, and RFC822.TEXT are equivilant to the
+               similarly-named BODY options from the first argument, except
+               for the format they return the results in (in this case,
+               RFC-822).  Except RFC822.HEADER, which is the RFC822 equivilant
+               of BODY.PEEK[HEADER], there is no '.PEEK' alternative
+               available, so the \Seen state may be altered.  SIZE returns the
+               RFC-822 size of the message and does not change the \Seen
+               state.
+
+           •   UID
+
+               The unique identifier for the message.
+
+           •   ALL
+
+               equivalent to FLAGS, INTERNALDATE, RFC822(SIZE), ENVELOPE
+
+           •   FAST
+
+               equivalent to FLAGS, INTERNALDATE RFC822(SIZE)
+
+           •   FULL
+
+               equivalent to FLAGS, INTERNALDATE, RFC822(SIZE), ENVELOPE,
+               BODY()
+
+           The final argument, other, provides some basic option-sanity
+           checking and assures that the options supplied are in the proper
+           format.
+
+           The return value is a hash of nested hashes.  The first level of
+           hashes represents the message id.  The second and subsequent levels
+           represents a level of multiparts, equivilant to the depth computed
+           by the server and used for the body[] section retrievals.
+           Particularly subject to nested hashing are the BODY and
+           BODYSTRUCTURE commands.  Commands used in the other argument
+           typically are found on the base level of the hash: for example, UID
+           and FLAGS would be found on the first level.  Structure and BODY
+           parts are found nested in their appropriate sections.
+
+           This is a complex method for a data-rich command.  Here are some
+           examples to aid in your understanding:
+
+           This command is equivilant to `xxx FETCH 1 (BODY[1]
+           BODY.PEEK[HEADER.FIELDS (FROM SUBJECT TO DATE X-STATUS) RFC822.SIZE
+           FLAGS]`: $imap->fetch(1,[{header=>'MATCH', headerfields=>'FROM
+           SUBJECT TO DATE X-STATUS ', peek=>1},
+                           {body=>1, offset=>1024, length=>4000}],
+                          qw(RFC822.SIZE FLAGS));
+
+           Please see the "Fetch Response Tutorial" at the bottom of this
+           document.
+
+           store($sequence, $operation, $flaglist)
+
+           Set flags on a sequence set. For information on the flaglist, see
+           the buildflaglist() method.  See DEFINITIONS above for "sequence
+           set".
+
+           Operation is one of the following actions to take on the flags:
+
+           •   FLAGS - Replace the currently set flags of the message(s) with
+               the flaglist.
+
+           •   +FLAGS - Add the flaglist flags to the currently set flags of
+               the message(s).
+
+           •   -FLAGS - Remove the flaglist flags from the currently set flags
+               of the message(s).
+
+           Under normal circumstances, the command returns the new value of
+           the flags as if a fetch() of those flags was done.  You can append
+           a .SILENT operation to any of the above commands to negate this
+           behavior, and not have it return the new flag values.
+
+           •   FLAGS.SILENT - Equivalent to FLAGS, but without returning a new
+               value
+
+           •   +FLAGS.SILENT - Equivalent to +FLAGS, but without returning a
+               new value
+
+           •   -FLAGS.SILENT - Equivalent to -FLAGS, but without returning a
+               new value
+
+               NOTE ON SILENT OPTION: The server SHOULD send an untagged
+               fetch() response if a change to a message's flags from an
+               external source is observed.  The intent is that the status of
+               the flags is determinate without a race condition.  In other
+               words, .SILENT may still return important (unexpected) flag
+               change information!
+
+           copy($sequence, $mailbox)
+
+           Copy a sequence set of messages to a mailbox.  See DEFINITIONS
+           above for "sequence set"
+
+           uidcopy($sequence,$mailbox)
+
+           Identical to the copy() command, except set is a UID set rather
+           than a sequence set.
+
+           uidfetch($sequence,$fetchstring)
+
+           Identical to the fetch() command, except set is a UID set rather
+           than a sequence set.
+
+           uidstore($sequence,$operation, $flaglist)
+
+           Identical to the store() command, except set is a UID set rather
+           than a sequence set.
+
+           uidexpunge($sequence)
+
+           Identical to the expunge() command, except you can specify a set of
+           messages to be expunged, rather than the entire mailbox, via a UID
+           set.  This function ensures the existance of the UIDPLUS atom in
+           the capability() command.
+
+           Note: At this time, the function does not implement the
+           reccomendation in RFC2359, which suggestests that clients use
+           alternate methods in selectivly expunging messages on servers that
+           do not support UIDPLUS.
+
+           uidsearch($searchstring)
+
+           Identical to the search() command, except the results are returned
+           with UIDs instead of sequence IDs.  See the end of this document
+           for valid search terminology.
+
+           setacl($mailbox,$user,@permissions)
+
+           Modify the access control lists to set the provided permissions for
+           the user on the mailbox, overwriting any previous access controls
+           for the user.   See the end of this document for a complete list of
+           possible permissions for use in the permissions list.
+
+           deleteacl($mailbox,$user)
+
+           Remove all permissions for user on the mailbox's access control
+           list.
+
+           getacl($mailbox)
+
+           Get the access control list for the supplied mailbox. Returns a
+           two-level hash, with the first level consisting of userIDs, and the
+           second level consisting of a hash of the permissions for the parent
+           userID, in both short and long form.
+
+           grant($mailbox,$user,@permissions) (not an official RFC2086
+           command)
+
+           Modify the access control lists to add the specified permissions
+           for the user on the mailbox.   See the end of this document for a
+           complete list of possible permissions for use in the permissions
+           list.
+
+           revoke($mailbox,$user,@permissions) (not an official RFC2086
+           command)
+
+           Modify the access control lists to remove the specified permissions
+           for the user on the mailbox.  If the end result is no permissions
+           for the user, the user will be deleted from the acl list.  See the
+           end of this document for a complete list of possible permissions
+           for use in the permissions list.
+
+           listrights($mailbox,$user)
+
+           Get the list of access controls that may be granted to the supplied
+           user for the supplied mailbox. Returns a hash populated with both
+           short and long rights definitions for testing for the existance of
+           a permision, like $hash{'list'}.
+
+           myrights($mailbox)
+
+           Get the access control list information for the currently
+           authorized user's access to the supplied mailbox.  Returns a hash
+           of the permissions available, in both short and long form.
+
+           setquota($mailbox,$type,$quota)
+
+           Set the quota on the mailbox.  Type is the type of quota to
+           specify, for example STORAGE.  Sized-based quota is supplied in KB.
+
+           getquota($mailbox)
+
+           Get the quota for the supplied mailbox.  The provided mailbox must
+           be a quota root, and the authorized user might need to be an
+           administrator, otherwise a "NO" reponse will be returned.
+           getquotaroot() is likely the more applicable command for finding
+           the current quota information on a mailbox.  Quota is returned in a
+           hash of lists: The hash elements correspond to the quota type (for
+           example, STORAGE).  The list consists of all numbers that
+           corresponded to the quote type.
+
+           For example, the RFC specifies that the STORAGE type returns the
+           quota used in the first element, and the maximum quota in the
+           second.  Quota units corresponding to sizes are in KB.
+
+           getquotaroot($mailbox)
+
+           Fetch the list of quotaroots and the quota for the provided
+           mailbox.  This command is idential to the getquota() command,
+           except the query doesn't have to be at the quota root, since this
+           command will find the quota root for the specified mailbox, then
+           return the results based on the results of the find.  Thus, there
+           will be an extra hash item, 'ROOT', that specified what was used as
+           the quota root.  Quota units corresponding to sizes are in KB.
+
+           rlist($reference,$mailbox)
+
+           List all the mailboxes the authorized user can see for the given
+           mailbox from the given reference.  This command lists both local
+           and remote mailboxes, and can also be an indicator to the server
+           that the client (you) supports referrals.  Not reccomended if
+           referrals are not supported by the overlying program.
+
+           Returns a listref of hasherefs, one per element, where each hashes
+           keys include FLAGS, REFERENCE, and MAILBOX.
+
+           IMPORTANT: Referrals come in a "NO" response, so this command will
+           fail even if responded to with a referral.  The referral MUST be
+           pulled out of the error(), and can then be parsed by the
+           parse_referral() command if desired, to extract the important
+           pieces for the clients used.
+
+           Unless overridden, rlist will check for the MAILBOX-REFERRALS
+           capability() atom before executing the command.  If the capability
+           is not advertised, the function will fail without sending the
+           request to the server.
+
+           rsub($reference,$mailbox)
+
+           List all the subscriptions for the authorized user for the given
+           mailbox from the given reference.  This command lists both local
+           and remote subscriptions, and can also be an indicator to the
+           server that the client (you) supports referrals.  Not reccomended
+           if referrals are not supported by the overlying program.
+
+           Returns a listref of hasherefs, one result per element, where each
+           hashes keys include FLAGS, REFERENCE, and MAILBOX.
+
+           IMPORTANT: Referrals come in a "NO" response, so this command will
+           fail even if responded to with a referral.  The referral MUST be
+           pulled out of the error(), and can then be parsed by the
+           parse_referral() command if desired, to extract the important
+           pieces for the clients used.
+
+           Unless overridden, rlsub will check for the MAILBOX-REFERRALS
+           capability() atom before executing the command.  If the capability
+           is not advertised, the function will fail without sending the
+           request to the server.
+
+           idle(FIXME)
+
+           Issue IDLE command, currently unimplemented.
+
+           id(%perams)
+
+           Provide identifying information to the server, and have the server
+           do the same to you.  The client can request the server's
+           information without sharing its own by supplying an undef perams
+           argument.  The information by both parties is useful for
+           statistical or debugging purposes, but otherwise serves no other
+           functional purpose.
+
+           The perams arguemnt is a hash, since information is in a key-value
+           format.  Keys can be anything, but must be less than 30 characters
+           in length, and values must be less than 1024 characters in length.
+           There are a set keys defined by the RFC that are reccomended:
+           These include:
+
+           •   name - Name of the program
+
+           •   version - Version number of the program
+
+           •   os - Name of the operating system
+
+           •   os-version - Version of the operating system
+
+           •   vendor - Vendor of the client/server
+
+           •   support-url - URL to contact for support
+
+           •   address - Postal address of contact/vendor
+
+           •   date - Date program was released, specified as a date-time in
+               IMAP4rev1
+
+           •   command - Command used to start the program
+
+           •   arguments - Arguments supplied on the command line, if any
+
+           •   environment - Description of environment, i.e., UNIX
+               environment List all the subscriptions for the authorized user
+               for the given mailbox from the given reference.variables or
+               Windows registry settings
+
+           None of the keys are required - if the client wishes not to supply
+           information for a key, the key is simply omitted.  Not all clients
+           support this extention:  Support can be identified by using the
+           capability() command, and verifying the atom "ID" is included in
+           the server-supplied list.
+
+           getannotation($mailbox, $entry_specifier, $attribute_specifier)
+
+           Retrieve annotations on a mailbox from the server.  If the mailbox
+           argument is empty, it will retrieve global server annotations
+           instead.
+
+           The entry specifier indicates which type of annotation you will
+           retrieve.  the "*" wildcard is valid for retrieving all
+           annotations, while the "%" wildcard will match all text except the
+           hierarchy delimiter '/'.
+
+           As of draft-ietf-imapext-annotate-15, valid global entries are:
+
+           •   /comment
+
+               Defines a comment or note associated with the server
+
+           •   /motd
+
+               Defines a "message of the day" for the server (Read-Only)
+
+           •   /admin
+
+               Indicates a method for contacting the server administrator
+               (Read-Only)
+
+           •   /vendor/<vendor-token>
+
+               Defines the top-level of entries associated with the server as
+               created by a particular product of some vendor.  Vendor tokens
+               are registered with IANA, using the ACAP [RFC2244] vendor
+               subtree registry.
+
+           ... and the mailbox entries are ...
+
+           •   /comment
+
+               Defines a per-mailbox comment, connected with the specified
+               mailbox
+
+           •   /sort
+
+               Defines the default sort criteria [I-D.ietf-imapext-sort] to
+               use when first displaying the mailbox contents to the user, or
+               NIL if sorting is not required.
+
+           •   /thread
+
+               Defines the default thread criteria [I-D.ietf-imapext-sort] to
+               use when first displaying the mailbox contents to the user, or
+               NIL if threading is not required.  This takes precidence over
+               the /sort annotation.
+
+           •   /check
+
+               A true/false value that indicates whether this mailbox should
+               be checked at regular intervals by the client.
+
+           •   /checkperiod
+
+               if /check is true, this numberic value indicates a period of
+               minutes that the client should check the mailbox.
+
+           •   /vendor/<vendor-token>
+
+               Identical to the global version, except they apply only to the
+               specified mailbox.
+
+           The attribute specifier indicates which part of the annotation you
+           wish to receive.  As of draft-ietf-imapext-annotate-15, valid
+           global attributes are
+
+           •   /value
+
+               String or binary data representing the value of the annotation.
+               NIL can be stored to delete an annotation.  Text value sshould
+               use the utf-8 character set.  Binary data uses the "literal8"
+               syntax element [I-D.melnikov-imap-ext-abnf] to store and
+               retreive such data.
+
+           •   /size
+
+               the size, in octets, of the value. (Read-only)
+
+           •   /content-language
+
+               Language used for the value.  This SHOULD be set if the value
+               stored is textual.
+
+           In addition, all attributes have a '.priv' and a '.shared' suffix,
+           meaning private and shared, respecitvly.  If neither attribute
+           suffix is specified, both will be retrieved (if allowed).
+
+           Returns a nested hash reference with the mailbox name as the first
+           layer, the entry as the second layer, the attribute name in the
+           third layer.
+
+           Structure example:
+
+             $r{<mailbox>}->{<tag>}->{<attribute>} = value
+
+           setannotation($mailbox, $mailbox, \%annoation_hash)
+
+           Set annotations on a mailbox from the server.  If the mailbox
+           argument is empty, it will attempt to set global server annotations
+           instead.
+
+           For details on annotations and its arguments, see the
+           getannotation() command.
+
+           The setannotation() command only accepts annotations for one
+           mailbox at a time - as a result, the setannotation() command
+           accepts a mailbox argument and an attribute tree, rather than the
+           entire annotation hash that getannotation returns.
+
+           As a result, setannotation takes the same type of hash that
+           getannotation returns, except starting at the mailbox level.  For
+           example, the hash must be in the form of
+
+             $r{<tag>}->{<attribute>} = value
+
+           The the first level is for which tags to set, and the second level
+           is what attributes those tags will have, while the value is the
+           actual value to assign.
+
+           One key difference between the getannotation() and setannotation()
+           hashes is that the setannotation() mailbox can contain a wildcard -
+           for example, setting 'INBOX.%' as the mailbox will add an
+           annotation for all mailboxes at the top-level of the INBOX
+           hierarchy.
+
+METHODS - SUPPORT
+           These are the support methods created to support the coder in creating some of the more complex and open-ended arguments for the above command methods.
+
+           buildacl(@acls)
+
+           This function is provided for the ease of creating an appropriate
+           aclstring.  The set of arguments is the set of permissions to
+           include in the aclstring.  The following are the supported rights:
+
+           •   lookup, list, l - mailbox is visible to
+               list()/lsub()/rlist()/rlsub() commands
+
+           •   read, r - select() the mailbox, perform check(), fetch(),
+               PARTIAL?, search(), copy() from mailbox
+
+           •   seen, s - keep seen/unseen information across sessions (store()
+               SEEN flag)
+
+           •   write, w - store() flags other than SEEN and DELETE
+
+           •   insert, i - perform append(), copy() into mailbox
+
+           •   post, p - send mail to submission address for mailbox
+
+           •   create, c - create() new sub-mailboxes
+
+           •   delete, d - store() DELETED flag, perform expunge()s
+
+           •   administer, admin, a - perform setacl() commands
+
+           •   all - all the above rights.  Overrides all other commands
+
+           •   none - none of the above rights.  This is the same as providing
+               no arguments.  Is overriden by any other supplied commands
+
+           •   0-9 - implementation or site defined rights (nonstandard)
+
+           buildfetch([\%body,\%body,...],$other)
+
+           Builds a fetch query to get only the data you want.  The first
+           argument, the body hash ref, is designed to easily create the body
+           section of the query, and takes the following arguments:
+
+           •   body
+
+               Specify in a section of the body to fetch().  undef is allowed,
+               meaning no arguments to the BODY option, which will request the
+               full message (unless a header is specified - see below).
+
+           •   offset
+
+               Specify where in the body to start retrieving data, in octets.
+               Default is from the beginning (0).  If the offset is beyond the
+               end of the data, an empty string will be returned.  Must be
+               specified with the length option.
+
+           •   length
+
+               Specify how much data to retrieve starting from the offset, in
+               octets.  If the acutal data is less than the length specified,
+               the acutal data will be returned.  There is no default value,
+               and thus must be specified if offset is used.
+
+           •   header
+
+               Takes either 'ALL', 'MATCH', or 'NOT'.  'ALL' will return all
+               the headers, regardless of the contents of headerfields.
+               'MATCH' will only return those headers that match one of the
+               terms in headerfields, while 'NOT' will return only those
+               headers that *do not* match any of the terms in the
+               headerfields.
+
+           •   headerfields
+
+               Used when header is 'MATCH' or 'NOT', it specifies the headers
+               to use for comparison.  This argument is a string of space-
+               seperated terms.
+
+           •   peek
+
+               When set to 1, uses the BODY.PEEK command instead of BODY,
+               which preserves the \Seen state of the message
+
+           A single hash reference may be supplied for a single body command.
+           If multiple body commands are required, they must be passed inside
+           an array reference (i.e. [\%hash, \%hash]).
+
+           If an empty hashref is supplied as a \%body argument, it is
+           interpreted as a BODY[] request.
+
+           The final argument, other, is a string of space-seperated stand-
+           alone data items.  Valid items via RFC3501 include:
+
+           •   BODY
+
+               The non-extensible form of BODYSTRUCTURE (not to be confused
+               with the first argument - this command fetches structure, not
+               content)
+
+           •   BODYSTRUCTURE
+
+               The MIME-IMB body structure of the message.
+
+           •   ENVELOPE
+
+               The RFC-2822 envelope structure of the message.
+
+           •   FLAGS
+
+               The flags set for the message
+
+           •   INTERNALDATE
+
+               The internal date of the message
+
+           •   RFC822, RFC822.HEADER, RFC822.SIZE, RFC822.TEXT
+
+               RFC822, RFC822.HEADER, and RFC822.TEXT are equivilant to the
+               similarly-named BODY options from the first argument, except
+               for the format they return the results in (in this case,
+               RFC-822).  There is no '.PEEK' available, so the \Seen state
+               may be altered.  SIZE returns the RFC-822 size of the message
+               and does not change the \Seen state.
+
+           •   UID
+
+               The unique identifier for the message.
+
+           •   ALL
+
+               equivalent to FLAGS, INTERNALDATE, RFC822.SIZE, ENVELOPE
+
+           •   FAST
+
+               equivalent to FLAGS, INTERNALDATE RFC822.SIZE
+
+           •   FULL
+
+               equivalent to FLAGS, INTERNALDATE, RFC822.SIZE, ENVELOPE, BODY
+
+           The final argument, other, provides some basic option-sanity
+           checking and assures that the options supplied are in the proper
+           format.  For example, if a program has a list of options to use, a
+           simple buildfetch(undef,join(' ',@args)) would manipulate the terms
+           into a format suitable for a fetch() command.  It is highly
+           recommended to pass options through this function rather than
+           appending a pre-formatted string to the functions output to ensure
+           proper formatting.
+
+           buildflaglist(@flags)
+
+           This function is provided for the ease of creating an appropriate
+           status flags string.  Simply provide it with a list of flags, and
+           it will create a legal flags string for use in any append()
+           command, store() command, or any other command that may require
+           status flags.
+
+           Since the RFCs don't explicity define valid flags, implementation
+           dependant and custom flags may exist on any given service -
+           therefore this function will blindly interpret any status flag you
+           give it.  The server may reject the subsequent command due to an
+           invalid flag.
+
+           check_capability($tag)
+
+           This function returns a simple true/false answer to whether the
+           supplied tag is found in the capability() list, indicating support
+           for a certain feature.  Note: capability() results are cached by
+           the object, however if capability() has not been executed at least
+           once, this will cause it to do so.
+
+           parse_referral($referral_line)
+
+           Given a referral line (the pre-cursory tag and 'NO' response are
+           optional), this function will return a hash of the important
+           information needed to connect to the referred server.  Hash keys
+           for connecting to a referred server include SCHEME, USER, AUTH,
+           HOST, PORT.  Other keys for use after successfull connection to the
+           referred server include PATH, QUERY, UID, UIDVALIDITY, TYPE,
+           SECTION.  Others are possible if returned within the path as
+           '/;key=value' format.
+
+SEARCH KEYS
+       •   <sequence set> - Messages with message sequence numbers
+           corresponding to the specified message sequence number set.
+
+       •   ALL - All messages in the mailbox; the default initial key for
+           ANDing.
+
+       •   ANSWERED - Messages with the \Answered flag set.
+
+       •   BCC <string> - Messages that contain the specified string in the
+           envelope structure's BCC field.
+
+       •   BEFORE <date> - Messages whose internal date (disregarding time and
+           timezone) is earlier than the specified date.
+
+       •   BODY <string> - Messages that contain the specified string in the
+           body of the message.
+
+       •   CC <string> - Messages that contain the specified string in the
+           envelope structure's CC field.
+
+       •   DELETED - Messages with the \Deleted flag set.
+
+       •   DRAFT - Messages with the \Draft flag set.
+
+       •   FLAGGED - Messages with the \Flagged flag set.
+
+       •   FROM <string> - Messages that contain the specified string in the
+           envelope structure's FROM field.
+
+       •   HEADER <field-name> <string> - Messages that have a header with the
+           specified field-name (as defined in [RFC-2822]) and that contains
+           the specified string in the text of the header (what comes after
+           the colon).  If the string to search is zero-length, this matches
+           all messages that have a header line with the specified field-name
+           regardless of the contents.
+
+       •   KEYWORD <flag> - Messages with the specified keyword flag set.
+
+       •   LARGER <n> - Messages with an [RFC-2822] size larger than the
+           specified number of octets.
+
+       •   NEW - Messages that have the \Recent flag set but not the \Seen
+           flag.  This is functionally equivalent to "(RECENT UNSEEN)".
+
+       •   NOT <search-key> - Messages that do not match the specified search
+           key.
+
+       •   OLD - Messages that do not have the \Recent flag set.  This is
+           functionally equivalent to "NOT RECENT" (as opposed to "NOT NEW").
+
+       •   ON <date> - Messages whose internal date (disregarding time and
+           timezone) is within the specified date.
+
+       •   OR <search-key1> <search-key2> - Messages that match either search
+           key.
+
+       •   RECENT - Messages that have the \Recent flag set.
+
+       •   SEEN - Messages that have the \Seen flag set.
+
+       •   SENTBEFORE <date> - Messages whose [RFC-2822] Date: header
+           (disregarding time and timezone) is earlier than the specified
+           date.
+
+       •   SENTON <date> - Messages whose [RFC-2822] Date: header
+           (disregarding time and timezone) is within the specified date.
+
+       •   SENTSINCE <date> - Messages whose [RFC-2822] Date: header
+           (disregarding time and timezone) is within or later than the
+           specified date.
+
+       •   SINCE <date> - Messages whose internal date (disregarding time and
+           timezone) is within or later than the specified date.
+
+       •   SMALLER <n> - Messages with an [RFC-2822] size smaller than the
+           specified number of octets.
+
+       •   SUBJECT <string> - Messages that contain the specified string in
+           the envelope structure's SUBJECT field.
+
+       •   TEXT <string> - Messages that contain the specified string in the
+           header or body of the message.
+
+       •   TO <string> - Messages that contain the specified string in the
+           envelope structure's TO field.
+
+       •   UID <sequence set> - Messages with unique identifiers corresponding
+           to the specified unique identifier set.  Sequence set ranges are
+           permitted.
+
+       •   UNANSWERED - Messages that do not have the \Answered flag set.
+
+       •   UNDELETED - Messages that do not have the \Deleted flag set.
+
+       •   UNDRAFT - Messages that do not have the \Draft flag set.
+
+       •   UNFLAGGED - Messages that do not have the \Flagged flag set.
+
+       •   UNKEYWORD <flag> - Messages that do not have the specified keyword
+           flag set.
+
+       •   UNSEEN - Messages that do not have the \Seen flag set.
+
+FETCH RESPONSE TUTORIAL
+       The response to the fetch command is a tree of hash references pointing
+       to other hash references in a tree-like structure.  Going into this
+       module and using fetch without an understanding about how the results
+       come back is at least frustrationg and at worst futile.  This section
+       is meant to clear some of the potential confusion up, and for you to
+       understand exactly where the data you want is stored.
+
+       The fetch response is stored in a tree structure of hash references.
+       This means that it will not be uncommon for you to have ugly-looking
+       statements like such strewn throughout your code:
+
+         $fetch{$msgid}->{BODY}->{2}->{HEADER}->{BODY}
+
+       By the end of this tutorial, you will hopefully understand exactly what
+       that top statement means.
+
+       To understand where this structure comes from, you need to understand
+       the structure that RFC3506 defines parts of a message.  An example from
+       the RFC looks like this:
+
+              HEADER     ([RFC-2822] header of the message)
+              TEXT       ([RFC-2822] text body of the message) MULTIPART/MIXED
+              1          TEXT/PLAIN
+              2          APPLICATION/OCTET-STREAM
+              3          MESSAGE/RFC822
+              3.HEADER   ([RFC-2822] header of the message)
+              3.TEXT     ([RFC-2822] text body of the message) MULTIPART/MIXED
+              3.1        TEXT/PLAIN
+              3.2        APPLICATION/OCTET-STREAM
+              4          MULTIPART/MIXED
+              4.1        IMAGE/GIF
+              4.1.MIME   ([MIME-IMB] header for the IMAGE/GIF)
+              4.2        MESSAGE/RFC822
+              4.2.HEADER ([RFC-2822] header of the message)
+              4.2.TEXT   ([RFC-2822] text body of the message) MULTIPART/MIXED
+              4.2.1      TEXT/PLAIN
+              4.2.2      MULTIPART/ALTERNATIVE
+              4.2.2.1    TEXT/PLAIN
+              4.2.2.2    TEXT/RICHTEXT
+
+       This example is rather complicated, but it gets the point across that
+       this is no small feat.  From the top, you can see that the HEADER and
+       the TEXT are seperate pieces for the main message that was delivered,
+       and thus can be retrieved as such.  1, 2, and 3 specify different
+       sections of the email message - part 1 is a plain text email (the
+       acutal text that was written to you), while part 2 is an OCTET-STREAM,
+       perhaps a binary attachment to the email.  The 3rd message is defined
+       as an RFC822 - a bounce message.  The bounce message (3), naturally has
+       its own HEADER, and TEXT parts, along with an email with an attachment
+       (the RFC822 bounce message included the original email, and all its
+       attachments!).  This goes on, and as you can see with part 4, the
+       nesting can be quite deep, depending on if the email is multi-part
+       (i.e. both plain-text and HTML), and/or if attachments have
+       attachments, etc.
+
+       Now, lets look at a concrete example.  Lets say that we received a
+       plain-text email with a forwarded email as an attachment.  This would
+       mean that the message contains 2 parts, and, for the sake of argument,
+       we know this ahead of time.  The command to retrieve the header of the
+       forwarded message would be
+
+           my %fetch = $imap->fetch($sequence, {'body' => '2.header'});
+
+       For this example, however, we're going to retrieve the entire message,
+       but still seek out the forwarded message's header
+
+           my %fetch = $imap->fetch($sequence, {});
+
+       where $imap is a connected IMAP::Client instance, and $sequence has the
+       message ID we are looking for.
+
+       Now, we need to retrieve the data that the IMAP server do dutifully
+       sent to us, and this is where we get grease on our hands and learn
+       exactly how to traverse a fetch response.
+
+       The first level of a fetch response is always the message ID of the
+       message, and is the only level that is *not* a reference.  This allows
+       the fetch command to retrieve multiple message within a single command
+       (i.e. using the sequence of '1:*' will retrieve all messages in the
+       mailbox), and still present the data in a managable fasion.
+
+       Lets say that $sequence was the message '1234'.  In order to reach the
+       base of the message we are looking to retrieve the data from, we now
+       need to access $fetch{1234}.  Everything below here is information
+       about our message.
+
+       Next, we will need to navigate to the area of the tree that will
+       contain the data.  The data we are looking for will *always* be in the
+       same place, no matter if we retrieved the entire message, half the
+       message, or just that one single peice of data, like the first example
+       - if it was retreived, it will be in its specified place.  This the key
+       design feature of the fetch return structure.
+
+       At this level ($fetch{1234}), we can access anything about the main
+       message.  We are looking at the message from the outside, what you
+       would normally see in your email client when you first opened a
+       message.  We can look at things like the date of the message, the flags
+       set on this message by the imap server, the UID of the message, the
+       envelope of the message, etc.
+
+       In this case, we're not interested in the main message, however.  We
+       want to retrieve the header of the forwarded message, so we need to go
+       into the BODY of the message.  To get there, we're now at
+       $fetch{1234}->{BODY}.  IMAP::Client uses the {BODY} reference to
+       seperate it from the other aspects of the main message, incidcating its
+       a result from a BODY fetch query.   The BODY section also contains
+       various peices of information, depending on what the CONTENTTYPE of the
+       message is - for things like MULTIPART/ALTERNATIVE (which means the
+       message comes in multiple forms, like plain text and HTML), there
+       simply isn't much information to relay, since that content type is
+       basically just a container for the two message formats.  If the section
+       is part of the actual message (rather than just a container) - for
+       example a PLAIN/TEXT part, things like SIZE for the size of the
+       message, LINES for number of lines in the message, and even the
+       ENCODING and extra PARAMETERS are available.
+
+       Now that we're in the body, we can look at things like the content type
+       of this particular piece of the email.  Again, we're not interested in
+       whats here.  What we want is the second part of this body, the
+       attachment part.  The main body of the email that was sent is located
+       in $fetch{1234}->{BODY}->{1}, and the attachment is located at
+       $fetch{1234}->{BODY}->{2}.  (See how the fetch structure reflects the
+       IMAP structure of the message).  Had there been more attachments or
+       parts, there would have been more parts we could traverse, like
+       $fetch{1234}->{BODY}->{3}.
+
+       Now at $fetch{1234}->{BODY}->{2}, we're in the section of the message
+       we are interested in.  Here we can find out information about the part
+       we're in.  This part is essentially identical to the first {BODY} part,
+       only representing a subset of the mesage that {BODY} represented.
+
+       Now that we're here, we want the header for this part, which gives us
+       $fetch{1234}->{BODY}->{2}->{HEADER}.  We're not done yet, however, as
+       there is still information about the HEADER available, like the SIZE.
+       If we want the acutal HEADER body of the header, rather than a piece of
+       information about it, we need to go one level deeper, to
+       $fetch{1234}->{BODY}->{2}->{HEADER}->{BODY}.  This is the value that
+       will allow you to retreive the header of the forward that was sent in
+       an attachment.
+
+       In the last example, we assumed that we already knew the struture of
+       the email.  In real life, this is almost never the case.  If you need
+       to know what the structure of a message looks like so you can extract a
+       small piece of it, you can use the BODYSTRCUTRE command, which is
+       structured simiilarly to the BODY command.  If we use the example
+       above, then we can traverse the BODYSTRUCTURE information by going to
+       $fetch{1234}->{BODYSTRUCTURE}.  From here, you can explore and poke
+       around to see exactly what the structure is that the message has.  The
+       acutal data within a BODYSTRUCTURE is basically all the flags you would
+       see when youre in a part - like the content  type, size, lines, etc -
+       but without any of the acutal message.  As its name implies, its mainly
+       for determining the structure and *type* of the message and its
+       subparts.  Part numbers are always sequential.
+
+AUTHOR/COPYRIGHT
+           Copyright 2005-2006, Brenden Conte <conteb at cpan dot org>  All rights reserved.
+
+           This library is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+SEE ALSO
+       perl, IO::Socket, IO::Socket::SSL, MIME::Base64, URI, URI::imap,
+       URI::Escape
+
+POD ERRORS
+       Hey! The above document had some coding errors, which are explained
+       below:
+
+       Around line 712:
+           You can't have =items (as at line 719) unless the first thing after
+           the =over is an =item
+
+       Around line 1139:
+           You can't have =items (as at line 1150) unless the first thing
+           after the =over is an =item
+
+       Around line 2409:
+           You can't have =items (as at line 2417) unless the first thing
+           after the =over is an =item
+
+perl v5.40.2                      2006-09-28                   IMAP::Client(3)

@@ -1,0 +1,1079 @@
+XPRA(1)                                                                                 General Commands Manual                                                                                XPRA(1)
+
+NAME
+       xpra - viewer for remote, persistent X applications
+
+SYNOPSIS
+
+       xpra start [CONNECTIONSTRING] | xpra start-desktop [CONNECTIONSTRING] [OPTIONS..]
+       xpra attach [CONNECTIONSTRING] [OPTIONS..]
+       xpra shadow [CONNECTIONSTRING] [OPTIONS..]
+       xpra proxy [:DISPLAY] [OPTIONS..]
+       xpra stop | xpra exit | xpra detach | xpra screenshot filename | xpra version | xpra info [CONNECTIONSTRING] | xpra top [CONNECTIONSTRING] [OPTIONS..]
+       xpra control [CONNECTIONSTRING] command [arguments..]  [--ssh=CMD] [--remote-xpra=CMD] [--socket-dir=DIR] [--socket-dirs=DIRS]
+       xpra initenv [--socket-dir=DIR]
+       xpra list [--socket-dir=DIR]
+       xpra list-windows [--socket-dir=DIR]
+       xpra showconfig [OPTIONS..]
+       xpra showsetting [SETTING1..]
+       xpra list-mdns
+       xpra upgrade [:DISPLAY] [...any options accepted by xpra start...]
+       xpra upgrade-desktop [:DISPLAY] [...any options accepted by xpra start-desktop...]
+
+DESCRIPTION
+       Xpra is a tool which allows you to run X programs — usually on a remote host — and then direct their display to your local machine, disconnect from these programs, and reconnect from the same
+       or another machine, all without losing any state.  It differs from standard X forwarding in that it allows disconnection and reconnection without disrupting the forwarded application; it dif‐
+       fers  from VNC and similar remote display technologies in that xpra can run rootless: i.e., applications forwarded by xpra appear on your desktop as normal windows managed by your window man‐
+       ager, rather than being all "trapped in a box together".  Xpra also uses a custom protocol that is self-tuning and relatively latency-insensitive, and thus is usable over network  connections
+       that are too slow or unreliable for standard X forwarding.  Xpra can also be used to shadow an existing X11 display, or in desktop mode where it behaves more like VNC.
+
+       By default the Xpra server announces available sessions (username and display number) via mDNS to the local network. Use mdns=no to disable it.
+
+CONNECTION STRINGS
+       Xpra supports many types of connection strings (some may require extra packages to be installed):
+
+   :DISPLAY
+       Local displays: this is the simplest form and is only valid for the current local displays of the current user.
+
+   tcp://[USERNAME@]HOST:PORT[/DISPLAY]
+       TCP mode uses port numbers and not display numbers. If multiple displays are available through a single TCP port (ie: using a proxy server), then one can also specify the display number.
+
+   ssl://[USERNAME@]HOST:PORT[/DISPLAY]
+       SSL adds a secure socket layer on top of the TCP mode.
+
+   vsock://[USERNAME[:PASSWORD]@]HOST:PORT
+       Almost identical to the TCP mode, but using AF_VSOCK for transport.
+
+   ws://[USERNAME[:PASSWORD]@]HOST:PORT/[DISPLAY]
+       Connect using websocket protocol.
+
+   wss://[USERNAME[:PASSWORD]@]HOST:PORT/[DISPLAY]
+       Connect using secure websocket protocol. (websocket with SSL)
+
+   ssh://[USERNAME[:PASSWORD]@]HOST[:SSH_PORT]/[DISPLAY][?QUERYSTRING]
+       Connect using secure shell. (SSH)
+
+       Further  options  can be specified using the --ssh command line option.  The QUERYSTRING can be used to specify an ssh proxy: ?proxy=ssh://[USERNAME[:PASSWORD]@]HOST[:SSH_PORT] xpra will then
+       establish an SSH connection to the specified "proxy" host, and from that host xpra will set up an SSH connection to the xpra server.
+
+       For backwards compatibility, SSH mode also supports the syntax: ssh:[USERNAME[:PASSWORD]@]HOST:DISPLAY but this form does not support specifying the SSH port number.  Older versions also used
+       the form protocol:host:port, but users are encouraged to move to a more standard URI format using :// as separator.
+
+       The password need only be specified when the server authentication module requires it. (ie: often when authenticating against MS Windows servers, or with multifile and  sqlite  authentication
+       modules)
+
+EXAMPLES
+       xpra start :7
+            Start  an xpra server using display number :7.  Note: using DISPLAY=:7 xterm to start applications against a specific display is not recommended. Always prefer using xpra's --start= com‐
+            mand line option instead.  See this next example:
+
+       xpra start --start=firefox
+            Start an xpra server, choosing a display automatically and start firefox on that virtual display.  No window will appear until you attach with xpra attach.  The start child commands will
+            inherit an environment tailored for running under xpra.
+
+       xpra start ssh://bigbox/7 --start=xterm
+            Start an xpra server on bigbox with an xterm in it, and connect to it.
+
+       xpra start-desktop --start=xfce4-session
+            Start an xfce session in a nested X11 server on an automatically assigned display number.
+
+       xpra list
+            Show a list of xpra servers you have running on the current host.
+
+       xpra list-windows
+            Show a list of xpra servers you have running on the current host, including the session name and a list of windows.  (only if the session can be queried using xpra info)
+
+       xpra list-mdns
+            Show a list of xpra servers found via mDNS. (local network)
+
+       xpra showconfig
+            Shows the configuration that would be used with other sub-commands, taking into account the command line arguments.
+
+       xpra showsetting [SETTING1..]
+            Shows the value of a specific configuration setting and which configuration directory set this value.
+
+       xpra attach :7
+            Attach to the xpra server that is using local display number :7.  Any apps running on that server will appear on your screen.
+
+       xpra attach ssh://foo@frodo/7
+            Use ssh to attach to the xpra server that is running on machine frodo as user foo and using display :7.  Any apps running on that server will appear on your local screen.
+
+       xpra start :7 --start=screen
+            Start an xpra server and a screen(1) session.  If any of the applications inside screen attempt to use X, they will be directed to the xpra server.
+
+DISPLAYS
+       Understanding the basic idea of displays is critical to using xpra successfully.
+
+       The idea comes from standard X.  If you have multiple X servers running on the same host, then there has to be some way to distinguish them.  X does this by assigning  each  server  a  small,
+       unique  integer called (perhaps confusingly) its "display".  In the common case of a desktop machine that has only one X server running, that server uses display ":0" (or sometimes you'll see
+       ":0.0", which is effectively the same).  When an application starts under X, it needs to know how to find the right X server to use; it does this by checking the  environment  variable  $DIS‐
+       PLAY.
+
+       Xpra  faces a similar problem — there may be multiple xpra servers running on the same host, as well as multiple X servers.  It solves this problem by re-using X's solution — each xpra server
+       has a display associated with it.  This display functions as both an X display (for when xpra is talking to X applications) and as an identifier by which xpra clients (like xpra  attach)  can
+       locate the xpra server.
+
+       You  may  omit the display number when using xpra start: a display will be chosen for you automatically.  The display number chosen will be shown in the log output, you should also be able to
+       see it with xpra list.  On Microsoft Windows and Mac OSX, the display number should be omitted.
+
+       Otherwise, when starting an xpra server, you may want to specify the name of the display to use.  To do this, simply pick any number you like and stick a colon in front of it.   For  instance
+       :7, :12, and :3117 are all valid display names.  Just keep in mind that:
+
+       •      Every X or xpra server that is running on a single machine must use a different display name.  If you pick a number that is already in use then xpra will not work.
+
+       •      The first few numbers (0, 1, 2) are commonly used by real X servers.
+
+       •      Everyone who connects to a given machine using ssh(1) with X forwarding enabled will also use a display number; ssh generally picks numbers near ten (10, 11, 12, ...).
+
+       When specifying an xpra server to a client program like xpra attach, xpra detach, xpra stop, xpra exit, xpra version, xpra info, xpra list or xpra screenshot then you can use a display of the
+       form  :DISPLAY  to  refer to a server on the local host, or one of the form ssh://[USER@]HOST/DISPLAY to refer to a server on a remote host; xpra will automatically connect to the remote host
+       using ssh(1).  Generally, if you have only one xpra session running on a machine (which you can verify by running xpra list on that machine), then you can omit the number entirely;  xpra  at‐
+       tach alone will attach to the lone xpra server on the current machine regardless of its number, xpra attach ssh://frodo will similarly attach to the lone xpra session on a remote machine.
+
+       Connecting  using the display number assumes that the client and server use the same configuration for socket directories, or at least that the client can find at least one of the directories
+       used by the unix domain sockets (see bind, socket-dir and socket-dirs).
+
+       If the xpra server was given the --bind-tcp, --bind-ssl --bind-udp=[HOST]:PORT, --bind-ws, --bind-wss or --bind-vsock option when started then you can also connect to it using  a  display  of
+       the form tcp://HOST:PORT[/DISPLAY], udp://HOST:PORT[/DISPLAY], ssl://HOST:PORT[/DISPLAY], ws://HOST:PORT[/DISPLAY], wss://HOST:PORT[/DISPLAY] or vsock://HOST:PORT[/DISPLAY].
+
+SUBCOMMANDS
+   xpra start
+       This command starts a new xpra server, including any necessary setup.  (When starting a remote server with the ssh://HOST/DISPLAY syntax, the new session will also be attached.)
+
+   xpra start-desktop
+       Starts a nested X11 server, all child commands will be started in the nested X11 server.
+
+   xpra attach
+       This command attaches to a running xpra server, and forwards any applications using that server to appear on your current screen.
+
+   xpra detach
+       Detaches the given xpra display.
+
+   xpra screenshot
+       Takes a screenshot and saves it to the filename specified.  Note: screenshots can only be taken when a client is attached.
+
+   xpra version
+       Queries the server version and prints it out.  Note: older servers may not support this feature.
+
+   xpra info
+       Queries the server for version, status and statistics.
+
+   xpra top
+       Shows the server's key health attributes.
+
+   xpra control
+       Modify the server at runtime by issuing commands.  The list of commands can be obtained by specifying "help" as command.  Some of those commands may support a "help" mode themselves.
+
+   xpra initenv
+       This internal command creates the run-xpra script used with ssh connections.
+
+   xpra stop
+       This command attaches to a running xpra server, and requests that it terminates immediately.  This generally causes any applications using that server to terminate as well.
+
+   xpra exit
+       This command attaches to a running xpra server, and requests that it terminates immediately.  Unlike xpra stop, the Xvfb process and its X11 clients (if any) will be left running.
+
+   xpra showconfig
+       This commands shows the configuration which would be used given the arguments provided.  You can also specify as extra arguments the specific options that should be displayed, or use the spe‐
+       cial value all to display all the options including the ones which are normally not displayed because they are not relevant on the given system.
+
+   xpra list
+       This command finds all xpra servers that have been started by the current user on the current machine, and lists them.
+
+   xpra upgrade
+       This  command starts a new xpra server, but instead of creating it from scratch, it attaches to another existing server, tells it to exit, and takes over managing the applications that it was
+       managing before.  As the name suggests, the main use case is to replace a server running against an older version of xpra with a newer version, without having to restart  your  session.   Any
+       currently-running xpra attach command will exit and need to be restarted.
+
+   xpra upgrade-desktop
+       Same as upgrade but for servers started using start-desktop.  It is possible to upgrade seamless server into a desktop server and vice versa.
+
+   xpra shadow
+       This command shadows an existing X11 display. If there is only one X11 display active and its number is below 10, it can be auto-detected.
+
+       Note that this mode of operation uses screenscraping which is far less efficient. Using a video encoder (h264 or vp8) is highly recommended for this mode of operation.
+
+   xpra proxy
+       This  command  allows a single server to proxy connections for multiple others, potentially serving as a load balancing or authentication entry point for many sessions.  The proxy server will
+       spawn a new process for each proxy connection, this proxy process will create an unauthenticated new unix domain socket which can be used with the subcommands info, version and stop.
+
+   Important Note
+       Some platforms and package managers may choose to only build the client and not the server. In this case, only the attach subcommand will be available.
+
+OPTIONS
+   General options
+       --version
+              Displays xpra's version number.
+
+       -h, --help
+              Displays a summary of command line usage.
+
+       -d FILTER1,FILTER2,..., --debug=FILTER1,FILTER2,...
+              Enable debug logging.  The special value all enables all debugging.
+
+       --mmap=yes|no|ABSOLUTEFILENAME
+              Enable or disable memory mapped pixel data transfer.  By default it is normally enabled automatically if the server and the client reside on the same filesystem namespace.  This method
+              of data transfer offers much lower overheads and reduces both CPU consumption and local network traffic.  When attaching, you can also specify an absolute path where the mmap file will
+              be created.
+
+       --mmap-group=GROUP
+              Sets the mmap file's gid to the group specified, and sets the permissions to 660.  This is necessary to share the mmap file across user accounts.  You can also use  the  special  GROUP
+              values:
+
+              no     Disable the functionality, the mmap file will use the default file permissions and default group ownership.
+
+              SOCKET The group used will be the same one as found on the unix domain socket file the client connects to.  Obviously, this can only work when connecting to unix domain sockets.
+
+              auto   Will use the 'xpra' group if the user is a member, otherwise it will fallback to the same behaviour as SOCKET.
+
+       --windows=yes|no
+              Enable or disable the forwarding of windows. This is usually the primary use for xpra and should be enabled.
+
+       --min-size=WIDTHxHEIGHT
+              Sets the minimum size for all decorated windows.
+
+       --max-size=WIDTHxHEIGHT
+              Sets the maximum size for all windows.
+
+       --readonly=yes|no
+              Read only mode ignores all keyboard and mouse activity.
+
+       --clipboard=yes|no|clipboard-type
+              Enable or disable clipboard synchronization.  If disabled on the server, no clients will be able to use clipboard synchronization at all. If turned off on the client, only this partic‐
+              ular  connection will ignore clipboard data from the server.  This can also be used to specify a different clipboard implementation.  The clipboard types available will vary from plat‐
+              form to platform and also depend on build time environment and options so this is best left on auto.  Other clipboard types available may include:
+
+              translated
+                     Clipboard which can translate from one type of selection to another
+
+              GDK    The most complete clipboard implementation, includes full X11 support
+
+              default
+                     Fallback clipboard, with limited X11 support
+
+              OSX    OSX specific clipboard
+
+       --clipboard-direction=to-server|to-client|both|disabled
+              Choose the direction of the clipboard synchronization.
+
+       --pulseaudio=yes|no
+              Enable or disable the starting of a pulseaudio server with the session.
+
+       --pulseaudio-command=SERVER-START-COMMAND
+              Specifies the pulseaudio command to use to start the pulseaudio server, unless disabled with pulseaudio=no.
+
+       --session-name=VALUE
+              Sets the name of this session. This value may be used in notifications, utilities, tray menu, etc.  Setting this value on the server provides a default value which may be overridden on
+              the client.
+
+       --encoding=ENCODING
+              This specifies the image encoding to use, there are a number of encodings supported: jpeg, png, png/P, png/L, webp, rgb, vp8, vp9, h264 and h265 (some may not be available in your  en‐
+              vironment).  The default option is auto which allows the server to select the best encoding automatically.
+
+              auto   default mode: the built-in heuristics will choose the most appropriate encoding
+
+              png    compressed and lossless, can be quite slow.
+
+              png/P  compressed and lossy: it uses a colour palette, which means better compression but still slow.
+
+              png/L  compressed and lossy: grayscale only using a palette.
+
+              rgb    a raw pixel format (lossless) compressed with lz4, lzo or zlib (see compressors) the compression ratio is lower, but it is by far the fastest encoding available.
+
+              webp   can be used in lossy or lossless mode, useful for graphical applications, it compresses better than jpeg and is reasonably fast except at high resolutions.
+
+              jpeg   can be useful for graphical applications, it is lossy and usually very fast.
+
+              vp8    lossy video encoding which always uses colour subsampling.  Fast at encoding and decoding.
+
+              vp9    Video encoding which supports both lossy and lossless modes, available if your ffmpeg library version is recent enough.
+
+              h264   One of the best encoding available: it is fast, efficient and tunable via the quality and speed options.
+
+              h265   Far too slow at encoding, avoid.
+
+       The  default encoding which is automatically selected if you do not specify one will depend on what options are available on both the server and the client: rgb is always available (builtin),
+       jpeg and png require the Python Imaging Library, vp8, vp9, webp, h264 and h265 all require their respective shared libraries, as well as the xpra codec that uses them.
+
+       Note: when selecting a video encoding (usually h264, vp8 or vp9), it will only be used if the screen is updating quickly enough, some of the smaller screen updates will also be sent using one
+       of the other non-video encodings.
+
+       --video-scaling=on|off|SCALING
+              How much automatic video downscaling should be used, from 1 (rarely) to 100 (aggressively), 0 to disable.  Video scaling is normally used with video regions or very large windows  (es‐
+              pecially  full  screen  windows) to try to maintain a decent framerate.  Video downscaling negatively affects visual quality and will cause automatic refreshes (if enabled), it is most
+              useful on video content where it saves a considerable amount of bandwidth.
+
+       --socket-dir=DIR
+              Location where to write and look for the Xpra socket files.  The default location varies from platform to platform ("~/.xpra" on most Posix systems).  If unspecified, the  first  value
+              from socket-dirs will be used.  It may also be specified using the XPRA_SOCKET_DIR environment variable.
+
+              When using the socket-dir option, it is generally necessary to specify socket-dir or socket-dirs on all following commands, for xpra to work with the open sessions.
+
+              By specifying a shared directory this can be coupled with the mmap-group and socket-permissions option to connect Xpra sessions across user accounts with shared memory acceleration.
+
+       --socket-dirs=DIR
+              Specifies  the directories where to look for existing sockets if a specific one was not set using socket-dir.  You may specify each directory using a new --socket-dirs command line ar‐
+              gument, or joined together by the path separator (: on Posix).  The paths will be expanded.  (ie: --socket-dirs=~/.xpra:/tmp)
+
+       --file-transfer=on|off
+              Enable file transfers.
+
+       --open-files=on|off
+              This option may be used to allow the remote end to automatically open files after they have been uploaded.  This may be a security risk if you are using  xpra  to  constrain  what  the
+              clients can execute on the server.
+
+       --forward-xdg-open=on|off
+              Intercept execution of xdg-open and forward the request to the client.
+
+       --open-command=COMMAND
+              The command to use for opening files and URLs.
+
+       --bandwidth-limit=BITSPERSECOND
+              Restrict  bandwidth  usage  to below the limit given.  The client's value cannot raise the limit of the server.  The value may be specified using standard units, ie: 1Mbps or 500K.  In
+              auto mode, the client will set the bandwidth limit value to 80% of the maximum speed of the network interface it is using to connect to the server.
+
+   Options for start, start-desktop, upgrade, proxy and shadow
+       --daemon=yes|no
+              By default, the xpra server puts itself into the background, i.e. 'daemonizes', and redirects its output to a log file.  This can be used to prevent that behavior  (useful  mostly  for
+              debugging).
+
+       --resize-display=yes|no
+              Resize the virtual display to match the resolution of the client currently connected.  This only applies to the start and start-desktop subcommands.
+
+       --fake-xinerama=PATH|auto|no
+              Specify  the  path  to the libfakeXinerama.so library which will be injected into all the child processes the server starts using LD_PRELOAD.  This can also be disabled or set to auto:
+              the server will then try to locate the library itself.  This only applies to the start subcommand.
+
+       --chdir=DIR
+              Change to this directory after daemonizing.
+
+       --uid=UID and --gid=GID
+              When launching the server as root, these options can be used to drop privileges to the given UID / GID.
+
+       --pidfile=FILENAME
+              Writes the server process ID to this file on startup.  If the file has not been replaced, it will be deleted when the server exits.
+
+       --bind=BIND_LOCATION
+              Create a local Unix domain socket (on Unix) or named-pipe (on MS Windows) for each bind option specified.
+
+              This option can be specified multiple times to specify multiple socket locations.  These sockets support local connections with the :7-style display  address,  and  remote  connections
+              with the ssh://frodo/7-style display address.
+
+              Local sockets may also process HTTP / Websocket connections if the html switch is enabled.
+
+              The location can take the form:
+
+              none   do not create a socket
+
+              auto   backwards compatible default which uses the current socket-dir
+
+              DIRECTORY/
+                     create  a  socket  in  the directory specified, if the directory does not exist then it will be created - you should include the trailing slash to prevent the confusion with the
+                     PATH form:
+
+              PATH   create the socket using the path specified
+
+       --bind-tcp=[HOST]:PORT
+              Create a TCP socket for each --bind-tcp option specified.  If the host portion is omitted, then 127.0.0.1 (localhost) will be used.  If you wish to accept  connections  on  all  inter‐
+              faces, pass 0.0.0.0 for the host portion.
+
+              Using  this switch without using the tcp-auth option is not recommended, and is a major security risk (especially when passing 0.0.0.0)!  Anyone at all may connect to this port and ac‐
+              cess your session.
+
+              TCP sockets may also process HTTP / Websocket connections if the html switch is enabled.  TCP sockets may also be upgraded to SSL sockets if the ssl switch is enabled.
+
+       --bind-udp=[HOST]:PORT
+              Create a UDP socket for each --bind-udp option specified.  If the host portion is omitted, then 127.0.0.1 (localhost) will be used.  If you wish to accept  connections  on  all  inter‐
+              faces, pass 0.0.0.0 for the host portion.
+
+              Using  this switch without using the udp-auth option is not recommended, and is a major security risk (especially when passing 0.0.0.0)!  Anyone at all may connect to this port and ac‐
+              cess your session.  UDP sessions are trivial to hijack for anyone able to sniff even just a single packet, it should only be used in very specific use-cases, and never  over  unsecured
+              networks.
+
+       --bind-ws=[HOST]:PORT
+              Create an HTTP / Websocket listener.  See bind-tcp for host restrictions, you should use the auth-ws to secure access.
+
+       --bind-wss=[HOST]:PORT
+              Create an HTTPS / Secure Websocket listener.  See bind-tcp for host restrictions, you should use the auth-wss to secure access.
+
+       --bind-ssl=[HOST]:PORT
+              Just like --bind-tcp but for SSL sockets.  See ssl-auth and the other SSL options.
+
+       --bind-rfb=[HOST]:PORT
+              Listens for RFB connections on the given port.  These sockets are only supported with the start-desktop and shadow modes.
+
+       --bind-vsock=CID:PORT
+              Create a VSOCK socket for each --bind-vsock option specified.
+
+       --auth=MODULE[:OPTION=VALUE]
+              Specifies the authentication module to use for unix domain sockets created using the bind switch. Authentication modules can validate a username and password against a variety of back‐
+              end modules:
+
+              allow  always allows authentication - this is dangerous and should only be used for testing
+
+              fail   always fails authentication, useful for testing
+
+              env    matches against the environment variable specified by the name option (which defaults to XPRA_PASSWORD).  ie: --auth=env:name=SOME_OTHER_ENV_VAR_NAME.
+
+              password
+                     matches  against the password specified using the value option.  ie: --auth=password:value=YOURPASSWORD.  Note: this command line option may be exposed to other processes on the
+                     same system.
+
+              file   checks the password against the password data found in the file specified using the filename option.  ie: --auth=file:filename=./password.txt.
+
+                     The contents of this file will be treated as binary data, there are no restrictions on character encodings or file size.  Beware of trailing newline characters which will be in‐
+                     cluded in the password data.
+
+              multifile
+                     checks the username and password against the file specified using the filename option.  The file must contain each user credentials on one line of the form:
+
+                     username|password|uid|gid|displays|env_opts|session_opts
+
+                     It is not possible to have usernames or password that contain the pipe character | which is used as delimiter, or newlines and carriage  returns.   This  module  is  deprecated,
+                     sqlite should be used instead.
+
+              sqlite
+
+              mysql
+
+              sql    checks  the  username  and password against the sqlite database file specified using the filename option (for the sqlite backend), or the database specified using the uri option
+                     (mysql and sql backends).  The authentication will be processed using the following query (which is configurable using the password_query option):  SELECT  password  FROM  users
+                     WHERE  username=(?)   The sessions available for each user will be queried using: (this is configurable using the sessions_query option): SELECT uid, gid, displays, env_options,
+                     session_options FROM users WHERE username=(?)  Multiple displays may be specified as a comma separated list.
+
+              hosts  checks the host using the system's tcp-wrappers library.  (Posix only, and not available on Mac OS) See hosts.allow and hosts.deny for details.
+
+              exec   Executes the command specified using the command attribute, the arguments to this command are: a description of the access request and the timeout value. (also configurable)  If
+                     the  command  is not specified, the system will try to locate and use the auth_dialog utility which is shipped with xpra.  The command should return 0 to allow access, any other
+                     value will deny access.
+
+              peercred
+                     checks the unix domain socket peer credentials using SO_PEERCRED.  This authentication module is only available on some Posix compliant operating systems. This module will  ver‐
+                     ify  that the operating system provides the uid and gid of the process that initiated the connection.  Access can be restricted by supplying a colon separated list of valid uids
+                     and gids that are allowed to connect.  Those id values may be specified using numerical values or using the usernames / group names.  This module is different from the others in
+                     that it will not require the client to supply a username or password, as those are ignored.  Environment variables and pseudo-environment variables may also be used  as  values,
+                     eg: --auth=peercred:uid=\$UID:fred,gid=xpra.
+
+              pam    validates the username and password using the PAM system
+
+              win32  validates the username and password using Microsoft Windows authentication (only available on this platform)
+
+              sys    chooses the appropriate system authentication module automatically (either pam or win32)
+
+              kerberos-password
+                     validates the username and password using kerberos authentication.  Warning: this module does not use kerberos tickets and the password will be sent in plain text to the server.
+                     This should only be used for testing.
+
+              kerberos-ticket
+                     validates a kerberos ticket obtained by the client.
+
+              gss    validates a GSS ticket obtained by the client.
+
+              u2f    requests a U2F token from the client.
+
+              ldap   validates the username and password against an LDAP server, using the python-ldap library.
+
+              ldap3  validates the username and password against an LDAP server, using the python ldap3 library.
+
+       --tcp-auth=MODULE
+              Just like the auth switch, except this one only applies to TCP sockets (sockets defined using the bind-tcp switch).
+
+       --udp-auth=MODULE
+              Just like the tcp-auth switch, except this one only applies to UDP sockets (sockets defined using the bind-udp switch).
+
+       --ws-auth=MODULE
+              Just like the auth switch, except this one only applies to ws sockets: sockets defined using the bind-ws switch, or TCP sockets upgraded to websockets. (if the html option is enabled).
+
+       --wss-auth=MODULE
+              Just  like  the  auth  switch,  except this one only applies to wss sockets: sockets defined using the bind-wss switch, ws sockets upgraded to SSL (if the ssl option is enabled) or TCP
+              sockets upgraded to SSL and then to wss.  (if both the ssl and html options are enabled).
+
+       --ssl-auth=MODULE
+              Just like the auth switch, except this one only applies to SSL sockets: sockets defined using the bind-ssl switch, or TCP sockets upgraded by ssl=auto or ssl=on.
+
+       --rfb-auth=MODULE
+              Authentication module to use for the bind-rfb sockets.
+
+       --vsock-auth=MODULE
+              Just like the auth switch, except this one only applies to VSOCK sockets (sockets defined using the bind-vsock switch).
+
+       --challenge-handlers=MODULE:options
+              Configures which challenge handlers are used by the client and in which order. This option may be repeated to specify multiple handlers, which can be useful if the  server  sends  more
+              than one authentication challenge.  The default value is: all which corresponds to: uri,file,env,kerberos,gss,u2f,prompt.
+
+              uri    Use the password specified on the connection string, if any.
+
+              file   The  filename  used to store the password can be specified using the filename option.  If this option is not specified, it will fallback to using the password filename specified
+                     with the password-file switch.
+
+              env    Use the password specified using the environment variable specified using the name option, which defaults to XPRA_PASSWORD if unspecified.
+
+              kerberos
+                     Requests a kerberos token for the service specified.
+
+              gss    Requests a gss token for the service specified.
+
+              u2f    Requests a token from a U2F device.
+
+              prompt Prompt the user for the value.  Terminal clients prompt using text input, GUI clients use a dialog.
+
+       --min-port=PORT
+              The minimum port number allowed when creating UDP and TCP sockets.  You can use a lower value to allow unprivileged users to bind to privileged ports when  starting  sessions  via  the
+              system wide proxy server.  The default value is 1024 which is the standard value for privileged ports.
+
+       --mdns=yes|no
+              Enable or disable the publication of new sessions via mDNS.
+
+       --dbus-launch=COMMAND|no
+              Start the session within a dbus-launch context, you can specify the dbus launch command to use, or turn it off completely.  Some features may not be available without a dbus context.
+
+       --dbus-proxy=yes|no
+              Allows the client to forward dbus calls to the server.
+
+       --dbus-control=yes|no
+              Start a dbus server which can be used to interact with the server process.
+
+   Options for start, start-desktop, upgrade
+       --exec-wrapper=CMD
+              A wrapper command which is prepended to all start commands.  Typically, this is used for starting all sub-commands via VirtualGL.
+
+       --start=CMD
+              After  starting the server, runs the command CMD using the default shell.  The command is run with its $DISPLAY set to point to the newly-started server.  This option may be given mul‐
+              tiple times to start multiple commands.
+
+       --start-child=CMD
+              Identical to --start, except that the commands are taken into account by --exit-with-children.
+
+       --start-after-connect=CMD
+              Wait for the first client to connect before starting the command.
+
+       --start-child-after-connect=CMD
+              Wait for the first client to connect before starting the child command.  See start-child.
+
+       --start-on-connect=CMD
+              Execute this command every time a client connects.
+
+       --start-child-on-connect=CMD
+              Execute this child command every time a client connects.  See start-child.
+
+       --start-on-last-client-exit=CMD
+              Execute this command every time a client disconnects and there are no other clients left.
+
+       --start-child-on-last-client-exit=CMD
+              Execute this child command every time a client disconnects and there are no other clients left.  See start-child.
+
+       --terminate-children=yes|no
+              On server stop, terminate all the child commands that have been started by the server. This does not affect server exit.  Most child commands are tied to the display so they  are  nor‐
+              mally forced to shutdown anyway, but this gives them more time to cleanup properly and can be used to stop background commands that aren't tied to a display.
+
+       --exit-with-children=yes|no
+              This  option may only be used if --start-child is also given.  If it is given, then the xpra server will monitor the status of the children started by --start-child, and will automati‐
+              cally terminate itself when the last of them has exited.
+
+       --exit-with-client=yes|no
+              The server will terminate when the last client disconnects.
+
+       --env=KEY=VALUE
+              Extra environment variables which will only affect commands started using fB--start or --start-child.
+
+       --start-new-commands=yes|no
+              Allow clients to ask the server to execute new commands.  (this can also be used via the control channel)
+
+       --start-via-proxy=yes|no|auto
+              If enabled, the start and start-desktop subcommands will be delegated to the system wide proxy server instance.  With auto mode, this delegation will only  occur  if  the  system  wide
+              proxy server is found.
+
+       --systemd-run=yes|no|auto
+              Wrap server start commands with systemd-run.
+
+       --systemd-run-args=ARGS
+              Command line arguments passed to systemd-run.
+
+       --use-display
+              Use  an  existing  display  rather  than starting one with xvfb.  You are responsible for starting the display yourself.  This can also be used to rescue an existing display whose xpra
+              server instance crashed or for running xpra against an accelerated X11 server.
+
+       --displayfd=FD
+              The xpra server will write the display number back on this file descriptor as a newline-terminated string.  This is most useful when the display number is not specified with  the  xpra
+              start or start-desktop subcommands.
+
+       --xvfb=CMD
+              When  starting  a seamless server, xpra starts a virtual X server to run the clients on.  If your Xvfb is installed in a funny location, or you want to use some other virtual X server,
+              then this switch allows you to  specify  how  to  run  your  preferred  X  server  executable.   The  default  value  used  depends  on  your  platform.   For  more  information,  see:
+              https://xpra.org/Xdummy.html
+
+       --sync-xvfb=DELAY
+              The windows are normally only displayed on the client(s), they are not painted on the virtual display.  Some applications like screen recorders may want to capture the window contents,
+              you can use this option to enable painting with a configurable delay (in milliseconds).  Warning: this extra painting is expensive and quite slow, which is why it is not enabled by de‐
+              fault.
+
+       --attach=yes|no|auto
+              Once the server has started, immediately connect a client to it.  With the value auto, a client is started for remote servers only. (servers specified via a network URI)
+
+   Options for start, start-desktop, upgrade, shadow
+       --tcp-proxy=HOST:PORT
+              Specifies  the address to which non-xpra packets will be forwarded.  This can be used to share the same TCP port with another TCP servers, usually a web server.  xpra clients will con‐
+              nect as usual, but any client that does not speak the xpra protocol will be forwarded to the alternative server.
+
+       --html=on|off|auto|webrootpath
+              Respond to HTTP requests on the TCP port(s) and local sockets.  This requires at least one TCP or local socket to be configured using the matching bind option.  The auto mode will  en‐
+              able support if possible.  By default the server will provide access to the HTML5 client.  You can also specify your own web root path as argument.
+
+       --rfb-upgrade=DELAY
+              Allows  RFB  clients  (ie:  VNC) to connect to a plain TCP socket.  If no data is received after DELAY seconds, the server will send a RFB handshake.  This option is only applicable to
+              servers started in start-desktop or shadow modes.
+
+       --video-encoders=ENCODERS
+              Specifies the video encoders to try to load.  By default, all of them are loaded, but one may want to specify a more restrictive list of encoders.  Use the special value 'help' to  get
+              a list of options.  Use the value 'none' to not load any video encoders.
+
+       --csc-modules=MODULES
+              Specifies the colourspace conversion modules to try to load.  By default, all of them are loaded, but one may want to specify a more restrictive list of modules.  Use the special value
+              'help' to get a list of options.  Use the value 'none' to not load any colourspace conversion modules.
+
+       --socket-permissions=ACCESS-MODE
+              Specifies the file permissions on the server's unix domain sockets.  Defaults to 600. This is ignored when mmap-group is enabled.
+
+   Options for start, start-desktop, upgrade and attach
+       --encryption=CIPHER
+              Specifies  the  cipher  to  use for securing the connection from prying eyes.  This option requires the use of the --encryption-keyfile option.  The only cipher supported at present is
+              AES, if the client requests encryption it will be used by both the client and server for all communication after the initial password verification, but only if the server supports this
+              feature too.  Note: this feature has not been extensively reviewed and as it is it should not be considered safe from determined attackers.
+
+       --tcp-encryption=CIPHER
+              Just like the encryption switch, except this one only applies to TCP sockets (sockets defined using the bind-tcp switch).
+
+       --encryption-keyfile=FILENAME
+              Specifies the key to use with the encryption cipher specified with --encryption.  The client and server must use the same keyfile contents.
+
+       --tcp-encryption-keyfile=FILENAME
+              Just like the encryption-keyfile switch, except this one only applies to TCP sockets (sockets defined using the bind-tcp switch).
+
+       --idle-timeout=IDLETIMEOUT
+              The connection will be terminated if there is no user activity (mouse clicks or key presses) for the given amount of time (in seconds). Use the value 0 to disable this timeout.
+
+       --server-idle-timeout=IDLETIMEOUT
+              The server will exit if there are no active connections for the given amount of time (in seconds).  Use the value 0 to disable this timeout.
+
+       --clipboard-filter-file=FILENAME
+              Name of a file containing regular expressions, any clipboard data that matches one of these regular expressions will be dropped.  Note: at present this only applies to copying from the
+              machine where this option is used, not to it.
+
+       --dpi=VALUE
+              The 'dots per inch' value that client applications should try to honour.  This numeric value should be in the range 10 to 500 to be useful.  Many applications will only read this value
+              when starting up, so connecting to an existing session started with a different DPI value may not have the desired effect.
+
+       --pixel-depth=VALUE
+              When starting a server, this switch controls the bits per pixel of the virtual framebuffer. Possible values: 0 (auto), 16, 24, 30.  When starting a client,  this  switch  controls  the
+              picture  rendering with the opengl backend: values higher than 24 will enable deep color, the value 24 enables regular true color rendering. Use the value 0 to let the client decide if
+              the rendering will benefit from using deep color. (this is only supported on some Posix clients) Other values should not be used.
+
+       --cursors=yes|no
+              Enable or disable forwarding of custom application mouse cursors.  Client applications may change the mouse cursor at any time, which will cause the new cursor's pixels to be  sent  to
+              the client each time.  This disables the feature.
+
+       --notifications=yes|no
+              Enable  or  disable  forwarding  of  system  notifications.   System notifications require the xpra server to have its own instance of a dbus daemon, if it is missing a warning will be
+              printed on startup.  This switch disables the feature entirely, and avoids the warning.
+
+       --input-method=METHOD
+              Specify which input method to configure.  This sets a number of environment variables which should be honoured by applications started with the start-child option.
+
+              The following METHODs are currently supported:
+
+              none   Disable input methods completely and prevent it from interfering with keyboard input. This is the default.
+
+              keep   Keeps the environment unchanged. You are responsible for ensuring it is correct.
+
+              xim    Enables the X Input Method.
+
+              IBus   Enables the Intelligent Input Bus.
+
+              SCIM   Enables the Smart Common Input Method.
+
+              uim    Enables the Universal Input Method.
+
+       Any other value will also be set up, but will trigger a warning.
+
+       --xsettings=yes|no
+              Enable or disable xsettings synchronization.  Xsettings are only forwarded from posix clients connecting to real posix servers (not shadows).
+
+       --system-tray=yes|no
+              Enable or disable forwarding of system tray icons.  This feature requires client support and may not be available on all platforms.
+
+       --bell=yes|no
+              Enable or disable forwarding of the system bell.
+
+       --webcam=yes|no
+              Enable or disable webcam forwarding.
+
+       --mousewheel=on|off|invert|invert-x|invert-y|invert-z
+              Mouse wheel handling: can be used to disable mouse wheel forwarding or to invert some or all axes.
+
+       --remote-logging=yes|no|both
+              Allow the client to forward its log output to the server.  The client can specify the value both to both send it to the server and keep it locally.
+
+       --av-sync=yes|no
+              Enable or disable audio-video synchronization.  The video data will be delayed so that it is displayed in sync with the audio.  Note: this only applies to video regions,  either  auto-
+              detected via the builtin heuristics or specified using the dbus interface.
+
+   Options for attach
+       --modal-windows=yes|no
+              Honour modal windows.  This may have undesirable side effects when multiple applications are forwarded through the same xpra server: modal windows will be made modal for all the appli‐
+              cations forwarded by xpra rather than just the one application which owns that window.
+
+       --password-file=FILENAME
+              Supply  the password to be used for connecting to a server that uses authentication. See auth, tcp-auth, ssl-auth and vsock-auth for details.  Alternatively, you may use the XPRA_PASS‐
+              WORD environment variable.
+
+       --opengl=(yes|no|auto)[:backend]
+              Use OpenGL accelerated rendering on the client.  The default is to detect if the graphics card and drivers are supported (auto mode), but one can also disable OpenGL (no) or  force  it
+              enabled  (yes).   On  some  platforms,  it  is  also  possible  to  specify  which  backends should be used, only gtk and native are currently supported and only on X11 platforms.  ie:
+              opengl=yes:native, or opengl=auto:gtk,native.
+
+       --webcam=yes|no|/dev/deviceXXX|DEVICEID
+              Enable or disable webcam forwarding.  The webcam device to use can also be specified.
+
+       -zLEVEL, --compress=LEVEL
+              Select the level of compression xpra will use when transmitting data over the network.  With the lz4 and lzo compressors, there are only two possible values: 0 (meaning no compression)
+              and 1 (compression enabled).  The zlib compressor supports values between 0 (meaning no compression) and 9, inclusive. It should only be used when lz4 and lzo are not available.
+
+              This compression is not used on pixel data (except when using the rgb encoding).
+
+       --quality=VALUE
+              This option sets a fixed image compression quality for lossy encodings (jpeg, webp, h264/h265 and vp8/vp9).  First, one of those lossy encodings must be enabled with --encoding.   Val‐
+              ues  range from 1 (lowest quality, high compression - generally unusable) to 100 (highest quality, low compression).  Specify a value of zero to let the system tune the quality dynami‐
+              cally to achieve the best bandwidth usage possible.  It is usually best not to use this option and use min-quality instead.
+
+       --min-quality=MIN-QUALITY
+              This option sets the minimum encoding quality allowed when the quality option is set to automatic mode.
+
+       --speed=SPEED
+              This option sets the encoding speed.  Slower compresses more, faster will give better latency.  The system normally uses a variable speed, this option forces a fixed speed  setting  to
+              be used instead.  It is usually best not to use this option and use min-speed instead.
+
+       --min-speed=MIN-SPEED
+              This option sets the minimum encoding speed allowed when the speed option is set to automatic mode.
+
+       --auto-refresh-delay=DELAY
+              This option sets a delay after which the windows are automatically refreshed using a lossless frame.  The delay is a floating-point number and is in seconds.  This option is enabled by
+              default with a delay of 0.25 seconds.  This option is only relevant when using a lossy encoding.
+
+       --shortcut-modifiers=MODIFIERS
+              Defines  the  default shortcut modifiers required by the key-shortcuts, these modifiers can then be referred to as #.  The default value is 'auto' which evaluates to Meta+Shift on most
+              platforms.
+
+       --key-shortcut=KEY:ACTION
+              Can be specified multiple times to add multiple key shortcuts.  These keys will be caught by the client and trigger the action specified and the key presses will not be  passed  on  to
+              the server.
+
+              The  KEY  specification may include keyboard modifiers in the form [modifier+]*key, for example: Shift+F10 or Shift+Control+B.  You can refer to the shorcut-modifers option value using
+              #, ie: #+F1.
+
+              If no shortcuts are defined on the command line, the default builtin list will be used.
+
+              Some of the actions may allow arguments (ie: the log action does), in which case they are specified in the usual programming style syntax: ACTION(ARG1, ARG2, etc)
+              String arguments must be quoted (both single and double quotes are supported) and numeric arguments must not be quoted.  Beware the the parenthesis and quotes must usually  be  escaped
+              when used from a shell command line.  Example: --key-shortcut=Meta+Shift+F7:log\(\'hello\'\)
+
+              The following ACTIONs are currently defined:
+
+              quit   Disconnect the xpra client.
+
+              log("MESSAGE")
+                     Sends MESSAGE to the log.
+
+              show_session_info[("TabName")]
+                     Shows the session information window. The optional TabName allows the information tab shown to be selected. Use the value help to get the list of options.
+
+              show_menu
+                     Shows the menu normally found in the system tray.
+
+              show_start_new_command
+                     Shows the start new command dialog.
+
+              magic_key
+                     Placeholder which can be used by some client toolkits.
+
+              void   Does not do anything, and can therefore be used to prevent certain key combinations from ever being sent to the server.
+
+              refresh_window
+                     Force the currently focused window to be refreshed.
+
+              refresh_all_windows
+                     Force all windows to be refreshed.
+
+              toggle_keyboard_grab
+                     The keyboard will be grabbed / ungrabbed by the current window.
+
+              toggle_pointer_grab
+                     The pointer will be grabbed and confined to the current window.
+
+              toggle_fullscreen
+                     Make the current window fullscreen / unfullscreen.
+
+              toggle_debug
+                     Turn debugging on or off.
+
+              scaleup
+                     Increase the current value of desktop-scaling.
+
+              scaledown
+                     Decrease the current value of desktop-scaling.
+
+              scalereset
+                     Reset the desktop-scaling to its original value.
+
+              scalingoff
+                     Turn off desktop-scaling.
+
+              increase_quality
+                     Increase the min-quality or quality setting (whichever one is currently in use).
+
+              decrease_quality
+                     Decrease the min-quality or quality setting (whichever one is currently in use).
+
+              increase_speed
+                     Increase the min-speed or speed setting (whichever one is currently in use).
+
+              decrease_speed
+                     Decrease the min-speed or speed setting (whichever one is currently in use).
+
+       --sharing=yes|no|auto
+              Sharing  allows  more than one client to connect to the same session.  This must be enabled on both the server and all co-operating clients to function.  When used server-side, the de‐
+              fault value auto allows the clients to decide if they are willing to share the session.  When used client-side, the default value auto evaluates to no.  To allow sharing to  work  with
+              unix  domain  sockets (either using local connections or via ssh), you should create at least one socket in a group accessible directory. On Posix with a default configuration, being a
+              member of the xpra group should be enough to create a socket in /run/xpra. You must also ensure that the permissions of this socket file allow group access, see socket-permissions.
+
+       --lock=yes|no|auto
+              Locking allows a client to refuse to hand over the session to a new client.  The session may still be shared with multiple clients (see the sharing option), but  otherwise  the  server
+              will  reject  new  clients.  When used server-side, the default value auto allows the clients to decide if they want to lock the session.  When used client-side, the default value auto
+              evaluates to no.
+
+       --keyboard-sync=yes|no
+              Normally the key presses and key release events are sent to the server as they occur so that the server can maintain a consistent keyboard state.  Disabling synchronization can prevent
+              keys from repeating unexpectedly on high latency links but it may also disrupt applications which access the keyboard directly (games, etc.).
+
+       --keyboard-raw=yes|no
+              Tells the server to process all keyboard input untranslated.  Both the client and the server must be using the same type of keyboard interface. (ie: both using X11)
+
+       --keyboard-layout=LAYOUTSTRING
+              The keyboard layout is normally detected automatically.  This option overrides it.
+
+       --keyboard-layouts=LAYOUTS
+              The list of keyboard layouts to enable.
+
+       --keyboard-variant=VARIANT
+              Override for the keyboard layout variant.
+
+       --keyboard-variants=VARIANTS
+              Override for the keyboard layout variants.
+
+       --keyboard-options=OPTIONS
+              Override for the keyboard options sent to the server.
+
+       --swap-keys=YES|NO
+              This option only applies to MacOS clients, it swaps the command and control keys and is enabled by default.
+
+       --sound-source=PLUGIN
+              Specifies the GStreamer sound plugin used for capturing the sound stream.  This affects "speaker forwarding" on the server, and "microphone" forwarding on the client.  To get a list of
+              options use the special value 'help'.  It is also possible to specify plugin options using the form: --sound-source= pulsedevice=device.alsa_input.pci-0000_00_14.2.analog-stereo
+
+       --speaker=on|off|disabled and --microphone=on|off|disabled|on:DEVICE|off:DEVICE
+              Sound input and output forwarding support: on will start the forwarding as soon as the connection is established, off will require the user to enable it via  the  menu,  disabled  will
+              prevent it from being used and the menu entry will be disabled.  With microphone forwarding, you may also be able to specify which device to use.
+
+       --speaker-codec=CODEC and --microphone-codec=CODEC
+              Specify  the  codec(s)  to use for sound output (speaker) or input (microphone).  This parameter can be specified multiple times and the order in which the codecs are specified defines
+              the preferred codec order.  Use the special value 'help' to get a list of options.  When unspecified, all the available codecs are allowed and the first one is used.
+
+       --title=VALUE
+              Sets the text shown as window title.  The string supplied can make use of remote metadata placeholders which will be populated at runtime with the values from the remote  server.   The
+              default value used is "@title@ on @client-machine@".
+
+              The following placeholders are defined:
+
+              @title@
+                     Will be replaced by the remote window's title.
+
+              @client-machine@
+                     Will be replaced by the hostname of the system where the application is running, if provided, the xpra server's hostname otherwise.
+
+              @server-machine@
+                     Will be replaced by the hostname of the xpra server.
+
+              @server-display@
+                     Will be replaced by the name of the display on which the application is running.
+
+       --border=BORDER
+              Specifies  the color and size of the border to draw inside every xpra window.  This can be used to easily distinguish xpra windows running on remote hosts from local windows.  The BOR‐
+              DER can be specified using standard color names (ie: red, or orange) or using the web hexadecimal syntax (ie: #F00 or #FF8C00). The special color name "auto" will derive the color from
+              the server target address (the connection string) so that connecting to the same target should always give the same color.  You may also specify the size of the border in  pixels,  ie:
+              --border=yellow,10.
+
+       --window-icon=FILENAME
+              Path to the default image which will be used for all windows.  This icon may be shown in the window's bar, its iconified state or task switchers.  This depends on the operating system,
+              the window manage and the application may override this too.
+
+       --window-close=ACTION
+              Choose what action to take when the window is closed by the client.  The following actions can be used:
+
+              auto   The client will figure out what is best based on the window type.  This is the default.  ie: it will use disconnect shadow sessions, Iforward for seamless windows.
+
+              forward
+                     The event will be forwarded to the server.
+
+              ignore Do nothing.
+
+              disconnect
+                     Disconnect from the server.
+
+              shutdown
+                     Shutdown the server.
+
+       --desktop-scaling=off|on|auto|VALUE
+              Desktop  scaling allows the windows to be scaled by the client.  Downscaling will mostly waste bandwidth, upscaling allows the window's pixels to be sent over the wire at a lower reso‐
+              lution, saving bandwidth and CPU time.  This option can also be used to request a specific scaling value.  For best results, use opengl client rendering, the other display backends may
+              show visual artifacts when scaling.  Note: the scaling may also be adjusted at runtime through keyboard shortcuts if those are configured.
+
+              The desktop-scaling value can take the form:
+
+              off    scaling will be disabled
+
+              on     scaling will be allowed, but it will start unscaled
+
+              auto   scaling will be allowed and a scaling value will be automatically chosen if the client's desktop is large (bigger desktops will use higher scaling values)
+
+              scaling-value
+                     scaling will be enabled and use the given value, specified as a number, fraction or percentage. ie: 2, 3/2 or 150%.
+
+              pair   the scaling will be enabled and use a different value for the X and Y axis. ie: 3x2 or 3/2x4/3
+
+              desktop-size
+                     the scaling will be enabled and the server will render to the given size. ie: 1600x1200
+
+       --tray=yes|no Enable or disable the system tray.  Not available on OSX since the dock icon is always shown.
+
+       --delay-tray
+              Waits for the first window or notification to appear before showing the system tray. (posix only)
+
+       --tray-icon=FILENAME
+              Specifies the icon shown in the dock/tray.  By default it uses a simple default 'xpra' icon.  (On Microsoft Windows, the icon must be in ico format.)
+
+       --enable-pings
+              The client and server will exchange ping and echo packets which are used to gather latency statistics.  Those statistics can be seen using the xpra info command.
+
+   Options for attach, stop, info, screenshot, version
+       --ssh=CMD
+              When you use an ssh: address to connect to a remote display, xpra runs ssh(1) to make the underlying connection. By default, it does this by running the command "ssh". If your ssh pro‐
+              gram is in an unusual location, has an unusual name, or you want to pass special options to change ssh's behavior, then you can use the --ssh switch to tell xpra how to run ssh.
+
+              For example, if you want to use arcfour encryption, then you should run
+
+                     xpra attach --ssh="ssh -c arcfour" ssh://frodo/7
+
+              Note: Don't bother to enable ssh compression; this is redundant with xpra's own compression, and will just waste your CPU.  See also xpra's --compress switch.
+
+              On MS Windows, where backslashes are used to separate path elements and where spaces are often used as part of paths,  you  need  to  add  quotes  around  paths.  (ie:  ssh="C:\Program
+              Files\Xpra\Plink.exe" -ssh -agent)
+
+       --exit-ssh=yes|no
+              Choose  whether the SSH client process should be forcibly terminated when xpra disconnects from the server.  If you are using SSH connection sharing, you may want to avoid stopping the
+              SSH master process instance spawned by xpra as it may be used by other SSH sessions.  Note: the exit-ssh=no detaches the SSH process from the terminal which prevents  the  SSH  process
+              from interacting with the terminal input, this disables the keyboard interaction required for password input, host key verification, etc..
+
+       --remote-xpra=CMD
+              When  connecting  to  a  remote server over ssh, xpra needs to be able to find and run the xpra executable on the remote host.  If this executable is in a non-standard location, or re‐
+              quires special environment variables to be set before it can run, then accomplishing this may be non-trivial.  If running xpra attach ssh:something fails because it cannot find the re‐
+              mote xpra, then you can use this option to specify how to run xpra on the remote host.
+
+              That said, this option should not be needed in normal usage, as xpra tries quite hard to work around the above problems.  If you find yourself needing it often, then that may  indicate
+              a bug that we would appreciate hearing about.
+
+   SSL Options
+       --ssl=on|auto|off|tcp|www
+              Whether to enable SSL on TCP sockets and for what purpose.  The TCP sockets will automatically be upgraded to SSL when SSL packets are received.
+
+              auto   The server will try to guess what protocol to use for each new SSL connection: either xpra's native protocol or https / websocket (wss)
+
+              tcp    The SSL sockets will only be used for xpra's native protocol
+
+              www    The SSL sockets will only be used for https and websocket (wss)
+       If SSL is enabled, then a ssl-cert is required.  Authentication, if required, will use the ssl-auth module specified, and fallback to tcp-auth or auth unless the value none is specified.
+
+       The remaining options mirror the Python ssl module attributes.  Please refer to that documentation and bear in mind that configuring SSL for security is not trivial, and definitely not just a
+       matter of enabling SSL. See: https://docs.python.org/2/library/ssl.html Some options may not be available with older versions of Python.
+
+       Summary: --ssl-key=KEYFILE The key file to use.
+
+       --ssl-cert=ERTFILEORDIR
+              Certificate file, required for server SSL support.
+
+       --ssl-protocol=PROTOCOLVERSION
+              Specifies which version of the SSL protocol to use.
+
+       --ssl-ca-certs=CACERTSFILE
+              The ca_certs file contains a set of concatenated 'certification authority' certificates. If a directory is specified, it should contain the certificates.
+
+       --ssl-ca-data=ERTDATA
+              Certificate data.
+
+       --ssl-ciphers=CIPHERS
+              Sets the available ciphers, it should be a string in the OpenSSL cipher list format.
+
+       --ssl-client-verify-mode=none|optional|required
+              Whether to try to verify the client's certificates and how to behave if verification fails.
+
+       --ssl-server-verify-mode=none|optional|required
+              Whether to try to verify the server's certificates and how to behave if verification fails.
+
+       --ssl-verify-flags=FLAGS
+              The flags for certificate verification operations.
+
+       --ssl-check-hostname=yes|no
+              Whether to match the peer cert's hostname.
+
+       --ssl-options=options
+              Set of SSL options enabled on this context.
+
+       ENVIRONMENT
+
+       DISPLAY
+              xpra start --start-child=... sets this variable in the environment of the child to point to the xpra display.
+
+              xpra attach, on the other hand, uses this variable to determine which display the remote applications should be shown on.
+
+              fIXPRA_PASSWORD may be used with xpra attach instead of the password-file option.
+
+FILES
+       xpra.conf  stores  default  values  for  most  options.   There  is  a  global  configuration  file  in  /etc or /usr/local/etc, and each user may override those defaults by creating the file
+       .xpra/xpra.conf.  You can also split the options into multiple files by placing them in a conf.d directory with the .conf extension.  Depending on OS and  version,  xpra  uses  the  directory
+       ~/.xpra or /run/<uid>/xpra to store a number of files.  (The examples below are given for the display :7.)
+
+       ~/.xpra/:7
+              The unix domain socket that clients use to contact the xpra server, if the system configuration uses this directory.
+
+       ~/.xpra/:7.log
+              When run in daemon mode (the default), the xpra server directs all output to this file.  This includes all debugging output, if debugging is enabled.
+
+       ~/.xpra/run-xpra
+              A  shell  script  that, when run, starts up xpra with the correct python interpreter, PYTHONPATH, PATH, location of the main xpra script, etc.  Automatically generated by xpra initenv,
+              xpra start and used by xpra attach (see also the discussion of --remote-xpra).
+
+BUGS
+       Xpra has no test suite.
+
+       Xpra does not fully handle all aspects of the X protocol; for instance, fancy input features like pressure-sensitivity on tablets, some window manager hints, and probably other  more  obscure
+       parts of the X protocol.  It does, however, degrade gracefully, and patches for each feature would be gratefully accepted.
+
+       The  xpra  server  allocates  an over-large framebuffer when using Xvfb; this wastes memory.  If the Xvfb does not support RandR this can also cause applications to misbehave (e.g. by letting
+       menus go off-screen). This is not a problem when using Xdummy, see the --xvfb= switch for details.  Conversely, if the framebuffer is ever insufficiently  large,  clients  will  misbehave  in
+       other ways (e.g., input events will be misdirected).
+
+REPORTING BUGS
+       Send any questions or bugs reports to http://xpra.org/trac/
+
+SEE ALSO
+       screen(1), winswitch_applet(1)
+
+                                                                                                                                                                                               XPRA(1)

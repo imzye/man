@@ -1,0 +1,242 @@
+Digest::ssdeep(3pm)                                                                 User Contributed Perl Documentation                                                                 Digest::ssdeep(3pm)
+
+NAME
+       Digest::ssdeep - Pure Perl ssdeep (CTPH) fuzzy hashing
+
+VERSION
+       This document describes Digest::ssdeep version 0.9.0
+
+SYNOPSIS
+           use Digest::ssdeep qw/ssdeep_hash ssdeep_hash_file/;
+
+           $hash = ssdeep_hash( $string );
+           # or in array context:
+           @hash = ssdeep_hash( $string );
+
+           $hash = ssdeep_hash_file( "data.txt" );
+
+           @details = ssdeep_dump_last();
+
+           use Digest::ssdeep qw/ssdeep_compare/;
+
+           $match = ssdeep_compare( $hashA, $hashB );
+           $match = ssdeep_compare( \@hashA, \@hashB );
+
+DESCRIPTION
+       This module provides simple implementation of ssdeep fuzzy hashing also known as Context Triggered Piecewise Hashing (CTPH).
+
+   Fuzzy hashing algorithm
+       Please, refer to Jesse Kornblum's paper for a detailed discussion ("SEE ALSO").
+
+       To calculate the CTPH we should choose a maximum signature length. Then divide the file in as many chunks as this length. Calculate a hash or checksum for each chunk and map it to a character. The
+       fuzzy hashing is the concatenation of all the characters.
+
+       We cannot use fixed length blocks to separate the file. Because if we add or remove a character all of the following blocks are also changed. So we must divide the file using the "context" i.e. a
+       block starts and ends in one of the predefined sequence of characters. So the problem is 'Which contexts -sequences- we define to separate the file in N parts?.'
+
+       This is the 'roll' of the rolling hash. It is a function of the N last inputs, in this case the 7 last characters. The result of the rolling hash function is uniformly spread between all valid
+       output values.  This makes the rolling hash some kind of pseudo-random function whose output depends only on the last N characters. Since the output is supposed to be uniform, we can modulus BS
+       and the expected values are 0 to BS-1 with the same probability.
+
+       Let the blocksize (BS) be the length of file divided by the maximum signature length (i.e. 64). If we split the file each time the rolling hash mod BS gives BS-1 we get 64 blocks.  This is not a
+       good approach because if the length changes, blocksize changes also. So we cannot compare files with dissimilar sizes. One good approach is to take some 'predefined' blocksizes and choose the one
+       that fits based on the file size. The blocksizes in ssdeep are "3, 6, 12, ..., 3 * 2^i".
+
+       So this is the algorithm:
+
+       •   Given the file size we calculate an initial blocksize (BS).
+
+       •   For each character we calculate the rolling hash R. Its output value depends only on the 7 last characters sequence.
+
+       •   Each time "R mod BS = BS-1" (we meet one of the trigger 7 characters sequences) we write down the traditional hash of the current block and start another block.
+
+       The pitfall is Rolling Hash is statistically uniform, but it does not mean it will give us exactly 64 blocks.
+
+       •   Sometimes it will gives us more than 64 blocks. In that case we will concatenate the trailing blocks.
+
+       •   Sometimes it will gives us less than 64 blocks. No problem, 64 is the maximum length, it can be less.
+
+       •   Sometimes it will gives us less than 32 blocks. In that case, we should try a half-size blocksize to get more blocks.
+
+       The  traditional  hash  is  an usual hash or checksum function. We use 32 bit FNV-1a hash ("SEE ALSO"). But its output is 32 bits, so we need to map it to a base-64 character alphabet. That is, we
+       only use the 6 least significant bits of FNV-1a hash.
+
+   Output
+       The ssdeep hash has this shape: "BS:hash1:hash2"
+
+       BS  It is the blocksize. We can only compare hashes from the same blocksize.
+
+       hash1
+           This is the concatenation of FNV-1a results (mapped to 64 characters) for each block in the file.
+
+       hash2
+           This is the same that hash1 but using double the blocksize. We write this result because a small change can halve or double the blocksize. If this happens, we can compare at least one part  of
+           the two signatures.
+
+   Comparison
+       There  are  several algorithms to compare two strings. I have used the same that ssdeep uses for compatibility reasons. Only in certain cases, the result from this module is not the same as ssdeep
+       compiled version.  Please see DIFFERENCES below for details.
+
+       These are the steps for matching calculation:
+
+       •   The first step is to compare the block sizes. We only can compare hashes calculated for the same block size. In one ssdeep string we have both blocksize and double blocksize hashes. So we  try
+           to match at least of the hashes. If they have no common block sizes, the comparison returns 0.
+
+       •   Remove sequences of more than three equal characters. These same character sequences have little information about the file and bias the matching score.
+
+       •   Test  for  a  coincidence  of, at least 7 characters. This is the default, but this value can be changed. If the longest common substring is not a least this length, the function returns 0. We
+           expect a lot of collisions since we are mapping 32 bit FNV values into 64 character output. This is a way to remove false positives.
+
+       •   We use the Wagner-Fischer algorithm to compute the Levenshtein distance using these weights:
+
+           •   Same character: 0
+
+           •   Adition or deletion: 1
+
+           •   Substitution: 2
+
+       •   Following the original ssdeep algorithm we scale the value so the output be between 0 and 100.
+
+INTERFACE
+       This section describes the recommended interface for generating and comparing ssdeep fuzzy hashes.
+
+       ssdeep_hash
+           Calculates the ssdeep hash of the input string.
+
+           Usage:
+
+               $hash = ssdeep_hash( $string );
+
+           or in array context
+
+               @hash = ssdeep_hash( $string );
+
+           In scalar context it returns a hash with the format "bs:hash1:hash2". Being "bs" the blocksize, "hash1" the fuzzy hash for this blocksize and  "hash2"  the  hash  for  double  blocksize.   The
+           maximum length of each hash is 64 characters.
+
+           In array context it returns the same components above but in a 3 elements array.
+
+       ssdeep_hash_file
+           Calculates the hash of a file.
+
+           Usage:
+
+               $hash = ssdeep_hash_file( "/tmp/malware1.exe" );
+
+           This is a convenient function. Returns the same of ssdeep_file in scalar or array context.
+
+           Since this function slurps the whole file into memory, you should not use it in big files. You should not use this module for big files, use libfuzzy wrapper instead ("BUGS AND LIMITATIONS").
+
+           Returns undef on errors.
+
+       ssdeep_compare
+           Calculates the matching between two hashes.
+
+           Usage. To compare two scalar hashes:
+
+               $match = ssdeep_compare( $hashA, $hashB );
+
+           To compare two hashes in array format:
+
+               $match = ssdeep_compare( \@hashA, \@hashB );
+
+           The default is to discard hashes with less than 7 characters common substring.  To override this default and set this limit to any number you can use:
+
+               $match = ssdeep_compare( $hashA, $hashB, 4 );
+
+           The result is a matching score between 0 and 100. See Comparison for algorithm details.
+
+       ssdeep_dump_last
+           Returns an array with information of the last hash calculation. Useful for debugging or extended details.
+
+           Usage after a calculation:
+
+               $hash    = ssdeep_hash_file( "/tmp/malware1.exe" );
+               @details = ssdeep_dump_last();
+
+           The output is an array of CSV values.
+
+               ...
+               2,125870,187|245|110|27|190|66|97,1393131242,q
+               1,210575,13|216|13|115|29|52|208,4009217630,e
+               2,210575,13|216|13|115|29|52|208,4009217630,e
+               1,210730,61|231|220|179|40|89|210,1069791891,T
+               1,237707,45|66|251|98|56|138|91,4014305026,C
+               ....
+
+           Meaning of the output array:
+
+           Field 1
+               Part of the hash which is affected. 1 for the fist part, 2 for the second part.
+
+           Field 2
+               Offset of the file where the chunk ends.
+
+           Field 3
+               Sequence of 7 characters that triggered the rolling hash.
+
+           Field 4
+               Value of the rolling hash at this moment.
+
+           Field 5
+               Character output to the fuzzy hash due to this rolling hash trigger.
+
+           So we can read it this way:
+
+           At  byte 125870 of the input file, there is a sequence of these 7 characters: "187 245 110 27 190 66 97". That sequence triggered the second part of the hash. The FNV hash value of the current
+           chunk is 1393131242 that maps to character "q".
+
+           Or this way:
+
+           From the 4th row I know the letter "T" in the first hash comes from the chunk that started at 210575+1 (the one-starting row before) and ends at 210730. The whole FNV hash of  this  block  was
+           1069791891.
+
+BUGS AND LIMITATIONS
+       Small blocksize comparison
+           Original  ssdeep  limit  the  matching of small blocksize hashes. So when comparing them the matching is limited by its size and is never 100%. This algorithm do not behaviours that way. Small
+           block sizes hashes are compared as big block sizes ones.
+
+       Performance
+           This is a Pure Perl implementation. The performance is far from optimal. To calculate hashes more efficiently, please use compiled software like libfuzzy bindings ("SEE ALSO").
+
+       Test 64 bits systems
+           This module has not been tested in 64 bit systems yet.
+
+       Please report any bugs or feature requests to "bug-digest-ssdeep@rt.cpan.org", or through the web interface at <http://rt.cpan.org>.
+
+SEE ALSO
+       Ssdeep's home page
+           <http://ssdeep.sourceforge.net/>
+
+       Jesse Kornblum's original paper Identifying almost identical files using context triggered piecewise hashing
+           <http://dfrws.org/2006/proceedings/12-Kornblum.pdf>
+
+       Data::FuzzyHash Perl binding of binary libfuzzy libraries
+           <https://github.com/hideo55/Data-FuzzyHash>
+
+       Text::WagnerFischer - An implementation of the Wagner-Fischer edit distance.
+           <http://search.cpan.org/perldoc?Text%3A%3AWagnerFischer>
+
+       FNV hash's description
+           <http://www.isthe.com/chongo/tech/comp/fnv/>
+
+AUTHOR
+       Reinoso Guzman  "<reinoso.guzman@gmail.com>"
+
+LICENCE AND COPYRIGHT
+       Copyright (c) 2013, Reinoso Guzman "<reinoso.guzman@gmail.com>". All rights reserved.
+
+       This module is free software; you can redistribute it and/or modify it under the same terms as Perl itself. See perlartistic.
+
+DISCLAIMER OF WARRANTY
+       BECAUSE THIS SOFTWARE IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY FOR THE SOFTWARE, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING  THE  COPYRIGHT  HOLDERS
+       AND/OR  OTHER  PARTIES  PROVIDE THE SOFTWARE "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+       FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU  ASSUME  THE  COST  OF  ALL  NECESSARY  SERVICING,
+       REPAIR, OR CORRECTION.
+
+       IN  NO  EVENT  UNLESS  REQUIRED  BY  APPLICABLE  LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR REDISTRIBUTE THE SOFTWARE AS PERMITTED BY THE ABOVE
+       LICENCE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE SOFTWARE (INCLUDING BUT  NOT  LIMITED  TO
+       LOSS  OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE SOFTWARE TO OPERATE WITH ANY OTHER SOFTWARE), EVEN IF SUCH HOLDER OR OTHER PARTY HAS
+       BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+perl v5.32.0                                                                                     2021-01-01                                                                             Digest::ssdeep(3pm)

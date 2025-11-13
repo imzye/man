@@ -1,0 +1,1101 @@
+REX(8)                        Rex User Reference                        REX(8)
+
+NAME
+       rex - remote execution utility
+
+SYNOPSIS
+       rex [-NVdlnvh] [-c FILE] [--config=FILE] [--noop] [--no-init-file]
+       [--no-rc-file] [--no-resolve] [--verbose] [--version] [--help] COMMAND
+       [ARG...]
+
+DESCRIPTION
+       Rex runs a supplied command or shell script on several hosts in
+       succession or in parallel.  It can also be used to copy a file or files
+       to several hosts.
+
+       The two main COMMANDs are run, which runs the specified command on
+       multiple hosts, and copy, or cp, which copies files to them.
+
+       For both commands, there are two ways to select hosts to operate upon.
+
+       The first way is the -H (--host) option.  Its argument is either a
+       single hostname or IP, or a comma-separated list of hostnames or IP
+       addresses.  The option adds these hosts to the list.  Multiple options
+       can be specified.
+
+       The -H option exists mainly as a way of quickly running a job of
+       several hosts at once.  If you have a set of hosts which you often work
+       with, it's best to use a hostgroup.
+
+       Hostgroup defines a list of hosts and, optionally, a set of rex
+       settings to use when running commands on them.  Each hostgroup is
+       identified by its name and is defined in a separate disk file.  See the
+       subsection Hostgroups, for a detailed discussion of how to define a
+       hostgroup.
+
+       Once defined, the option -g (--group) can be used to run a command on
+       each host in the group.  The argument to the option is the name of the
+       group.  Thus, e.g.
+
+       rex run -gNAME COMMAND
+
+       runs COMMAND on hosts from hostgroup NAME, and
+
+       rex copy -gNAME FILE /tmp
+
+       copies FILE to the directory /tmp on each host from this hostgroup.
+
+       If the -g option is omitted, rex will use the hostgroup from the top of
+       the hostgroup stack or, if it is empty, the default hostgroup.
+
+       Hostgroup stack is maintained using the rex group command.  Once the
+       user pushes a hostgroup name on it, that hostgroup will be used by any
+       subsequent rex command, unless it is given the -g option.  The rex
+       group command provides ways to pop items off the stack, swap arbitrary
+       element and the top of the stack, select new hostgroups on the fly,
+       etc.  See the section REX GROUP below for a detailed discussion of
+       hostgroup stack.
+
+       The default hostgroup is used if the hostgroup stack is empty.  It is
+       defined using the option group statement in the configuration file.
+
+       The list of hosts in a hostgroup can be modified for the duration of a
+       single rex command by using the -H and -X options.  The -H (--host)
+       option works exactly as described above.   The -i (--ignore-hosts)
+       option can be given to ignore the list of hosts defined in the
+       hostgroup and operate only on those supplied with the --host options.
+
+       The -X (--exclude) option instructs rex to remove its argument from the
+       list of hosts.  Its argument is the domain name or IP address of the
+       host.  It need not be exactly the same name or IP as the one used in
+       the set hosts statement in the rc file.  It suffices that it resolves
+       to the same IP as one of the hosts listed in the hostgroup.
+
+       The list of all available hostgroups can be obtained using the list
+       command.  The list is organized in two columns: group name and its
+       short description (if available).
+
+   Login credentials
+       Normally, remote hosts should be configured to accept logins to the
+       user account without password, by using shared keys.  However, it is
+       also possible to work on hosts requiring password for authentication.
+       To do so, rex keeps the database of login credentials.  The database is
+       edited using the command
+
+       rex edit
+
+       This command starts the editor defined by the VISUAL (or, if unset,
+       EDITOR) environment variable.  Upon exit from the editor, it compares
+       the new content with the existing one.  If changed, the user is
+       prompted whether they wish to save the changes.
+
+       The database is a dictionary of key-value pairs.  A key identifies the
+       credential (e.g. user, for username, or pass, for password).  Unless
+       prefixed with one or more qualifiers, it is valid for all servers in
+       all hostgroups.  Qualifiers limit the scope of a key to a given
+       hostgroup or server.
+
+       In general, the syntax for a key is:
+
+       [[GROUP:][HOST]:]KEYWORD
+
+       When looking for a key, the most qualified match is preferred, so the
+       lookup order is:
+
+              1.     GROUP:HOST:KEYWORD
+
+              2.     HOST:KEYWORD
+
+              3.     GROUP::KEYWORD
+
+              4.     KEYWORD
+
+       For example, to determine the login name for the given host, rex looks
+       up for the keyword user.  If no matching key is found and the the -u
+       (--user) option is given, its value is used.  Otherwise, the name of
+       the value of the environment variable USER is used.
+
+       Similarly, the password to use is determined by the following look-ups:
+
+              1.     GROUP:HOST:pass
+
+              2.     HOST:pass
+
+              3.     GROUP::pass
+
+              4.     pass
+
+       If none of these keys is found, the value of the -p (--password) option
+       is used.  If this option is not supplied either, passwordless account
+       is assumed.
+
+   Configuration files
+       Upon startup rex looks for the following files and attempts to source
+       them:
+
+       /usr/local/etc/rex/rc
+              System-wide configuration file.
+
+       ~/.rex/rc
+              User-specific configuration file.
+
+       These files are not required to exist.  If they do the user settings
+       override the system-wide ones.
+
+       These files are sourced as regular TCL code.  Normally, they modify the
+       rex settings by using a st of commands provided for that purpose:
+
+       host HOSTNAME [HOSTNAME...]
+              Adds the listed hostnames to the list of hosts.
+
+       hostname IP NAME
+              Registers NAME in DNS cache as a hostname for the IPv4 address
+              IP. This is useful if IP has no PTR record, or its PTR record is
+              deemed unsuitable for some reason.
+
+       ifmode { mode body [mode body...] }
+              Matches the current mode against each of mode arguments.  As
+              soon as the match is found, the corresponding body is evaluated.
+              Similarly to the switch(n) command, a dash in place of body
+              means that the body for the next mode should also be used as the
+              body for this one.  If the next mode has a body of "-", than the
+              body after that is used, etc.)  The mode should be one of the
+              following: run, copy-to, copy-from, login, list, and edit.  If
+              the last mode used is the word default, it will match any mode
+              not explicitly listed before.
+
+              The ifmode pattern allows for selecting different settings
+              depending on the running mode.  For example, it is common to set
+              the TERM environment variable to dumb for run mode.  However, it
+              is undesirable in login and edit modes, and has no effect on the
+              remaining modes.  To make sure it is set only for run mode, the
+              following statement is normally used:
+              ifmode {
+                run { environ TERM=dump }
+              }
+
+       option OPTNAME VALUE [VALUE...]
+              Sets or unsets a rex option.  OPTNAME is the long name of the
+              option without the leading two dashes.  For example, setting
+              option jobs 25
+
+              has the same effect as giving the option --jobs=25 in the
+              command line.
+
+              Options that take no argument in the command line are treated as
+              booleans.  The VALUE of on, true, yes, or 1 sets the option,
+              while the VALUE of off, false, no, or 0 unsets it.  Thus, to set
+              the no-resolve option, use
+              option no-resolve true
+
+       timeout [NUMBER]
+              Sets the timeout for expecting reply from the remote commands.
+              NUMBER is the timeout value in seconds.  When used without
+              arguments, returns the current timeout value.
+
+       environ [-set] NAME=VALUE [NAME=VALUE...]
+              Sets environment variables.
+
+       environ -unset NAME [NAME...]
+              Unsets environment variables.
+
+       earlycmd [-clear] COMMAND [COMMAND...]
+              Defines the sequence of shell commands that will be sent as soon
+              as the secure connection to the remote host is established,
+              before waiting for the command line prompt.  For an example of
+              its use, see the note about ZSH, below.
+
+       shrc [-clear] COMMAND [COMMAND...]
+              Defines the sequence of shell commands that will be sent after
+              receiving the first command line prompt from the remote server.
+
+   Hostgroups
+       A hostgroup defines a list of hosts and optionally associates a set of
+       rex settings to use when running commands on them.  Each hostgroup is
+       identified by its name, which must comply with the same requirements as
+       a name of a disk file.  The hostgroup definition consists of one or
+       more files located in the directory ~/.rex/hostgroup/NAME (user-
+       specific), or /usr/local/etc/rex/hostgroup/NAME (system-wide), where
+       NAME is the name of the group.  User-specific directories are given
+       preference over the system-wide ones.  The only mandatory file is rc.
+       It is a TCL source, which will be loaded in a separate namespace, to
+       avoid the possibility of inadvertent contamination of the main rex
+       code.
+
+       The hostgroup rc file should use the host and/or hostgroup commands
+       (see the subsection Configuration files above) to define the list of
+       hosts in the hostgroup.
+
+   Debugging
+       To see what's going on during rex invocation, use the -d (--debug)
+       option.  This option is incremental, that is the more times you repeat
+       it in the command line, the more debugging information is output.
+       Currently, the most detailed information is obtained at level 3, i.e.
+       using -ddd.
+
+       Additional information is provided by the -l (--log) option, which
+       enables logging of the send/expect dialog to stdout.
+
+       If you wish to get even more information and are familiar with
+       expect(1) internals, set the EXPECT_DEBUG environment variable prior to
+       invoking rex.  The value of this variable is the name of a file where
+       to output additional information (as well as showing it on the standard
+       error).  Overall effect is equivalent to setting exp_internal in
+       expect.
+
+       When rex encounters an error in one of its rc files, it prints the
+       location where the error occurred and a short diagnostic message
+       describing the nature of the error.  If you wish to obtain full trace
+       of TCL calls for such errors, use the --tcl-trace option.  Normally,
+       this option is only useful for rex developers.
+
+OPTIONS
+       -c, --config=FILE
+              Read configuration from FILE.
+
+       -d, --debug
+              Increase debugging level.
+
+       -l, --log
+              Log everything to the standard output.
+
+       -q, --no-init-file, --no-rc-file
+              Don't read system-wide and user configuration files.
+
+       -N, --noop
+              Ignore all commands (useful for side effects).
+
+       -n, --no-resolve
+              Don't resolve IP addresses when printing hostnames.
+
+       --tcl-trace
+              Produce full TCL trace if an error occurs while sourcing one of
+              the configuration files.  This option is useful mainly for
+              developers.
+
+       -v, --verbose
+              Enable additional warnings.
+
+       -V, --version
+              Print program version and copyright statement.
+
+       -h, --help
+              Show a terse help summary
+
+REX RUN
+       rex run PROGRAM ARG [ARG...]
+
+       The rex run command runs the specified program with the arguments on
+       the servers.
+
+   Sequential and parallel execution
+       By default, rex run executes the command on each host in succession.
+       The output from the command is printed on the standard output, preceded
+       by a header line containing the name of the remote host that produced
+       the output, and a colon.
+
+       The --no-host-header option disables printing of that header line.  The
+       -P (--prefix) option further modifies the output by prefixing each line
+       with the hostname, a greater than sign, and a space character.
+
+       When operating on a big number of hosts, the operation can be sped up
+       by running command on several hosts at once.  This parallel operation
+       is enabled by the -jN (--jobs=N) option.  The N parameter is the number
+       of hosts to be processed in a batch.
+
+       The -j option implies --prefix --no-host-header to make it clear which
+       host produced which line.  However, if the command produces multiple
+       lines of output, they become intermixed when running in parallel.  To
+       further improve readability of the output, the -b (--buffer-output)
+       option is provided.
+
+       This option instructs rex to buffer output from each host in the batch
+       and to output it only after the host closes connection.  This way,
+       output from each host appears on screen as a contiguous text.
+
+       The -b option cancels the implied --prefix --no-host-header settings.
+
+   Transferring data prior to execution
+       If the program relies on some additional files to be present, these can
+       be transferred to each host prior to running the program.  The transfer
+       is requested by the -D (--data-file) option.  The argument to this
+       option names the file to be copied to the target host.
+
+       To transfer multiple files, repeat the -D option for each of them.
+
+       The files supplied with the -D options will be copied to a temporary
+       directory created in /tmp on each target host.  That directory will
+       become current working directory when invoking the PROGRAM.
+
+       The arguments to PROGRAM can refer to the files transferred via the -D
+       option using the syntax {N}, where N is the number of the -D option
+       occurrence (1-based).  The {N} is expanded to the file name part of the
+       argument to the corresponding -D option.  For example,
+
+       rex run -D prefix.txt -D repl sed -f {2} {1} /etc/passwd
+
+       will result in running the following command in a temporary directory
+       on each target host:
+
+       sed -f repl prefix.txt /etc/passwd
+
+       Note, that the {N} notation expands to a file name relative to the
+       current working directory on the remote host.  This means that
+
+       rex run -D /tmp/prefix.txt -D repl sed -f {2} {1} /etc/passwd
+
+       will result in exactly the same command as the example above: the
+       expansion of {1} will throw away the directory part from the file name.
+
+       Similarly, the token {} expands to a space-separated list of file names
+       passed with all -D options, in the same order they appear on the
+       command line.
+
+       The PROGRAM itself can be an interpreted script that needs to be copied
+       on each host for execution.  The --copy option instructs rex to create
+       a temporary directory on the remote host, copy PROGRAM there, and then
+       select the interpreter to run by analyzing the first line from it.  If
+       this line starts with characters #!, the rest of line is taken as the
+       interpreter pathname and initial arguments.  For example, assuming that
+       file /libexec/foo is a shell script beginning with #!/bin/ksh, the
+       following command:
+
+       rex run --copy /libexec/foo /home
+
+       will first copy the file /libexec/foo to a temporary directory on the
+       remote host, and then invoke it as
+
+       /bin/ksh foo /home
+
+       If the file does not begin with #!, the default interpreter,
+       /bin/sh, will be used.  The default interpreter can be changed
+       using the --interpreter option, as in the following example:
+
+       rex run --copy --interpreter="/bin/env perl" test.pl
+
+   Scripting
+       When given the -s NAME option, rex run looks for the file named
+       NAME.tcl in the library search path.  The search path is scanned from
+       left to right.  The first encountered NAME.tcl file is sourced in the
+       namespace hostproc.
+
+       The default library search path is:
+
+              ~/.rex/script
+              /usr/local/etc
+
+       If the -g GROUP (--group=GROUP) option is given, the path is modified
+       as follows:
+
+              ~/.rex/GROUP/script
+              /usr/local/etc/GROUP/script
+              ~/.rex/script
+              /usr/local/etc
+
+       The following functions from the hostproc namespace are used by rex:
+
+       proc prologue {}
+              Called at the very beginning of rex invocation, after analyzing
+              the command line options, but before parsing the remaining
+              command line arguments.
+
+              This function can be used to initialize internal variables.  It
+              is also allowed to modify the global config array (see the
+              section CONFIG ARRAY, below).
+
+              In the following example, prologue is used to set up the command
+              line:
+
+              proc prologue {} {
+                  global config
+                  set config(argv) {ls -ld /home}
+              }
+
+       proc epilogue {}
+              Called after processing all hosts.
+
+              It an be used for application-specific cleanup.
+
+       proc transition {host state}
+              Called when the session for $host is switched to the state
+              $state.  Currently implemented states are:
+
+              INIT   The initial state.  It is entered after starting ssh for
+                     that host.
+
+              PASS_SENT
+                     Entered after receiving password prompt from the remote
+                     side and responding to it with a password.
+
+              SUDO   Entered after responding to the password prompt received
+                     in the COMMAND state.  This happens only in sudo mode,
+                     when sudo asks for credentials.
+
+              SUDO2  Entered after sending a sudo rm command to remove the
+                     temporary directory.
+
+              STTY   Entered after sending the initial stty -echo command,
+                     which happens after successful authentication.  The
+                     session remains in this state while sending commands from
+                     the initial command list (see the description of shrc key
+                     in CONFIG ARRAY.
+
+              COMMAND
+                     Entered after sending the main command to the host.
+
+              STATUS Entered when the command prompt is first seen after
+                     issuing the command.  It is used by the rex group select
+                     to collect the return status of the command.
+
+              LOGOUT The very last state in the session lifetime.  It is
+                     entered after sending the terminating exit command to the
+                     host.
+
+                     The following implementation of the transition function
+                     uses this information to display informational message
+                     about each host being processed:
+
+                     proc transition {host state} {
+                         if {$state == "INIT"} {
+                             puts -nonewline stderr "$host... "
+                         } elseif {$state == "LOGOUT"} {
+                             puts "done"
+                         }
+                     }
+
+       proc getline {host line}
+              Invoked each time a new line of output is received from the
+              host.  The host parameter is the name of the host.  The $line
+              parameter is the line received from the host (with trailing CRLF
+              characters).
+
+       proc finish {host refname status}
+              The finish function is called when EOF has been received from
+              the host.  The refname parameter is a name of the variable
+              keeping the entire text received from that host during the
+              session.  This variable exists only if rex has been instructed
+              to buffer host output (see the -b option).  If it exists, the
+              output text is stored as a list of lines.  The status parameter
+              is the exit status of the command.
+
+   REX RUN OPTIONS
+       -b, --buffer-output
+              Output from servers is buffered and printed only when the job is
+              finished.  When running several jobs in parallel (see --jobs
+              option below), output lines from the concurrent jobs are printed
+              as they arrive and can therefore appear on the screen
+              intermixed.  This option ensures that output from each server is
+              printed as a contiguous block of text instead.
+
+       --copy copy PROGRAM to each host before executing
+
+       -D, --data-file=FILE
+              Declares FILE as a data file which will be used by COMMAND.  The
+              file will be copied to each host prior to running the command on
+              it.
+
+              Multiple files can be specified by repeating the -D option as
+              many times as needed.
+
+              If -D FILE option is given, the string {} passed as one of the
+              ARGS is replaced by FILE on the target machine.  If several -D
+              options are given, {} is replaced by their arguments.  For
+              example, the command rex run -D a -D b proc {} copies files a
+              and b to the target machine and then runs the command proc a b.
+
+       -g, --group=NAME
+              Select host group.
+
+       -h, --help
+              Display short help summary.
+
+       -H, --host=HOST[,NAME...]
+              Add HOST to the list.  Multiple hosts can be specified as a
+              comma-delimited list (no whitespace around commas, please).
+
+       -i, --ignore-hosts
+              Ignore the list of hosts read from the hostgroup file.  Operate
+              only on hosts supplied in the command line (see the --host
+              option, above).  This is useful to preserve the settings from
+              the hostgroup file while running the command on the hosts
+              defined on the command line.
+
+       -I, --interactive
+              Interactively ask for missing usernames and passwords.
+
+       --interpreter=COMMAND
+              Use COMMAND as interpreter for running PROGRAM.  This option
+              implies --copy.  By default, rex deduces the interpreter to use
+              from the first line of PROGRAM.
+
+       -j, --jobs=N
+              Run N jobs at once.  Implies --no-host-header --prefix.
+
+       --no-host-header
+              Don't print hostname before output from the host.
+
+       -p, --password=PWD
+              Set default password (unsafe!)
+
+       -P, --prefix
+              Prefix each output line with the host name or IP.
+
+       -s, --source=NAME
+              Source .rex/NAME.tcl after reading configuration files.
+
+       --sudo Run the command via sudo(1).
+
+       -u, --user=NAME
+              Set default user name.
+
+       -w, --confirm
+              Prompt and wait for confirmation before each host.
+
+       -X, --exclude-host=HOST[,NAME...]
+              Remove HOST from the list.  Multiple hosts can be specified as a
+              comma-delimited list (no whitespace around commas, please).
+
+       -Z, --zsh-quirk
+              Try to cope with hosts running zsh(1).
+
+              Unless special measures are taken, the output produced by zsh is
+              heavily contaminated with special escape sequences, which makes
+              it almost impossible to recognize command line prompts.
+
+              The -Z option forces rex to set TERM=dumb.  Then, if no command
+              line prompt is seen within the predefined interval, rex will try
+              to disable ZLE option, set PS1 to a dollar sign followed by
+              space and will retry scanning.  This allows for properly
+              recognizing command line prompts returned by zsh at the expense
+              of a certain slowdown.  See the subsection ZSH below for more
+              efficient ways of handling zsh.
+
+REX COPY
+       rex copy [OPTIONS] FILE [FILE...] DEST
+
+       The rex copy command copies one or more FILEs to the given destination
+       (DEST) on each remote host.
+
+       The command verb can be abbreviated to cp.
+
+   REX COPY OPTIONS
+       -g, --group=NAME
+              Select host group.
+
+       -h, --help
+              Display short help summary.
+
+       -H, --host=HOST[,NAME...]
+              Add HOST to the list.  Multiple hosts can be specified as a
+              comma-delimited list (no whitespace around commas, please).
+
+       -i, --ignore-hosts
+              Ignore the list of hosts read from the hostgroup file.  Operate
+              only on hosts supplied in the command line (see the --host
+              option, above).  This is useful to preserve the settings from
+              the hostgroup file while executing the command on the hosts
+              defined on the command line.
+
+       -I, --interactive
+              Interactively ask for missing usernames and passwords.
+
+       -j, --jobs=N
+              Run N jobs at once.  Implies --no-host-header --prefix.
+
+       -p, --password=PWD
+              Set default password (unsafe!)
+
+       -P, --prefix
+              Prefix each output line with the host name or IP.
+
+       --sudo Switch to root privileges before copying to DEST.  Technically,
+              speaking, the command
+
+              rex copy --sudo FILE DEST
+
+              is equivalent to
+
+              rex run -D FILE sudo cp {} DEST
+
+       -u, --user=NAME
+              Set default user name.
+
+       -w, --confirm
+              Prompt and wait for confirmation before proceeding with each
+              host.
+
+       -X, --exclude-host=HOST[,NAME...]
+              Remove HOST from the list.  Multiple hosts can be specified as a
+              comma-delimited list (no whitespace around commas, please).
+
+REX COPY-FROM
+       rex copy-from [OPTIONS] HOST FILE [FILE...] DEST
+
+       The copy-from command copies the requested files from HOST to the given
+       destination DEST on the local machine.  Basically, it is equivalent to
+       running scp with proper arguments, except that it is more convenient to
+       use if HOST doesn't allow for passwordless authentication.  In that
+       case rex copy-from will use the authentication credentials from the rex
+       database, as described in the subsection Login credentials, above.
+
+       The command verb rcp (an abbreviation for reverse copy), can be used
+       instead of copy-from.
+
+   REX COPY-FROM OPTIONS
+       -I, --interactive
+              Interactively ask for missing usernames and passwords.
+
+       -p, --password=PWD
+              Set default password (unsafe!)
+
+       -u, --user=NAME
+              Set default user name.
+
+       -h, --help
+              Display short help summary.
+
+REX GROUP
+       The rex group command manages host group stack.
+
+       rex group push GROUP
+              Pushes hostgroup GROUP on stack.  The GROUP will be used by all
+              subsequent rex commands, in the absence of the -g option.
+
+       rex group pop
+              Pops the hostgroup off the top of the stack.
+
+       rex group swap N
+              Exchanges top of the stack with the Nth element (0-based).
+
+       rex group drop N
+              Removes the Nth element from the stack.
+
+       rex group select COMMAND ARGS...
+              Using the current hostgroup, selects the hosts on which the
+              supplied shell command gives success (exits with 0 status).  On
+              success, creates a new unnamed hostgroup consisting of the
+              selected hosts and pushes it on stack.
+
+       rex group show [OPTIONS]
+              Shows the hostgroup stack.  Without options, displays only the
+              topmost (current) entry.  The following options are understood:
+
+              -a, --all
+                     Show all stack entries.
+
+              -H, --hosts
+                     Show hosts in the topmost (current) hostgroup.
+
+              All options are mutually exclusive.
+
+       All the commands above accept also the -h (--help) option, which
+       displays a short help summary.
+
+REX LOGIN
+       rex login [OPTIONS] HOST
+
+       Logs in to the remote host HOST.  It is basically equivalent to using
+       ssh, except that it is convenient to use if the HOST doesn't support
+       passwordless authentication (see the section Login credentials, above).
+
+   REX LOGIN OPTIONS
+       -I, --interactive
+              Interactively ask for missing usernames and passwords.
+
+       -p, --password=PWD
+              Set default password (unsafe!)
+
+       -u, --user=NAME
+              Set default user name.
+
+       -Z, --zsh-quirk
+              Try to cope with hosts running zsh(1).  See the description of
+              this option in subsection REX RUN OPTIONS.
+
+       -h, --help
+              Display short help summary.
+
+REX LIST
+       rex list [groups]
+
+       rex list OPTIONS hosts
+
+       List hostgroups or hosts in a hostgroup (second form).
+
+       The output of rex list groups consists of two columns: the group name
+       and its description.
+
+       The second form lists hosts in a hostgroup selected by OPTIONS.  At
+       least one option must be present.
+
+   REX LIST OPTIONS
+       -h, --help
+              Display a short help summary.
+
+       -H, --host=HOST[,NAME...]
+              Add HOST to the list.  Multiple hosts can be specified as a
+              comma-delimited list (no whitespace around commas, please).
+
+       -i, --ignore-hosts
+              Ignore the list of hosts read from the hostgroup file.  Operate
+              only on hosts supplied in the command line (see the --host
+              option, above).  This is useful to preserve the settings from
+              the hostgroup file while executing the command on the hosts
+              defined on the command line.
+
+       -X, --exclude-host=HOST[,NAME...]
+              Remove HOST from the list.  Multiple hosts can be specified as a
+              comma-delimited list (no whitespace around commas, please).
+
+       Additionally, the -h, or --help option displays a short help summary.
+
+REX EDIT
+       rex edit [FILE]
+
+       Starts the editor defined by the VISUAL (or, if it is unset, EDITOR)
+       environment variable for editing the rex database file FILE (or
+       ~/.rex/db, if used without argument).  Upon exit from the editor, the
+       command compares the new content with the existing one.  If changed,
+       the user is prompted whether they wish to save the changes.
+
+CONFIG ARRAY
+       The config variable is an associative array keeping the configuration
+       of rex.  The rc scripts are free to modify it as they see fit.  The
+       valid keys in config are:
+
+       data   (list) A list of file names to copy to each host prior to
+              running the command.  See the description of the --data-file
+              option.
+
+       debug  (integer) Debug verbosity level.  Defaults to 0.  It is
+              increased by one with each -d (--debug) option.  Biggest
+              possible value is 3.
+
+       earlycmd
+              (list) A list of commands to send as early as the very first
+              line of output from the host is seen (see the note about ZSH,
+              below).
+
+       exclude_hosts
+              List of host names to exclude from processing.  Normally set via
+              the -X exclude option.
+
+       file   (string) Name of the file to read instead of the default
+              configuration files.
+
+       hosts  List of hosts to run command on.
+
+       mode   Operation mode.  The value is one of: run, copy-from, copy-to,
+              edit, group.  list, and login.
+
+       pass   Password to use when no host or group-specific one is given (see
+              Login credentials).
+
+       prompt Regular expression for matching the command line prompt.
+              Default is "(%|#|\$) $" .
+
+       shrc   A list of commands to send after the initial command line prompt
+              has been received.  See the note about Disabling command history
+              for an example of its use.
+
+       sudo   The string "sudo", if the command must be executed with super-
+              user privileges (via sudo(9)).  An empty string otherwise.
+
+       user   User login name to use (see Login credentials).  Defaults to the
+              value of the environment variable USER.
+
+       option,buffer-output
+              (boolean) Buffer server output and print it only when the batch
+              job is finished.  See the -q (--buffer-output) option.
+
+       option,confirm
+              (boolean) Prompt and wait for confirmation before each host.
+              See the -w, --confirm option.
+
+       option,editdb
+              (boolean) Editdb mode.  This option is set by the rex edit
+              command.  See the section REX EDIT.
+
+       option,encrypt
+              (boolean) String encrypt mode.  See the encrypt option.
+
+       option,hostgroup
+              Name of the hostgroup as supplied by the -g (--group) option.
+
+       option,ignore-hosts
+              (boolean)  Ignore  the list of hosts read from the hostgroup
+              file.  Set by the -i (--ignore-hosts) command line option.
+
+       option,interactive
+              (boolean) Set by the -I (--interactive) option.
+
+       option,jobs
+              (integer) Number of hosts to process in one batch.  Default is
+              1.  See the -j (--jobs) option.
+
+       option,log
+              (boolean) If set to 1, log entire output from each server on
+              standard out.  This is equivalent to setting log_user 1 in
+              expect.
+
+       option,no-init-file
+              (boolean Don't read initialization files (Configuration files).
+              See also the -q (--no-init-file) option.
+
+       option,no-host-header
+              (boolean)  Don't print hostname before output from the host (the
+              --no-host-header option).
+
+       option,noop
+              (boolean) Don't run COMMAND.  This option is convenient when you
+              have some side effects in your rc file (such as, e.g. launching
+              a VPN etc.) and wish to evaluate them without actually executing
+              a command.
+
+       option,prefix
+              (boolean) Prefix each output line with the host name or IP.  See
+              the -P (--prefix) option.
+
+       option,script
+              (boolean) True if command is a local script (see the --script
+              option).
+
+       option,source
+              Base name of the user-defined TCL script to be sourced.  See the
+              --source option.
+
+       option,resolve
+              (boolean) Resolve host IP addresses into the hostnames.  Default
+              is 1.  Reset via the -n, --no-resolve command line option.
+
+       option,verbose
+              (boolean) Print additional warnings (-v, --verbose).
+
+       option,zsh-quirk
+              (boolean) Try to cope with remote zsh(1) shells.  See the
+              description of the -Z (--zsh-quirk) option, and the subsection
+              ZSH in the NOTES section, below.
+
+REX DATABASE
+       Rex searches for its database file in the following locations:
+
+       /usr/local/etc/rex/db
+              Site-wide database file.
+
+       ~/.rex/db
+              Per-user database file.
+
+       Existing files are loaded in that order, so that per-user settings
+       override the system-wide ones.  Each db file is a textual file with
+       key-value pairs separated by any amount of whitespace.  Each pair
+       occupies a separate line.  Empty lines and comments (starting with #)
+       are ignored.
+
+       The format of the key value is:
+
+       [GROUP:][HOST:]KEYWORD
+
+       (square brackets denoting optional parts).  The reserved keywords are:
+
+       user   User login name.
+
+       pass   User password.
+
+       earlycmd
+              Commands to send as early as the very first line of output from
+              the host is seen.  The value is a whitespace-separated list of
+              TCL strings.  Please use curly braces, instead of double quotes,
+              to prevent interpretation of the string value.
+
+              This setting is useful if the command line prompt cannot be
+              easily recognized (see the note about ZSH, below).
+
+       shrc   Commands to send after the initial command line prompt has been
+              received.  The value is a whitespace-separated list of TCL
+              strings.  Please use curly braces, instead of double quotes, to
+              prevent interpretation of the string value.
+
+              See the note about Disabling command history for an example of
+              its use.
+
+       Users can define their own keywords.
+
+NOTES
+   Disabling command history
+       You might wish to disable the command history on remote hosts for
+       commands executed by rex.  Use the shrc setting for that.  This setting
+       supplies a list of commands rex will send after it has received the
+       initial command line prompt from the remote machine.
+
+       The exact list of commands depends on the shell that the remote uses.
+
+       The simplest way, common for bash, ksh, and zsh is:
+
+       shrc HISTFILE=/dev/null
+
+       Similar setting for csh(1) or tcsh(1) is:
+
+       shrc {set histfile=/dev/null}
+
+       The drawback of this approach is that the assignment itself and all the
+       built-in commands sent by rex are still retained in history.
+
+       A more sophisticated way, suitable for both bash and zsh shells is:
+
+       shrc {
+            if test -n "$HISTFILE" && test -f "$HISTFILE"; \
+            then \
+              mv $HISTFILE ${HISTFILE}~; \
+              head -n -1 ${HISTFILE}~ > $HISTFILE; \
+            fi} \
+            {unset HISTFILE}
+
+       It removes the most recent line from the history file and unsets the
+       HISTFILE variable, thereby preventing the shell from further updating
+       it.
+
+       (The most recent line contains the command stty -echo, sent by rex at
+       the beginning of each session.)
+
+       To set history cleaning on a per-host (or per-hostgroup) basis, use the
+       shrc key in the rex database file.
+
+   ZSH
+       Interaction with zsh(1) poses considerable problems because this shell
+       spits out enormous amounts of escape sequences for colorization and
+       other purposes, which makes it next to impossible to write an efficient
+       regular expression for recognizing command line prompts.  To make
+       matters even worse, it ignores any changes made by stty.
+
+       An ad-hoc way of coping with hosts running zsh is provided by the -Z
+       (--zsh-quirk) command line option.  However, it is convenient only for
+       casual usage, because of the slowdown it imposes.
+
+       The proper way of handling zsh hosts is by configuring the earlycmd
+       setting.  This configuration setting declares a list of commands that
+       rex is to send as early as it sees the very first line of output from
+       the host.
+
+       If all your hosts run zsh, add the following to your rc file:
+
+       ifmode {
+         run {
+           environ TERM=dumb
+         }
+       }
+       earlycmd {unsetopt ZLE} {PS1='$ '}
+
+       This will disable the zle module, which is the cause of all evil (TM),
+       reset terminal defaults to decent values and set a proper command line
+       prompt.
+
+       If only some of your hosts run zsh, you can set the earlycmd option in
+       the rex database file, using the earlycmd key, either for hostgroup or
+       for individual hosts.
+
+       The value of that option is a whitespace-separated list of TCL strings.
+
+       For example, if the account on host baboo runs zsh, run rex edit and
+       add the following line:
+
+       baboo:earlycmd   {unsetopt ZLE} {PS1='$ '}
+
+       Notice that you will still need to have
+
+       environ TERM=dumb
+
+       in your rc file.
+
+FILES
+       /usr/local/etc/rex/rc
+              System-wide configuration file.
+
+       ~/.rex/rc
+              User-specific configuration file.
+
+       /usr/local/etc/rex/db
+              System-wide database file (see Login credentials).
+
+       ~/.rex/db
+              User-specific database file.
+
+       /usr/local/etc/rex/script
+              System-wide script directory (see the subsection Scripting,
+              above).
+
+       ~/.rex/script
+              User-specific script directory.
+
+       /usr/local/etc/rex/hostgroup/GROUP/script
+              System-wide hostgroup-specific script directory.
+
+       ~/.rex/hostgroup/GROUP/script
+              Per-user hostgroup-specific script directory.
+
+       /usr/local/etc/rex/hostgroup/GROUP/rc
+              System-wide definition of GROUP.
+
+       ~/.rex/hostgroup/GROUP/rc
+              User-specific definition of GROUP.
+
+       /usr/local/etc/rex/hostgroup/GROUP/description
+              System-wide description of GROUP.
+
+       ~/.rex/hostgroup/GROUP/description
+              User-specific description of GROUP.
+
+ENVIRONMENT
+       EXPECT_DEBUG
+              Enables detailed diagnostic output of internal activity  of
+              commands such as expect and interact.  The value of this
+              variable is the name of a file where to output additional
+              information (as well as showing it on the standard error).
+              E.g., setting EXPECT_DEBUG=foo is similar to using exp_internal
+              -f foo 1 at the beginning of the expect code.
+
+       EXPECT_PROMPT
+              Regular expression for matching command line prompt.  Default is
+              "(%|#|\$) $" .
+
+       VISUAL Pathname of the editor binary.
+
+       EDITOR Pathname of the editor binary.  It is used if VISUAL is not
+              defined.
+
+       USER   Name of the current user.  See also the -u, --user option.
+
+RETURN VALUE
+       0      Success.
+
+       1      Command line usage error.
+
+       2      Some of hosts were unreachable or refused connection.
+
+EXAMPLE
+       1.     Check uptime on all hosts in group web:
+
+       rex run -g web uptime
+
+       2.     Same with single-line output for each host.
+
+       rex run -g web --prefix --no-host-header uptime
+
+       3.     Restart httpd on each host (notice the use of --sudo).
+
+       rex run -g web --sudo /etc/init.d/httpd restart
+
+AUTHORS
+       Sergey Poznyakoff
+
+BUG REPORTS
+       Report bugs to <gray+rex@gnu.org.ua>.
+
+COPYRIGHT
+       Copyright © 2012-2022 Sergey Poznyakoff
+       License GPLv3+: GNU GPL version 3 or later
+       <http://gnu.org/licenses/gpl.html>
+       This is free software: you are free to change and redistribute it.
+       There is NO WARRANTY, to the extent permitted by law.
+
+
+REX                             March 17, 2022                          REX(8)

@@ -1,0 +1,163 @@
+Validate::Yubikey(3pm)                                                              User Contributed Perl Documentation                                                              Validate::Yubikey(3pm)
+
+NAME
+       Validate::Yubikey - Validate Yubikey OTPs
+
+SYNOPSIS
+           use Validate::Yubikey;
+
+           sub validate_callback {
+               my $public_id = shift;
+
+               return {
+                   iid => $iid,
+                   key => $key,
+                   count => $count,
+                   use => $use,
+                   lastuse => $lastuse,
+                   lastts => $lastts,
+               };
+           }
+
+           sub update_callback {
+               my ($public_id, $data) = @_;
+           }
+
+           sub log_message {
+               print shift, "\n";
+           }
+
+           my $yubi = Validate::Yubikey->new(
+               callback => \&validate_callback,
+               update_callback => \&update_callback,
+               log_callback => \&log_message,
+           );
+
+           my $otp_valid = $yubi->validate("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+
+DESCRIPTION
+       The Yubikey is a hardware OTP token produced by Yubico (<http://www.yubico.com>).
+
+       This module provides validation of Yubikey OTPs.  It relies on you to specify callback functions that handle retrieving token information from somewhere and updating the persistent information
+       associated with each token.
+
+METHODS
+   new
+       Create a new Validate::Yubikey instance.
+
+       callback
+           Required.
+
+       update_callback
+           Required.
+
+       log_callback
+           Optional.
+
+   validate
+       Arguments: $otp, @callback_args
+       Return Value: $success
+
+       Validate an OTP.
+
+CALLBACKS
+   callback
+       Receives: $public_id, @callback_args
+       Returns: \%token_data
+
+       Called during validation when information about the token is required.  Receives the public ID of the Yubikey.  It's expected that your subroutine returns a hash reference containing the following
+       keys:
+
+       iid - Internal ID
+       key - Secret key
+
+       Plus the four values stored by the update_callback.
+
+   update_callback
+       Receives: $public_id, \%token_data, @callback_args
+       Returns: nothing
+
+       Called to update the persistent storage of token parameters that enable replay protection.  %token_data will contain one or more of the following keys, which should be associated with the supplied
+       $public_id:
+
+       count
+       use
+       lastuse
+       lastts
+
+       These should all be integers.
+
+   log_callback
+       Receives: $log_message
+       Returns: nothing
+
+       Called with messages produced during validation.  If not supplied to new, logging will disabled.
+
+EXAMPLE
+       Here's a simple program that uses DBIx::Class to store token information.
+
+           package YKKSM::DB::Token;
+           use base qw/DBIx::Class/;
+
+           __PACKAGE__->load_components(qw/PK::Auto Core/);
+           __PACKAGE__->table('token');
+           __PACKAGE__->add_columns(qw/uid pid iid key count use lastuse lastts/);
+           __PACKAGE__->set_primary_key('uid');
+
+           package YKKSM::DB;
+           use base qw/DBIx::Class::Schema/;
+
+           __PACKAGE__->load_classes(qw/Token/);
+
+           package YKTest;
+           use Validate::Yubikey;
+
+           my $schema = YKKSM::DB->connect("dbi:SQLite:dbname=yktest.db");
+
+           my $yk = Validate::Yubikey->new(
+               callback => sub {
+                   my $pid = shift;
+                   my $token = $schema->resultset('Token')->find({ pid => $pid });
+
+                   if ($token) {
+                       return {
+                           iid => $token->iid,
+                           key => $token->key,
+                           count => $token->count,
+                           use => $token->use,
+                           lastuse => $token->lastuse,
+                           lastts => $token->lastts,
+                       };
+                   } else {
+                       return undef;
+                   }
+               },
+               update_callback => sub {
+                   my ($pid, $data) = @_;
+                   my $token = $schema->resultset('Token')->find({ pid => $pid });
+                   if ($token) {
+                       $token->update($data);
+                   } else {
+                       die "asked to update nonexistent token $pid";
+                   }
+               },
+               log_callback => sub {
+                   print shift, "\n";
+               },
+           );
+
+           if ($yk->validate($ARGV[0])) {
+               print "success!\n";
+           } else {
+               print "failure 8(\n";
+           }
+
+AUTHOR
+       Ben Wilber <ben@desync.com>
+
+       But most of this module was derived from Yubico's PHP stuff.
+
+LICENSE
+       This library is free software and may be distributed under the same terms as perl itself.
+
+perl v5.34.0                                                                                     2022-06-28                                                                          Validate::Yubikey(3pm)

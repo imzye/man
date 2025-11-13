@@ -1,0 +1,272 @@
+BBSAgent(3)           User Contributed Perl Documentation          BBSAgent(3)
+
+
+NAME
+       OurNet::BBSAgent - Scriptable telnet-based virtual users
+
+SYNOPSIS
+           #!/usr/local/bin/perl
+           # To run it, make sure you have a 'elixus.bbs' file in the same
+           # directory. The actual content is listed just below this section.
+
+           use strict;
+           use OurNet::BBSAgent;
+
+           my $remote  = 'elixus.bbs';         # template name
+           my $timeout = undef;                # no timeout
+           my $logfile = 'elixus.log';         # log file
+           my $bbs     = OurNet::BBSAgent->new($remote, $timeout, $logfile);
+
+           my ($user, $pass) = @ARGV;
+           $user = 'guest' unless defined($user);
+
+           $bbs->{debug} = 1;                  # debugging flag
+           $bbs->login($user, $pass);          # username and password
+
+           # callback($bbs->message) while 1;  # procedural interface
+
+           $bbs->Hook('message', \&callback);  # callback-based interface
+           $bbs->Loop(undef, 10);              # loop indefinitely, send Ctrl-L
+                                               # every 10 seconds (anti-idle)
+
+           sub callback {
+               my ($caller, $message) = @_;
+
+               print "Received: $message\n";
+
+               ($bbs->logoff, exit) if ($message eq '!quit');
+               $bbs->message_reply("$caller: $message");
+           }
+
+DESCRIPTION
+       OurNet::BBSAgent provides an object-oriented interface to TCP/IP based
+       interactive services, by simulating as a virtual user with action
+       defined by a script language.
+
+       The developer could then use the same methods to access different
+       services, to easily implement interactive robots, spiders, or other
+       cross-service agents.
+
+       The scripting language of OurNet::BBSAgent features both flow-control
+       and event-driven capabilities, makes it especially well-suited for
+       dealing with automation tasks involved with Telnet-based BBS systems.
+
+       This module is the foundation of the BBSAgent back-end described in
+       OurNet::BBS. Please consult its man page for more information.
+
+   Site Description File
+       This module has its own scripting language, which looks like this in a
+       site description file:
+
+           Elixus BBS
+           elixus.org:23
+
+           =login
+           wait \e[7m
+           send $[username]\n
+           doif $[password]
+               wait \e[7m
+               send $[password]\nn\n
+           endo
+           # login failure, unsaved article, kick multi-logins
+           send \n\n\n
+           # skips splash screens (if any)
+           send \x20\x20\x20
+
+           =main
+           send qqqqqqee
+           wait \e[;H\e[2J\e[1;44;37m
+           till ]\e[31m
+
+           =logoff
+           call main
+           send g\ng\ny\ny\n\n\n
+           exit
+
+           =message
+           wait \e[1;33;46m
+           wait m/../
+           till \x20\e[37;45m\x20
+           till \x20\e[m
+           exit
+
+           =message_reply
+           send \x12
+           wait \e[m
+           wait \e[23;1H
+           send $[message]\n
+           wait [Y]
+           send \n
+           wait \e[37;45m
+           wait \e[m
+           exit
+
+       The first two lines describe the service's title, its IP address and
+       port number. Any number of procedures then begins with a "=" sign (e.g.
+       =procname), which could be called as $object->"procname"([arguments])
+       in the program.
+
+   Directives
+       All procedures are consisted of following directives:
+
+       load FILENAME
+           This directive must be used before any procedures. It loads another
+           BBS definition file under the same directory (or current
+           directory).
+
+           If the FILENAME has an extension other than ".bbs" (eg. ".board",
+           ".session"), BBSAgent will try to locate additional modules by
+           expanding "." into "/", and look for the required module with an
+           ".inc" extension. For example, load "maple3.board" will look for
+           "maple3/board.inc" in the same directory.
+
+       wait STRING
+       till STRING
+       or STRING
+           Tells the agent to wait until STRING is sent by remote host. May
+           time out after $self->"{timeout}" seconds. Each trailing or
+           directives specifies an alternative string to match.
+
+           If STRING matches the regex "m/.*/[imsx]*", it will be treated as a
+           regular expression. Capturing parentheses are silently ignored.
+
+           The till directive is functionally equivalent to wait, except that
+           it will puts anything between the last wait or till and STRING into
+           the return list.
+
+       send STRING
+           Sends STRING to remote host.
+
+       doif CONDITION
+       elif CONDITION
+       else
+       endo
+           The usual flow control directives. Nested doif...endos are
+           supported.
+
+       goto PROCEDURE
+       call PROCEDURE
+           Executes another procedure in the site description file. A goto
+           never returns, while a call always does. Also, a call will not
+           occur if the destination was the last executed procedure, which
+           does not end with exit.
+
+       exit
+           Marks the termination of a procedure; also denotes that this
+           procedure is not a state - that is, multiple calls to it will all
+           be executed.
+
+       setv VAR STRING
+           Sets a global, non-overridable variable (see below).
+
+       idle NUMBER
+           Sleep that much seconds.
+
+   Variable Handling
+       Whenever a variable in the form of $[name] is encountered as part of a
+       directive, it will be looked up in the global setv hash $self->{var}
+       first, then at the procedure-scoped variable hash, then finally
+       shift()ed from the argument list if none are found.
+
+       For example:
+
+           setv foo World!
+
+           =login
+           send $[bar] # sends the first argument
+           send $[foo] # sends 'World!'
+           send $[baz] # sends the second argument
+           send $[bar] # sends the first argument again
+
+       A notable exception are digits-only subscripts (e.g. $[1]), which
+       contains the matched string in the previous wait or till directive.  If
+       there are multiple strings via or directives, the subscript correspond
+       to the matched alternative.
+
+       For example:
+
+           =match
+           wait foo
+             or m/baz+/
+           doif $[1] # 'foo' matched
+               send $[1] # sends 'foo'
+           else
+               send $[2] # sends 'bazzzzz...'
+           endo
+
+   Event Hooks
+       In addition to call the procedures one-by-one, you can Hook those that
+       begins with wait (optionally preceded by call) so whenever the strings
+       they expected are received, the responsible procedure is immediately
+       called. You may also supply a call-back function to handle its results.
+
+       For example, the code in "SYNOPSIS" above hooks a callback function to
+       procedure message, then enters a event loop by calling Loop, which goes
+       on forever until the agent receives "!quit" via the "message"
+       procedure.
+
+       The internal hook table could be accessed by $obj->"{hook}".
+
+METHODS
+       Following methods are offered by OurNet::BBSAgent:
+
+   new($class, $bbsfile, [$timeout], [$logfile])
+       Constructor class method. Takes the BBS description file's name and two
+       optional arguments, and returns a OurNet::BBSAgent object.
+
+       If no files are found at $bbsfile, the method will try to locate it on
+       the OurNet/BBSAgent sub-directory of each @INC entries.
+
+   loadfile($self, $bbsfile, [$path])
+       Reads in a BBS description file, parse its contents, and return the
+       object itself. The optional $path argument may be used to specify a
+       root directory where files included by the load directive should be
+       found.
+
+   Hook($self, $procedure, [\&callback], [@args])
+       Adds a procedure to the trigger table, with an optional callback
+       function and parameters on invoking that procedure.
+
+       If specified, the callback function will be invoked after the hooked
+       procedure's execution, using its return value as arguments.
+
+   Unhook($self, $procedure)
+       Unhooks the procedure from event table. Raises an error if the
+       specified procedure did not exist.
+
+   Loop($self, [$timeout], [$refresh])
+       Causes a Expect loop to be executed for $timeout seconds, or
+       indefinitely if not specified. If the $refresh argument is specified,
+       BBSAgent will send out a Ctrl-L ("\cL") upon entering the loop, and
+       then every $refresh seconds during the Loop.
+
+   Expect($self, [$string], [$timeout])
+       Implements the wait and till directives; all hooked procedures are also
+       checked in parallel.
+
+       Note that multiple strings could be specified in one $string by using
+       \n as the delimiter.
+
+   AUTOLOAD($self, [@args])
+       The actual implementation of named procedures. All method calls made to
+       a OurNet::BBSAgent object would resolve to the corresponding procedure
+       defined it its site description file, which pushes values to the return
+       stack through the till directive.
+
+       An error is raised if the procedure called is not found.
+
+SEE ALSO
+       Net::Telnet, OurNet::BBS
+
+AUTHORS
+       Autrijus Tang <autrijus@autrijus.org>
+
+COPYRIGHT
+       Copyright 2001, 2003 by Autrijus Tang <autrijus@autrijus.org>.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+       See <http://www.perl.com/perl/misc/Artistic.html>
+
+perl v5.40.2                      2003-05-25                       BBSAgent(3)

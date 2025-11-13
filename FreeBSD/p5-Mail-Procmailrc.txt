@@ -1,0 +1,454 @@
+Procmailrc(3)         User Contributed Perl Documentation        Procmailrc(3)
+
+
+NAME
+       Mail::Procmailrc - An interface to Procmail recipe files
+
+SYNOPSIS
+         use Mail::Procmailrc;
+
+         ## create a new procmailrc object and initialize it
+         $pmrc = new Mail::Procmailrc("$HOME/.procmail/rc.spam");
+
+         ## add a new variable
+         $pmrc->push( new Mail::Procmailrc::Variable(["FOO=bar"]) );
+
+         ## add a new recipe
+         $recipe =<<'_RECIPE_';
+         :0B:
+         ## this will catch evil email messages
+         * 1^0 xxx
+         * 1^0 evil things
+         * 1^0 porn and other wickedness
+         * 1^0 all kinds of cursing
+         * 1^0 lewdness, filth, etc\.
+         /var/mail/evil
+         _RECIPE_
+
+         ## add this new recipe to our procmail rc file
+         $pmrc->push( new Mail::Procmailrc::Recipe($recipe) );
+
+         ## add another condition to our recipe (we shoulda left a scalar
+         ## handle lying around, but this illustrates something useful)
+         for my $obj ( @{$pmrc->rc} ) {
+             ## find the recipe we just added by its 'info' string
+             next unless $obj->stringify =~ /^\#\# this will catch evil email messages/m;
+
+             ## we want to block emails about censorship, too ;o)
+             push @{$obj->conditions}, '* 1^0 censor(ship|ing)?'
+         }
+
+         ## write this object to disk
+         $pmrc->flush;
+
+DESCRIPTION
+       Mail::Procmailrc can parse procmail recipe files and store the contents
+       in an object which can be later manipulated and saved (see "CAVEATS"
+       and "BUGS/TODO" for limitations and special conditions).
+
+       You may also start with a fresh, empty Mail::Procmailrc object,
+       populate it with recipes and/or variables and write it to file.
+
+       Recipes and variables are written to the file in the order they're
+       parsed and added.  If you want to re-order the recipes you may do so by
+       getting a handle on the variable or recipe list and ordering them
+       yourself.
+
+       The Mail::Procmailrc object is primarily a list of procmail component
+       objects (see below). When Mail::Procmailrc parses a procmail rc file,
+       it decides which lines are variable assignments, which lines are
+       comments, and which lines are recipes. It preserves the order in which
+       it encounters these procmail components and stores them as a list of
+       objects in the main Mail::Procmailrc object.
+
+       new Creates a new Mail::Procmailrc object.
+
+           Examples:
+
+               ## 1. in memory object
+               my $pmrc = new Mail::Procmailrc;
+
+               ## 2. parses /etc/procmailrc
+               my $pmrc = new Mail::Procmailrc("/etc/procmailrc");
+
+               ## 3. parses /etc/procmailrc, makes backup
+               my $pmrc = new Mail::Procmailrc("/etc/procmailrc");
+               $pmrc->file("/etc/procmailrc.bak");
+               $pmrc->flush;   ## create a backup
+
+               $pmrc->file("/etc/procmailrc");  ## future flushes will go here
+
+               ## 4. alternative syntax: filename specified in hashref
+               my $pmrc = new Mail::Procmailrc( { 'file' => '/etc/procmailrc' } );
+
+               ## 5. alternative syntax: scalar
+               my $rc =<<_FOO_;
+               :0B
+               * 1^0 this is not spam
+               /dev/null
+               _FOO_
+               my $pmrc = new Mail::Procmailrc( { 'data' => $rc } );
+
+               ## 6. alternative syntax: array reference
+               my $rc =<<'_RCFILE_';
+               :0c:
+               /var/mail/copy
+               _RCFILE_
+               my @rc = map { "$_\n" } split(/\n/, $rcfile);
+               $pmrc = new Mail::Procmailrc( { 'data' => \@rc } );
+
+       read
+           Sets the object's file attribute and parses the given file. If the
+           file is not readable, returns undef. Normally not invoked directly.
+
+           Example:
+
+               ## set $pmrc->file and parse
+               unless( $pmrc->read('/etc/procmailrc') ) {
+                   die "Could not parse '/etc/procmailrc!\n";
+               }
+
+       parse
+           Takes an array or string reference and populates the object with
+           it.
+
+           Example:
+
+               my $chunk =<<_RECIPE_;
+               ## begin foo section
+               TMPLOGFILE=\$LOGFILE
+               TMPLOGABSTRACT=\$LOGABSTRACT
+               TMPVERBOSE=\$VERBOSE
+
+               LOGFILE=/var/log/foolog
+               LOGABSTRACT=yes
+               VERBOSE=no
+
+               ## process the mail via foo
+               :0fw
+               |/usr/local/bin/foo -c /etc/mail/foo.conf
+
+               LOGFILE=\$TMPLOGFILE
+               LOGABSTRACT=\$TMPLOGABSTRACT
+               VERBOSE=\$TMPVERBOSE
+               ## end spamassassin vinstall (do not remove these comments)
+               _RECIPE_
+
+               ## make a new in-memory procmailrc file
+               my $new_pmrc = new Mail::Procmailrc;
+               $new_pmrc->parse($chunk);
+
+               ## add this new procmailrc file to our existing procmailrc file
+               $pmrc->push(@{$new_pmrc->rc});
+               $pmrc->flush;
+
+           Alternatively, you can pass an array reference to parse:
+
+               $new_pmrc->parse([split("\n", $chunk)]);
+
+       rc  Returns a list reference. Each item in the list is either a
+           Variable, Literal, or Recipe object. Items are returned in the
+           order they were originally parsed. You may assign to rc and rewrite
+           the Mail::Procmailrc object thereby.
+
+           Example:
+
+               ## remove foo section from recipe file
+               my @tmp_rc = ();
+               my $foo_section = 0;
+               for my $pm_obj ( @{$pmrc->rc} ) {
+                   if( $pm_obj->stringify =~ /^\#\# begin foo recipes/m ) {
+                       $foo_section = 1;
+                       next;
+                   }
+                   elsif( $pm_obj->stringify =~ /^\#\# end foo recipes/m ) {
+                       $foo_section = 0;
+                       next;
+                   }
+                   elsif( $foo_section ) {
+                       next;
+                   }
+                   push @tmp_rc, $rc_obj;
+               }
+               $pmrc->rc(\@tmp_rc);
+               $pmrc->flush;
+
+       recipes
+           Returns a listref of recipes in this object.
+
+       variables
+           Returns a listref of variables in this object.
+
+       literals
+           Returns a listref of literals in this object.
+
+       push
+           Pushes the dat(a|um) onto this object's internal object list. If
+           the object being pushed is another Mail::Procmailrc object, that
+           object's rc method is invoked first and the results are pushed.
+
+           Example:
+
+               my $rc_objs = $old_pmrc->rc;
+               $pmrc->push( @$rc_objs );
+
+       delete
+           Deletes an object from the main Mail::Procmailrc object:
+
+               for my $obj ( @{$pmrc->rc} ) {
+                   next unless $obj->isa('Mail::Procmailrc::Recipe');
+
+                   ## I lost all my enemies when I switched to the Perl Artistic License...
+                   next unless $obj->info->[0] =~ /^\#\# block email from enemies/;
+                   $pmrc->delete($obj);
+                   last;
+               }
+
+       file
+           Returns the path where this object will write when flush is
+           invoked. If file is given an argument, the object's internal file
+           attribute is set to this path.
+
+       flush
+           Writes the procmail object to disk in the file specified by the
+           file attribute. If the file attribute is not set, flush writes to
+           STDOUT. If a filename is given as an argument, it is set as the
+           objects file attribute.
+
+           Examples:
+
+               ## 1. flushes to whatever $pmrc->file is set to (STDOUT if file is unset)
+               $pmrc->flush;
+
+               ## 2. flushes to a specific file; future flushes will also go here
+               $pmrc->flush('/backup/etc/procmailrc');
+
+       stringify
+           Returns the object in string representation.
+
+       dump
+           Like stringify but with nicer formatting (indentation, newlines,
+           etc.). Suitable for inclusion in procmail rc files.
+
+Mail::Procmailrc::Variable Objects
+       Mail::Procmailrc::Variable objects are easy to create and use.
+       Normally, the Variable constructor is invoked by Mail::Procmailrc
+       during parsing. If you are creating or modifying an existing procmail
+       rc file, you might do something like this:
+
+           my $var = new Mail::Procmailrc::Variable(["VERBOSE=off"]);
+
+       or you might wish to do it another way:
+
+           my $var = new Mail::Procmailrc::Variable;
+           $var->lval('VERBOSE');
+           $var->rval('off');
+
+       You may get a handle on all Variable objects in an rc file with the
+       variables method:
+
+           ## change to verbose mode
+           for my $var ( @{$pmrc->variables} ) {
+               next unless $var->lval eq 'VERBOSE';
+               $var->rval('yes');
+               last;
+           }
+
+   Mail::Procmailrc::Variable Methods
+       variable([$string])
+           $string, if present, is split on the first '='. The left half is
+           assigned to lval and the right half to rval. If $string is false,
+           lval and rval are concatenated with '=' and returned as a single
+           string.
+
+       lval([$val])
+           Returns the current lvalue of the variable assignment, optionally
+           setting it if $val is present.
+
+       rval([$val])
+           Returns the current rvalue of the variable assignment, optionally
+           setting it if $val is present.
+
+       stringify
+           Returns the output of variable. Provides a consistent interface to
+           all Mail::Procmailrc::* subclasses.
+
+       dump
+           Returns the output of stringify with a trailing newline. Suitable
+           for inserting into a procmail rc file.
+
+       defaults([\%defaults [, $elem]])
+           Returns some internal object settings, currently not very useful or
+           interesting except when parsing deeply nested recipes. Included
+           here for completeness.
+
+       init(\@data)
+           Normally invoked by the constructor (new), but may be used to re-
+           initialize an object.
+
+Mail::Procmailrc::Literal Objects
+       Mail::Procmailrc::Literal objects are even easier to create and use
+       than Variable objects. A Mail::Procmailrc::Literal is simply a string
+       with a few methods wrapped around it for convenient printing.
+
+       You may get a handle on all Literal objects in an rc file with the
+       literals method:
+
+           ## change a comment in the rc file
+           for my $lit ( @{$pmrc->literals} ) {
+               next unless $lit->literal =~ /## spam follows/i;
+               $lit->literal('## this is a nice spam recipe');
+               last;
+           }
+
+       Here is how to create a new literal:
+
+          ## create a new literal
+          my $lit = new Mail::Procmailrc::Literal('## this file is for filtering spam');
+
+          ## same as above
+          my $lit = new Mail::Procmailrc::Literal;
+          $lit->literal('## this file is for filtering spam');
+
+          ## print it
+          $lit->dump;
+
+   Mail::Procmailrc::Literal Methods
+       literal([$string])
+           Get or set the literal object contents.
+
+       dump
+           Dump the contents of the object with a trailing newline.
+
+Mail::Procmailrc::Recipe Objects
+       A recipe object is made up of a flags object, zero or more literal
+       (comments or vertical whitespace) objects, zero or more condition
+       objects, and an action object. A Mail::Procmailrc::Recipe object is
+       made of four parts:
+
+       •   flags (required)
+
+       •   info/comment (optional)
+
+       •   conditions (optional)
+
+       •   action (required)
+
+       Normally, the Recipe object is created automatically during parsing.
+       However, if you are constructing a new rc file or want to modify an
+       existing procmailrc file, you will need to know a little about the
+       Recipe object.
+
+       To create a recipe object from a string, you may do something like
+       this:
+
+           $recipe =<<'_RECIPE_';
+           :0B:
+           ## block indecent emails
+           * 1^0 people talking dirty
+           * 1^0 dirty persian poetry
+           * 1^0 dirty pictures
+           * 1^0 xxx
+           /dev/null
+           _RECIPE_
+
+           $recipe_obj = new Mail::Procmailrc::Recipe($recipe);
+
+       or the more obtuse (if you happen to already have an array or
+       reference):
+
+           $recipe_obj = new Mail::Procmailrc::Recipe([split("\n", $recipe)]);
+
+       The entire recipe in $recipe is now contained in the $recipe_obj. You
+       could also piece together an object part by part:
+
+           $recipe_obj = new Mail::Procmailrc::Recipe;
+           $recipe_obj->flags(':0B');
+           $recipe_obj->info([q(## block indecent emails)]);
+           $recipe_obj->conditions([q(* 1^0 people talking dirty),
+                                    q(* 1^0 dirty persian poetry),
+                                    q(* 1^0 dirty pictures),
+                                    q(* 1^0 xxx),]);
+           $recipe_obj->action('/dev/null');
+
+       You can get a handle on all recipes in an rc file with the recipes
+       method:
+
+           my $conditions;
+           for my $recipe ( @{$pmrc->recipes} ) {
+               next unless $recipe->info->[0] =~ /^\s*\#\# this recipe is for spam/io;
+               $conditions = $recipe->conditions;
+               last;
+           }
+           push @$conditions, '* 1^0 this is not SPAM';  ## add another condition
+           $pmrc->flush;  ## write out to file
+
+   Important Note about info
+       The info method of the Recipe object is really just a procmail comment
+       (or literal elsewhere in this document), but because it appears between
+       the flags line (e.g., ':0fw') and the conditions (e.g., * 1^0 foo), it
+       becomes part of the recipe itself. This is terribly convenient usage
+       because it allows you to "index" your recipes and find them later.
+
+EXAMPLES
+       The eg directory in the Mail::Procmailrc distribution contains at least
+       one useful program illustrating the several uses of this module. Other
+       examples may appear here in future releases as well as the eg directory
+       of the distribution.
+
+CAVEATS
+       Parsing is lossy in two senses. Some formatting and stray lines may be
+       lost. Also, array references fed to constructors will not be returned
+       intact (i.e., data will be shifted out of them).
+
+BUGS/TODO
+       Please let the author/maintainer know if you find any bugs (providing a
+       regression test would also be helpful; see the testing format in the
+       't' directory).
+
+       •   We can't parse old-style "counting" syntax (before v2.90,
+           1993/07/01):
+
+               :2:
+               ^Subject:.*foo
+               From:.*foo@bar\.com
+               /tmp/eli/foo
+
+           Thanks to <eli@panix.com> (8 Oct 2002) for finding this bug.
+
+       •   We don't use any advisory locking on the procmail rc files.  This
+           wouldn't be hard to fix, but I'm not sure it is needed.
+
+       •   We suck in the entire procmailrc file into memory. This could be
+           done more efficiently with a typeglob and reading the file line by
+           line.
+
+       •   Comments on the flags line (e.g., ":0B     ## parse body") or on an
+           assignment line (e.g., "VAR=FOO   ## make FOO be known") are
+           quietly dropped when the rc file is parsed and they are not
+           replaced when the file is rewritten. If you want to keep comments
+           around, put them on a separate line.
+
+       •   We don't recursively parse file INCLUDE directives. This could be
+           construed as a safety feature. The INCLUDE directives will show up,
+           however, as Variable objects, so you could provide the recursion
+           pretty easily yourself.
+
+ACKNOWLEDGEMENTS
+       5 Feb 2003
+           Erwin Lansing (erwin@lansing.dk) for 5.00503 patch and doc typo.
+           Danke!
+
+COPYRIGHT
+       Copyright 2002 Scott Wiersdorf.
+
+       This library is free software; you can redistribute it and/or modify it
+       under the terms of the Perl Artistic License.
+
+AUTHOR
+       Scott Wiersdorf <scott@perlcode.org>
+
+SEE ALSO
+       procmail, procmailrc(5), procmailex(5), procmailsc(5)
+
+perl v5.40.2                      2005-06-09                     Procmailrc(3)

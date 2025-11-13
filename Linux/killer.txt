@@ -1,0 +1,400 @@
+KILLER(1)                                                                                                                                                                                         KILLER(1)
+
+NAME
+       killer - Background job killer
+
+SYNOPSIS
+       killer [-h] [-V] [-n] [-d]
+
+DESCRIPTION
+       killer is a perl script that gets rid of background jobs.  Background jobs are defined as processes that belong to users who are not currently logged into the machine.  Jobs can be run in the
+       background (and are expempt from killer's acctions) if their scheduling priority has been reduced by increasing their nice(1) value or if they are being run through condor.  For more details, see
+       the PACKAGE main section of this document.
+
+       The following sections describe the perl(1) packages that make up the killer program.  I don't expect that the version that works for me will work for everyone.  I think that the ProcessTable and
+       Terminals packages offer enough flexibility that most modifications can be done in the main package.
+
+       Command line options
+
+       -h  Tell me how to get help
+
+       -V  Display version number
+
+       -n  Do not kill, just print what would be killed
+
+       -d  Enable debug output
+
+PACKAGE ProcessTable
+       Each ProcessTable object contains hashes (or associative arrays) that map various aspects of a job to the process ID (PID).  The following hashes are provided:
+
+       pid2user    Login name associated with the effective UID that the process is running as.
+
+       pid2ruser   Login name associate with the real UID that the process is running as.
+
+       pid2uid     Effective UID that the process is running as.
+
+       pid2ruid    Real UID that the process is running as.
+
+       pid2tty     Terminal associated with the process.
+
+       pid2ppid    Parent process of the process
+
+       pid2nice    nice(1) value of the process.
+
+       pid2comm    Command name of the process.
+
+       Additionally, the %remainingprocs hash provides the list of processes that will be killed.
+
+       The  intended  use  of  this  package  calls  for  readProcessTable  to  be called to fill in all of the hashes defined above.  Then, processes that meet specific requirements are removed from the
+       %remainingprocs hash.  Those that are not removed are considered to be background processes and may be killed.
+
+   new
+       This function creates a new ProcessTable object.
+
+       Example:
+
+           my $ptable = new ProcessTable;
+
+   initialize
+       This function (re)initializes arrays and any environment variables for external commands.  It generally will not need to be called, as it is invoked by new().
+
+       Example:
+
+           # Empty out the process table for reuse
+           $ptable->initialize();
+
+   readProcessTable
+       This function executes the ps(1) command to figure out which processes are running.  Note that it requires a SYSV style ps(1).
+
+       Example:
+
+           # Get a list of processes from the OS
+           $ptable->readProcessTable();
+
+   cleanForkBombs
+       This function looks for a large number of processes owned by one user, and assumes that it is someone that is using fork() for the first time.  An effective way to clean up such a mess is to "kill
+       -STOP" each process then "kill -KILL" each process.
+
+       Note this function ignores such mistakes by root.  If root is running a fork(2) bomb, this script wouldn't run, right?  Also, you should be sure that the number of processes mentioned below  (490)
+       is  less  (equal  to  would  be  better,  right?)  than  the  maximum  number of processes per user.  Also, the OS should have a process limit at least a couple hundred higher than any individual.
+       Otherwise, you will have to use the power switch to get rid of fork bombs.
+
+       Each time a process is sent a signal, it is logged via syslog(3C).
+
+       Example:
+
+           # Get rid of fork bombs.  Keep track of who did it in @idiots.
+           my @idiots = $ptable->cleanForkBombs();
+
+   getUserProcessIds user
+       This returns the list of process ID's where the login associated with the real UID of the process matches the argument to the function.
+
+       Example:
+
+           # Find all processes owned by httpd
+           my @webservers = $ptable->getUserProcessIds('httpd');
+
+   getUniqueTtys
+       This function returns a list of terminals in use.  Note that the format will be the same as given by ps(1), which will generally lack the leading "/dev/".
+
+       Example:
+
+           # Get a list of all terminals that processes are attached to
+           my @ttylist = $ptable->getUniqueTtys();
+
+   removeProcessId pid
+       This function removes pid from the list of processes to be killed.  That is, it gets rid of a process that should be allowed to run.  Most likely this will only be called  by  other  functions  in
+       this package.
+
+       Example:
+
+           # For some reason I know that PID 1234 should be allowed to run
+           $ptable->removeProcessId(1234);
+
+   removeProcesses psfield, psvalue
+       This  function  removes  processes  that  possess  certain  traits.   For  example,  if you want to get rid of all processes owned by the user "lp" or all processes that have /dev/console as their
+       controlling terminal, this is the function for you.
+
+       psfield can be any of the following
+
+       pid     Removes process id given in second argument.
+
+       user    Removes processes with effective UID associated with login name given in second argument.
+
+       ruser   Removes processes with real UID associated with login name given in second argument.
+
+       uid     Removes processes with effective UID given in second argument.
+
+       ruid    Removes processes with real UID given in second argument.
+
+       tty     Removes processes with controlling terminal given in second argument.  Note that it should NOT start with "/dev/".
+
+       ppid    Removes children of process with PID given in second argument.
+
+       nice    Removes children with a nice value equal to the second argument.
+
+       comm    Removes children with a command name that is the same as the second argument.
+
+       Examples:
+
+           # Allow all imapd processes to run
+           $ptable->removeProcesses('comm', 'imapd');
+
+           # Be sure not to kill print jobs
+           $ptable->removeProcesses('ruser', 'lp');
+
+   removeChildren pid
+       This function removes all decendents of the given pid.  That is, if the pid argument is 1, it will ensure that nothing is killed.
+
+       Example:
+
+           # Be sure not to kill off any mail deliveries (assumes you have
+           # written getSendmailPid()).  (Sendmail changes uid when it does
+           # local delivery.)
+           $ptable->removeChildren(getSendmailPid);
+
+   removeCondorChildren
+       Condor is a batch job system that allows migration of jobs between machines (see http://www.cs.wisc.edu/condor/).  This ensures that condor jobs are left alone.
+
+       Example:
+
+           # Be nice to the people that are running their jobs through condor.
+           $ptable->removeCondorChildren();
+
+   findChildProcs pid
+       This function finds and returns a list of all of the processess that are descendents of a the PID given in the first argument.
+
+       Example:
+
+           # Find the processes that are decendents of PID 1234
+           my @procs = $ptable->findChildProcs(1234);
+
+   getTtys user
+       This function returns a list of tty's that are in use by processes owned by a particular user.
+
+       Example:
+
+           # find all tty's in use by gerdts.
+           my @ttylist = getTtys('gerdts');
+
+   getUsers
+       This function lists all the users that have active processes.
+
+       Example:
+
+           # Get all users that are logged in
+           my @lusers = $ptable->getUsers()
+
+   removeNiceJobs
+       This function removes all jobs that have a nice value greater than 9 (default is 0, and 10 when running with the "nice" command without specifying nice value).
+
+       Example:
+
+           # Allow people to run background jobs so long as they yield to
+           # those with "foreground" jobs
+           $ptable->removeNiceJobs();
+
+   printProcess filehandle, pid
+       This function displays information about the process, kinda like "ps | grep" would.
+
+       Example:
+
+           # Print info about init to STDERR
+           $ptable->printProcess(\*STDERR, 1);
+
+   printProcessTable
+   printProcessTable filehandle
+       This function prints info about all the processes discoverd by readProcessTable.  If an argument is given, it should be a file handle to which the output should be printed.
+
+       Examples:
+
+           # Print the process table to stdout
+           $ptable->printProcessTable();
+
+           # Mail the process table to someone
+           open MAIL '|/usr/bin/mail someone';
+           $ptable->printProcessTable(\*MAIL);
+           close(MAIL);
+
+   printRemainingProcesses
+   printRemainingProcesses filehandle
+       This function prints info about all the processes discoverd by readProcessTable, but not removed from %remainingprocs.  If an argument is given, it should be a file  handle  to  which  the  output
+       should be printed.
+
+       Examples:
+
+           # Print the jobs to be killed to stdout
+           $ptable->printRemainingProcesses();
+
+           # Mail the jobs to be killed to someone
+           open MAIL '|/usr/bin/mail someone';
+           $ptable->printRemainingProcesses(\*MAIL);
+           close(MAIL);
+
+   getRemainingProcesses
+       Returns a list of processes that are likely background jobs.
+
+       Example:
+
+           # Get a list of the processes that I plan to kill
+           my @procsToKill = $ptable->getRemainingProcesses();
+
+   killAll signalNumber
+       Sends the specified signal to all the processes listed.  A syslog entry is made for each signal sent.
+
+       Example:
+
+           # Send all of the remaining processes a TERM signal, then a
+           # KILL signal
+           $ptable->killAll(15);
+           sleep(10);          # Give them a bit of a chance to clean up
+           $ptable->killAll(9);
+
+PACKAGE Terminals
+       The Terminals package provides a means for figuring out how long various users have been idle.
+
+   new
+       This function is used to instantiate a new Terminals object.
+
+       Example:
+
+           # Get a new Terminals object.
+           my $term = new Terminals;
+
+   initialize
+       This function figures out who is on the system and how long they have been idle for.  It will generally only be called by new().
+
+       Example:
+
+           # Refresh the state of the terminals.
+           $term->initialize();
+
+   showConsoleUser
+       This function returns the login of the person that is physically sitting at the machine.
+
+       Example:
+
+           # Print out the login of the person on the console
+           printf "%s is on the console\n", $term->showConsoleUser();
+
+   initializeTty terminal statparts
+       This initializes internal structures for the given terminal.
+
+   getX11IdleTime user
+       Figure out how long a user has been idle in X11.  Return the seconds of idle time.
+
+   getIdleTime user
+       Figure  out  how  long  a  user  has  been  idle.   This is accomplished by examining all terminals that the user owns and returns the amount of time since the most recently accessed one was used.
+       Additionally, if the user is at the console it is possible that he/she is not typing, yet is quite active with the mouse or typing into an application that does not use a terminal.
+
+       Example:
+
+           # Figure out how long the user on the console has been idle
+           my $consoleIdle = $term-getIdleTime($term->showConsoleUser());
+
+   printEverything
+       Prints to stdout who is on what terminal and how long they have been idle.  Only useful for debugging.
+
+       Example:
+
+           # Take a look at the contents of structures in my
+           # Terminals object
+           $term->printEverything();
+
+PACKAGE main
+       The main package is the version used on the Unix workstations at the University of Wisonsin's Computer-Aided Engineering Center (CAE).  I suspect that folks at places other than CAE will  want  to
+       do things slightly differently.  Feel free to take this as an example of how you can make effective use of the processTable and Terminals packages.
+
+   Configuration options
+       $forkadmin  Email address to notify of fork bombs
+
+       $killadmin  Email address to notify of run-of-the-mill kills
+
+       $fromaddr   Who do email messages claim to be from?
+
+       $stubbornadmin
+                   Email address to notify when jobs will not die
+
+       @validusers These are the folks that you should never kill off
+
+       $minuid     Do not kill processes of users with uid lower than this value.
+
+       $maxidletime
+                   The maximum number of seconds that a user can be idle without being classified as having "background" jobs.
+
+       If I am a user really trying to avoid a background job killer, I would likely include a signal handler that would wait for signal 15.  When I saw it, I would fork causing the parent to die and the
+       child would continue on to do my work.
+
+       Assuming  that  everyone thinks like me, I figure that I will need to make at least two complete passes to clear up the bad users.  The first pass is relatively nice (sends a signal 15, followed a
+       bit later by a signal 9).  A well-written program will take the signal 15 as a sign that it should clean up and then shut down.  When a process gets a signal 9, it has no choice but to die.
+
+       The second pass is not so nice.  It finds all background processes, sends them a signal 23 (SIGSTOP), then a signal 9 (SIGKILL).  This pretty much (but not absolutely)  guarantees  that  processes
+       are unable to find a way around the background job killer.
+
+   gatherInfo
+       This function gathers information from the Terminals and ProcessTable packages, then based on that information decides which jobs should be allowed to run.  Specifically it does the following:
+
+       • Instantiates new ProcessTable and Terminals objects.  Note that Terminals::new fills in all the necessary structures to catch users that have logged in between calls to gatherinfo.
+
+       • Reads the process table
+
+       • Removes condor processes and condor jobs from the list of processes to be killed.
+
+       • Removes all jobs belonging to all users in the configuration array @validusers from the list of processes to be killed.
+
+       • Removes all nice(1) jobs from the list of jobs to be killed.
+
+       • Removes  all jobs belonging to users where the user has less than $maxidletime idle time on at least one terminal.  Additionally, jobs associated with ttys that are owned by users that have less
+         than $maxidletime idle time on at least one terminal are preserved.  This makes it so that if luser uses su(1) to gain the privileges of boozer, processes owned by boozer will not be killed.
+
+       • Removes all processes of users with uid lower than the $minuid value.
+
+       • Finally, the process table and terminal objects are returned.
+
+BUGS
+       There is a small window of opportunity for a user that reaches $maxidletime in the middle of this script to get unfair treatment.  This could probably be reconciled by shaving  some  time  off  of
+       maxidletime for the second call to main::gatherInfo.
+
+       It is still possible to get around the background job killer by having a lot of proceses that watch each other to be sure that they are still responding (have not yet gotten a signal 23).  As soon
+       as a stopped process is found, the still running process could fork(), thus leaving a background process that is not going to be killed.
+
+       Different  operating systems have different notions of nice values.  Some go from -20 to +19.  Some go from 0 to 39.  Solaris and HP-UX (using System V ps command) report nice values between 0 and
+       39.
+
+       It is bad to assume that all systems that run this have the same number of processes per user.  The script should ask the OS how many processes normal (non-root) users can run.
+
+TODO
+       The configuration is quite minimalistic.  It should be made possible to have per-host configuration directives so that you can, for instance, allow certain people to run background jobs on certain
+       hosts.
+
+       People that really care about finding habitual offenders will probably want to have a way to add entries to a database and flag those that pop up too often.
+
+       Thoroughly test on more operating systems.  A very close relative of this code has performed well on about 60 Solaris 2.5.1 machines.  It has been lightly tested on HP-UX 10.20 as well.
+
+       Make mailing to someone optional.  If you have a lot of workstations killing off boring stuff all the time, too much meaningless mail traffic is generated.
+
+       If you plan to run this on a machine that runs special processes like a POP or IMAP server, it would be handy to be able to check multiple conditions easily.  Perhaps
+
+           $ptable->removeProcesses( { comm => 'imapd',
+                                       parentComm => 'inetd',
+                                       parentUser => 'root' } );
+
+       This would make it so that people don't rename the crack binary imapd to escape the wrath of killer.
+
+LICENSE
+       This program is released under the terms of the General Public License (GPL) version 2.  The the file COPYING with the distribution.  If you have  lost  your  copy,  you  can  get  a  new  one  at
+       http://www.gnu.org/copyleft/gpl.html.  In particular remember that this code is distributed for free without warranty.
+
+       If you make use of this code, please send me some email.  While I am open to suggestions to improvement, I by no means guarantee that I will implement them.
+
+SEE ALSO
+       nice(1) perl(1) ps(1) su(1) who(1) fork(2) signal(5)
+
+       http://www.cs.wisc.edu/condor/
+
+       http://www.cae.wisc.edu/~gerdts/killer/
+
+AUTHOR
+       killer was written by Mike Gerdts, gerdts@cae.wisc.edu.
+
+                                                                                                 2024-05-08                                                                                       KILLER(1)

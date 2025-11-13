@@ -1,0 +1,892 @@
+ACMEMAN(1)            User Contributed Perl Documentation           ACMEMAN(1)
+
+
+NAME
+       acmeman - manages ACME certificates
+
+SYNOPSIS
+       acmeman [-Fadns] [-D N] [-f FILE] [--alt-names] [--config-file=FILE]
+       [--debug] [--dry-run] [--force] [--stage] [--time-delta=N] [DOMAIN...]
+
+       acmeman --setup | -S [-Fdn] [--config-file=FILE] [--debug] [--dry-run]
+       [--force]
+
+       acmeman [-h] [--help] [--usage]
+
+DESCRIPTION
+       Acmeman is a tool for automatic management of ACME (LetsEncrypt) SSL
+       certificates.
+
+       Most existing ACME tools take a list of domain names for which to issue
+       certificates from their command line or configuration file. Acmeman
+       takes a completely different approach. It gathers domain names directly
+       from the configuration of the http server that manages them. Thus, a
+       domain name obtains its certificate automatically, once the
+       administrator configures the http server to serve it via https.
+
+       This version of acmeman is able to handle configuration files of Apache
+       http server, and servers that are able to read the list of domain names
+       from disk files, such as HAProxy.
+
+       For trivial configurations, acmeman can be used without any additional
+       configuration.  For example, support for Apache is enabled by default,
+       so all the administrator has to do is to run
+
+           acmeman --setup
+
+       which will set up additional macro definitions for the apache
+       configuration file, then enable the mod_macro module and to use the
+       provided definitions in httpd configuration.  This is discussed in
+       detail in the section APACHE below.
+
+       In more complex configurations, acmeman should be instructed what to do
+       using its configuration file.  This file, normally named
+       /usr/local/etc/acmeman.conf, supplies the definitions of domain
+       sources, i.e. configuration files from which to obtain domain names to
+       form the certificate CNs and other parameters.  At a pinch, the list of
+       domain names can be declared in it as well.  Several domain sources can
+       be used simultaneously. E.g. you can have acmeman look for domain names
+       in Apache and HAProxy configurations and obtain an additional list of
+       domains from its own configuration, all in the same time.
+
+       In any case, acmeman should be run as a periodic cron job, in order to
+       ensure that expiring certificates are updated in time.  The usual
+       crontab entry (for Vixie cron) is
+
+           0 4 * * *   root    /usr/bin/acmeman
+
+       Exact interval configuration is entirely up to you.  For Dillon cron,
+       omit the user name field.
+
+       When started this way, acmeman will scan the existing certificates and
+       select those of them which will expire within a predefined amount of
+       time (24h by default, configurable by the core.time-delta statement).
+       Then it will scan the configured domain sources to see if any
+       certificates are added an alternative CN and if any new certificates
+       should be issued. Having created a list of the certificates, it will
+       interact with the ACME server, issuing the new ones and updating the
+       ones that need prolongation or modification.
+
+QUICK START
+       The following is a short introduction to the acmeman configuration. For
+       a detailed discussion, see the CONFIGURATION section below. For
+       detailed discussion of particular domain sources, refer to the section
+       SOURCES.
+
+       The configuration file, /usr/local/etc/acmeman.conf, consists of
+       statements, which have the form KW=VAL, grouped into sections, declared
+       as [NAME] (square brackets are part of the syntax). Empty lines and
+       comments (introduced by a hash sign) are ignored.
+
+       There are four main use cases:
+
+   APACHE
+       In most cases no special configuration file is needed.  The following
+       recipe describes each configuration step.  Refer to the section SOURCE,
+       subsection apache for a detailed discussion.
+
+       1. Initial configuration
+           Run
+
+               acmeman --setup
+
+           It will detect the Apache layout, install an additional Apache
+           configuration file, httpd-letsencrypt.conf and print the
+           instructions on how to enable it.  Follow them and enable the
+           mod_macro module.
+
+       2. Apache domain setup: plain HTTP
+           To declare that a virtual host needs SSL certificate, add the
+           following line to the Apache VirtualHost block serving plain HTTP
+           for that host:
+
+               Use LetsEncryptChallenge
+
+           This will instruct Apache httpd to serve ACME challenges and
+           acmeman to request a certificate for that virtual host.  The
+           hostname declared with the ServerName statement will be used as the
+           CN for the certificate, and any names declared via ServerAlias
+           statements will form the list of alternative names.  For example:
+
+               <VirtualHost *:80>
+                   ServerName example.org
+                   ServerAlias www.example.com
+                   Use LetsEncryptChallenge
+                   ...
+               </VirtualHost>
+
+       3. Issue the certificate
+           This step is needed if there is no certificate for this domain yet.
+           Reload httpd to fire up the new configuration and run acmeman to
+           issue the certificate. If anything goes wrong, try adding one or
+           more -d options to acmeman to see what's going on. You can also use
+           the -s option during initial debugging of the configuration. This
+           option instructs acmeman to use the staging ACME server, instead of
+           the production one. This eliminates the risk of hitting the ACME
+           request per IP limit.
+
+       4. Apache domain setup: HTTPS
+           To use the created certificate, add another virtual server for that
+           domain, with the same ServerName as above and with 443 as its port
+           value. Add the following statement to it:
+
+               Use LetsEncryptSSL DOMAIN
+
+           where DOMAIN must be the same as the ServerName value.  For
+           example, the HTTPS virtual host corresponding to the above example
+           will be:
+
+               <VirtualHost *:443>
+                   ServerName example.org
+                   ServerAlias www.example.com
+                   Use LetsEncryptSSL example.org
+                   ...
+               </VirtualHost>
+
+           This can be further simplified by using the LetsEncryptServer macro
+           instead of the ServerName and LetsEncryptSSL statements, as in:
+
+               <VirtualHost *:443>
+                   Use LetsEncryptServer example.org
+                   ServerAlias www.example.com
+                   ...
+               </VirtualHost>
+
+   HAPROXY
+       Use the file source. This domain source reads the list of domain names
+       from a disk file. The first name in the list becomes the certificate
+       CN, rest of names (if any) are used as alternative CNs. For a detailed
+       discussion of the file source, refer to the section SOURCE, subsection
+       file.
+
+       1. Create a directory for storing domain name files
+           This directory will keep domain name files, named after the
+           corresponding HAProxy backends.  E.g.
+
+               mkdir /etc/haproxy/hosts
+
+       2. Configure acmeman
+           Example /usr/local/etc/acmeman.conf file is:
+
+               [core]
+                  source = file /etc/haproxy/hosts
+                  postrenew = /usr/sbin/service haproxy restart
+               [files default]
+                  type = single
+                  certificate-file = /etc/ssl/acme/crt/$domain.pem
+
+           The core section declares the source to use. The first argument to
+           the file source is the name of the directory where the domain name
+           lists are stored. The postrenew statement declares the command to
+           be run after all certificates have been renewed. In our case, this
+           command restarts haproxy, forcing it to re-read the certificates.
+
+           The files statement instructs the program to create, for each
+           domain, a single file containing the private key, certificate chain
+           and the domain certificate for that domain. The $domain variable in
+           the certificate-file declaration will be replaced by the first
+           domain name from the list (the CN) for that certificate.
+
+           This configuration will keep a separate certificate for each
+           backend in haproxy that supports https access.  If concerned about
+           request rate limit, you can instruct acmeman to maintain a single
+           certificate with all domain names as X509v3 subject alternative
+           names instead.  To do so, use the --host option in the source
+           definition.  Its argument specifies the domain name to use as the
+           CN for the certificate.  E.g.:
+
+               [core]
+                  source = file /etc/haproxy/hosts --host=www.example.com
+                  ...
+
+       3. Configure haproxy
+           First, configure the plain HTTP frontend, which will be responsible
+           for serving ACME challenges and redirecting the rest of the
+           requests to HTTPS. The simplest definition is:
+
+               frontend http-in
+                   mode http
+                   bind :::80 v4v6
+                   http-request redirect code 301 location https://%[hdr(host)]%[capture.req.uri] unless { path_beg /.well-known/acme-challenge }
+                   use_backend acme if { path_beg /.well-known/acme-challenge }
+
+           Actual backend configuration for the acme backend is beyond the
+           scope of this manual. Use some simple and lightweight http server
+           capable of serving static files, such as fileserv
+           (<https://www.gnu.org.ua/projects/fileserv>), for example.
+
+           Then, configure HTTPS section to use certificates from the
+           certificate file directory:
+
+               frontend https-in
+                   mode http
+                   bind :::443 v4v6 ssl crt /etc/ssl/acme/crt
+                   # Direct each group of domain names to the corresponding
+                   # backend.
+                   use_backend d1 if { hdr(host) -f /etc/haproxy/hosts/d1 }
+                   use_backend d2 if { hdr(host) -f /etc/haproxy/hosts/d2 }
+                   ...
+
+           Finally, define the backends.
+
+   Pound
+       Pound is a light-weight proxy server available from
+       <https://github.com/graygnuorg/pound>.  It is supported by the acmeman
+       source pound, which scans the pound configuration file /etc/pound.cfg,
+       and extracts domain names from the Host directives in ListenHTTP
+       sections that contain the ACME statement.  Below is a short usage
+       instruction for this source module.  For a detailed discussion, refer
+       to the section SOURCE, subsection pound.
+
+       1. Add the ACME directive to the ListenHTTP section of your
+       /etc/pound.cfg file.  Its argument is a directory on local file system
+       where ACME challenge files will be stored.  Make sure that this
+       directory is the .well-known/acme-challenge subdirectory of the rootdir
+       in your acmeman configuration file.
+       2. In the same ListenHTTP section, define hostnames which will obtain
+       ACME certificates.  Make sure to use Host statements with exact string
+       matching algorithm.  If serving several host names, use the Match OR
+       block.
+
+       After these two steps, your listener section will look like:
+
+           ListenHTTP
+               Address 0.0.0.0
+               Port 80
+               ACME "/var/lib/pound/acme/.well-known/acme-challenge"
+               Service
+                   Match OR
+                       Host "www.example.org"
+                       Host "example.org"
+                   End
+                   ...
+               End
+           End
+
+       3. Configure acmeman.  Use the pound source and make sure rootdir is
+       synchronized with the ACME statement in pound.cfg, as described in
+       point 1.  E.g.:
+               [core]
+                   source = pound
+                   rootdir = /var/lib/pound/acme
+                   postrenew = /usr/bin/systemctl restart pound
+
+   Direct configuration
+       Use direct configuration if none of the provided source types can be
+       used.  In this case, you define each domain which needs a certificate
+       in the /usr/local/etc/acmeman.conf file.  First, instruct acmeman that
+       no external source of domain names will be used:
+
+           [core]
+               source = null
+
+       Then, for each domain name use the domain section, as shown in the
+       example below:
+
+           [domain example.com]
+               alt = www.example.com
+               files = default
+
+       This section instructs acmeman that a certificate is needed for domain
+       example.com, using www.example.com as its alternative name, The files
+       statement identifies the name of a files section containing rules for
+       creating certificate files for that domain. This section must be
+       defined elsewhere in the configuration file. For example:
+
+           [files default]
+               type = split
+               certificate-file = /etc/ssl/acme/$domain/cert.pem
+               key-file = /etc/ssl/acme/$domain/privkey.pem
+               ca-file = /etc/ssl/acme/$domain/ca.pem
+               argument = $domain
+
+       This definition tells acmeman that it should store certificate,
+       certificate key, and certificate authority chain in three separate
+       files. Names of these files will be created by replacing the $domain
+       string in the corresponding definition with the domain name from the
+       domain section.
+
+       Several [domain] section can share the same [files] definition, or they
+       can have their one, depending on your needs.
+
+CONFIGURATION
+       Configuration file controls the operation of acmeman. By default, its
+       name is /usr/local/etc/acmeman.conf. If it is absent, acmeman falls
+       back to the legacy operation mode, scanning Apache configuration files
+       for domains that use LetsEncrypt SSL certificates. See the APACHE
+       section below for a detailed description.
+
+       The configuration file has a traditional line-oriented syntax. Comments
+       are introduced with a hash sign. Empty lines are ignored. Leading and
+       trailing whitespace is removed prior to parsing. Long statements can be
+       split over several physical lines by ending each line excepting the
+       last one with a backslash immediately followed by a newline character.
+
+       Configuration consists of settings grouped into sections.
+       Syntactically, a setting is
+
+           KEYWORD = VALUE
+
+       where KEYWORD stands for a symbolic name consisting of alphanumeric
+       characters, dashes and underscores, and VALUE stands for any sequence
+       of characters.
+
+       A section is identified by its name and optional arguments. It begins
+       with the following construct:
+
+           [NAME]
+
+       or, if arguments are present:
+
+           [NAME ARG1 ARG2 ...]
+
+       The square brackets are part of the syntax.
+
+       A section can contain one or more settings.
+
+       The statements in the configuration file form a directed graph. Often
+       in this document we will identify the statement by its path, i.e. a
+       list of section name, its arguments, and the keyword, separated by
+       dots. For example, the path files.apache.type corresponds to the
+       following configuration file fragment:
+
+           [files apache]
+              type = single
+
+       The following describes the available sections and keywords
+
+   [core]
+       This section defines the behavior of the program as a whole.
+
+       rootdir=DIR
+           Defines the root directory to use instead of the default
+           </var/www/acme>.  Root directory is the directory under which the
+           .well-known/acme-challenge subdirectory is located.
+
+       time-delta=SECONDS
+           Sets the time window before the actual expiration time, when the
+           certificate becomes eligible for renewal.  N is time in seconds.
+           The default value is 86400, which means that acmeman will attempt
+           to renew any certificate that expires within 24 hours.
+
+           The command line option --time-delta overrides this setting.
+
+       postrenew=COMMAND
+           Defines the command to be run at the end of the run if at least one
+           certificate has been updated. Normally this command reloads the
+           httpd server (or whatever server is using the certificates). If
+           more than one postrenew statements are defined, they will be run in
+           sequence, in the same order as they appeared in the configuration
+           file.
+
+           COMMAND inherits the environment from the acmeman process, with the
+           following additional variables:
+
+           ACMEMAN_CERTIFICATE_COUNT
+                   Total count of renewed certificate files.
+
+           ACMEMAN_CERTIFICATE_FILE
+                   Whitespace-delimited list of renewed certificate files
+
+           ACMEMAN_DOMAIN_NAME
+                   Whitespace-delimited list of renewed domain names (CNs).
+
+           ACMEMAN_ALT_NAMES
+                   Whitespace-delimited list of alternative DNS names from the
+                   renewed certificate files.
+
+       source=NAME [ARG...]
+           Defines the source of domain names. The NAME parameter identifies
+           the source, and additional arguments supply the initialization
+           parameters.
+
+           The present version of acmeman is shipped with three sources: null,
+           apache, and file.
+
+           The null module is an empty source. It takes no additional
+           arguments.  Use this source if all domains are described in the
+           configuration file using one or more domain sections.
+
+           The apache source module is the default. It scans httpd
+           configuration files as described in section apache. One argument is
+           allowed. If supplied, it defines the apache configuration layout.
+           Allowed values are: debian, slackware, suse and rh (for Red Hat).
+           Without arguments, the layout will be autodetected.
+
+           The pound source gathers host names from pound configuration file.
+
+           The file source reads domain names from one or more disk files. A
+           mandatory argument specifies the name of the directory where the
+           files are located. This mode is suitable for use with haproxy
+           pattern files.
+
+           Multiple source statements can be defined. They will be processed
+           sequentially.
+
+       files=NAME
+           Identifies the [files] section which describes how to create
+           certificate files for domains which lack explicit files keyword.
+           Default NAME is default. See the description of the files statement
+           in domain section.
+
+       check-alt-names=BOOL
+           When set to true, it instructs the program to compare the list of
+           alternative names of each certificate with the one gathered from
+           the Apache configuration, and reissue the certificate if the two
+           lists don't match.  This uses an ad-hoc logic, due to the
+           deficiency of the underlying X509 module, and therefore is not
+           enabled by default.
+
+           Valid values for BOOL are: 1, on, true, or yes, for true, and 0,
+           off, false, or no for false.
+
+       check-dns=BOOL
+           When set to true (the default), the program will check whether each
+           host name has an A DNS record pointing back to one of the IP
+           addresses of the server. Hostnames which don't satisfy this
+           condition will be ignored.  The IP of the server is determined by
+           looking up the A record for its hostname. This can be overridden
+           using the my-ip configuration statement.
+
+       key-size=N
+           Size of the RSA key to use, in bits. Default is 4096.
+
+       my-ip=IP [IP...]
+           Declares IP address (or addresses) of this server. Use this keyword
+           if the server IP cannot be reliably determined by resolving its
+           hostname.  Special IP $hostip stands for the IP retrieved by
+           resolving the hostname.
+
+   [account]
+       Configures where to store ACME account credentials: account key ID and
+       account private key.  Both values are stored in separate files on disk.
+       If the files do not exist acmeman will initiate creation of a new
+       account and will save its credentials for further use.
+
+       directory=DIR
+           Directory where to store credential files.  Defaults to
+           /etc/ssl/acme.
+
+       id=FILE
+           Name of the file with account key ID.  Unless FILE begins with a
+           directory separator, it is taken relative to account.directory.
+
+           Default: /etc/ssl/acme/key.id.
+
+       key=FILE
+           Name of the file with account key.  Unless FILE begins with a
+           directory separator, it is taken relative to account.directory.
+
+           Default: /etc/ssl/acme/key.pem.
+
+   [domain CN]
+       Declares the domain for which a certificate should be maintained. CN is
+       the canonical name for the domain. Alternative names can be specified
+       using the alt setting within the section.
+
+       files=ID
+           Identifies the [files] section which describes how to create
+           certificate files for this domain. In the absence of this
+           statement, the files statement from the [core] section will be
+           used.
+
+       alt=NAME
+           Defines alternative name for the certificate. Multiple alt
+           statements are allowed.
+
+       key-size=N
+           Size of the RSA key to use, in bits. If not set, the core.key-size
+           setting is used.
+
+       postrenew=CMD
+           Run CMD after successful update. If not given, the core.postrenew
+           commands will be run.
+
+           If more than one postrenew statements are defined, they will be run
+           in sequence, in the same order as they appeared in the
+           configuration file.
+
+           CMD is run in the environment inherited from the calling acmeman
+           process with the following additional variables defined:
+
+           ACMEMAN_CERTIFICATE_FILE
+                   Name of the certificate file that was renewed.
+
+           ACMEMAN_DOMAIN_NAME
+                   Domain name (CN) from the renewed certificate.
+
+           ACMEMAN_ALT_NAMES
+                   Whitespace-delimited list of the alternative DNS names
+                   extracted from the certificate.
+
+   [files ID]
+       The files section instructs acmeman how to create certificate files.
+       It is applied to particular domains by placing the files=ID statement
+       in the corresponding domain sections.
+
+       The FILENAME arguments to the keywords below can contain references to
+       a meta-variable, which will be replaced by the actual domain name when
+       handling this section for a particular domain. By default, this meta-
+       variable is $domain.
+
+       type=single|split
+           Type of the certificate to create. When set to single, a single
+           certificate file will be created. Its name is determined by the
+           certificate-file statement. The file will contain the certificate,
+           certificate chain and the signature, in this order.
+
+           When set to split, the certificate, certificate chain and the
+           signature will be saved to three distinct files, whose names are
+           defined by certificate-file, ca-file, and key-file,
+           correspondingly. If ca-file is not defined, only certificate and
+           key files will be created.
+
+           The default is split.
+
+       certificate-file=FILENAME
+           Defines the name of the certificate file for this domain. This
+           statement is mandatory.
+
+       key-file=FILENAME
+           Defines the name of the certificate key file. This statement must
+           be present if type is set to split.
+
+       ca-file=FILENAME
+           Defines the name of the certificate authority file. This statement
+           may be present if type is set to split.
+
+       argument=STRING
+           Defines the name of the meta-variable in FILENAME arguments, which
+           will be replaced with the actual domain name. Default is $domain.
+
+SOURCES
+   null
+           [core]
+               source = null
+
+       Declares empty source. This means that acmeman will handle only domain
+       names explicitly declared in the configuration file using the domain
+       setting.
+
+   apache
+           [core]
+               source = apache [--server-root=DIR] [LAYOUT]
+
+       This is the default source. It assumes Apache httpd, version 2.4 or
+       later (although only minor changes are necessary to make it work with
+       version 2.2).  The optional LAYOUT argument defines the layout of the
+       apache configuration files. Allowed layout values are: debian,
+       slackware, suse and rh (for Red Hat). If not supplied, the layout is
+       determined automatically.
+
+       Use the --server-root option to supply the name of the server root
+       directory, if for some reason the module is unable to determine it
+       automatically.
+
+       A special directory should be configured for receiving ACME challenges.
+
+       The package provides two Apache macros: for serving ACME challenges and
+       declaring SSL virtual hosts.
+
+       Upon startup the program scans Apache configuration for virtual hosts
+       that use ACME certificates, checks their expiration times, and renews
+       those of the certificates that are nearing their expiration times
+       within a predefined number of seconds (24 hours by default).  If any of
+       the certificates were updated during the run, acmeman will restart the
+       httpd server.
+
+       Setup
+
+       To set up the necessary infrastructure, run acmeman --setup.  It will
+       create the configuration file httpd-letsencrypt.conf, defining two
+       macros for SSL-enabled sites (mod_macro is needed).  Finally, it will
+       create the directory /var/www/acme, which will be used for receiving
+       and serving ACME challenges.  If another directory is preferred, it can
+       be specified as an argument to acmeman --setup.
+
+       The tool will try to determine the layout of the Apache configuration
+       files and place the created file accordingly, so that it will be
+       included into the main configuration file.  It will print the name of
+       the created file at the end of the run.  You are advised to ensure that
+       the file is included and that the module mod_macro is loaded prior to
+       it.  You may also wish to revise httpd-letsencrypt.conf and edit the
+       paths to SSL files configured there.  By default, the directory
+       /etc/acme/DOMAIN will be created for each domain name needing SSL, and
+       two files will be placed there: cert.pem, containing the leaf and
+       intermediate certificates for that domain, and privkey.pem, containing
+       the private key for that domain.
+
+       The program will refuse to overwrite existing files
+       httpd-letsencrypt.conf, unless given the --force (-F) option.
+
+       Configuring SSL
+
+       To declare that a virtual host needs SSL certificate, add the following
+       line to the Apache VirtualHost block serving plain HTTP for that host:
+
+           Use LetsEncryptChallenge
+
+       This will instruct acmeman to request a certificate for that virtual
+       host.  The hostname declared with the ServerName statement will be used
+       as the CN for the certificate, and any names declared via ServerAlias
+       statements will form the list of alternative names (obviously,
+       wildcards are not allowed).
+
+       If such a certificate doesn't exist, it will be requested and created
+       when acmeman is run.
+
+       To use the created certificate, create a new VirtualHost block that
+       contains the following statement:
+
+           Use LetsEncryptServer DOMAIN
+
+       where DOMAIN is the name used in the ServerName statement of the plain
+       HTTP configuration.  Copy the ServerAlias statements (if any), and add
+       the rest of configuration statements.  Note, that you need not use the
+       ServerName statement, as it will be included when the LetsEncryptServer
+       macro is expanded.
+
+       Example:
+
+           <VirtualHost *:80>
+               ServerName example.org
+               ServerAlias www.example.com
+               Use LetsEncryptChallenge
+               ...
+           </VirtualHost>
+
+           <VirtualHost *:443>
+               Use LetsEncryptServer example.org
+               ServerAlias www.example.com
+               ...
+           </VirtualHost>
+
+       Alternatively, you can use the LetsEncryptSSL macro, which differs from
+       LetsEncryptServer in that it configures only SSL settings, without the
+       ServerName statement, which therefore must be included explicitly:
+
+           <VirtualHost *:443>
+               ServerName example.org
+               ServerAlias www.example.com
+               Use LetsEncryptSSL example.org
+               ...
+           </VirtualHost>
+
+       LetsEncrypt limits the number of certificates requested for a single
+       registered domain per week (at the time of this writing - 20).  To
+       avoid hitting that limit, you may wish to use the same certificate for
+       different virtual hosts.  The special macro LetsEncryptReference is
+       provided for that purpose.  Suppose, for example, that you wish to
+       configure server name git.example.org to use the same certificate as
+       example.org (configured in the example above).  You then declare the
+       virtual host for the plain HTTP as follows:
+
+           <VirtualHost *:80>
+               ServerName git.example.org
+               Use LetsEncryptReference example.org
+               ...
+           </VirtualHost>
+
+       The argument to the LetsEncryptReference macro indicates the CN name of
+       the certificate to which the current server name (and aliases, if any)
+       are to be added as alternative names.  The corresponding virtual host
+       for SSL will use the LetsEncryptSSL macro to configure the correct
+       certificate:
+
+           <VirtualHost *:80>
+               ServerName git.example.org
+               Use LetsEncryptSSL example.org
+               ...
+           </VirtualHost>
+
+   file
+           [core]
+               source = file PATTERN [--ignore=RX] [--host=HOST]
+
+       Domain names will be read from files matching PATTERN. The argument can
+       be a single file or directory name, or a valid globbing pattern.  If
+       PATTERN is a directory name, the module will read all files from that
+       directory, except those matching the following perl regexp:
+       "^\.|~$|\.bak$|^#.*#$". The default regexp can be overridden using the
+       --ignore (-i) option.
+
+       The input files must contain exactly one domain name per line. No empty
+       lines or comments are allowed. The first domain name will become the CN
+       of the issued certificate. The rest of domain names will form
+       alternative names.
+
+       If the --host (-h) option is used, only one certificate will be issued.
+       The HOST will be used as its CN. All the domain names read from the
+       input files will form the list of its alternative names.
+
+   pound
+           [core]
+               source = pound [--config=FILE] [--host=HOST] \
+                              [--type=http|https] [--listener=NAME] \
+                              [--comment=TEXT]
+
+       Domain names will be read from FILE or, if it is not supplied, from the
+       default pound configuration file /etc/pound.cfg.  By default, the
+       module will scan ListenHTTP sections that have ACME directive set and
+       will extract domain names from Host statements in its services.
+
+       The --type and --listener options modify this behavior.  The --type
+       option instructs pound which type of listeners to scan.  Setting it to
+       http means scanning only ListenHTTP listeners (the default) and setting
+       it to https means scanning ListenHTTPS listeners.  To enable scanning
+       both types of listeners, use --type=http --type=https.  When scanning
+       ListenHTTPS, the module collects all domain names that appear as
+       arguments to Host statements.
+
+       If --listener option is used, module will scan only the named listener.
+       To select multiple listeners, use several --listener options.
+
+       The --comment option defines a text, which, when appearing at the start
+       of a comment line, enables host name collection.  Such pragmatical
+       comments may appear anywhere within listener and service sections and
+       their scope is limited by the corresponding section.  When this option
+       is used, host collection is disabled by default.  For example, assuming
+       --comment=acme, the following configuration snippet (with irrelevant
+       statements replaced by ellipses) will result in issuing certificate for
+       "example.org" and "www.example.org":
+
+         ListenerHTTP
+            # acme
+            Service
+               Host -exact "example.org"
+               ...
+            End
+
+            Service
+               Host -exact "www.example.org"
+               ...
+            End
+         End
+
+       In contrast, when processing the following snippet, acmeman will issue
+       certificate for "example.org" only:
+
+         ListenerHTTP
+            Service
+               # acme
+               Host -exact "example.org"
+               ...
+            End
+
+            Service
+               Host -exact "www.example.org"
+               ...
+            End
+         End
+
+       Furthermore, using no-TEXT at the start of a comment cancels the effect
+       of the previous pragmatic comment.  This can be used for better control
+       of host selection:
+
+         ListenerHTTP
+            Service
+               Match OR
+                  # acme
+                  Host -exact "example.org"
+                  Host -exact "www.example.org"
+                  # no-acme
+                  Host -exact "test.example.org"
+                End
+                ...
+            End
+         End
+
+       If the --host (-h) option is used, only one certificate will be issued.
+       The HOST will be used as its CN. All the domain names read from the
+       input files will form the list of its alternative names.
+
+       Notice the limitations of this module:
+
+       1. Only Host statements with exact string matching can be used. When
+       declaring multiple hosts it might be tempting to use regular expression
+       matching instead.  Due to obvious reasons, the module won't be able to
+       cope with it.  When declaring multiple hosts, always use the Match OR
+       section, like this:
+               Match OR
+                   Host -exact "host1"
+                   Host -exact "host2"
+                   Host -exact "host3"
+               End
+
+       2. These Host statements (or the enclosing Match OR section) must be
+       declared in the Service sections located under the ListenHTTP or
+       ListenHTTPS sections.  Global Service sections are not scanned.
+
+OPTIONS
+       -D, --time-delta=N
+           Sets the time window before the actual expiration time, when the
+           certificate becomes eligible for renewal.  N is time in seconds.
+           The default value is 86400, which means that acmeman will attempt
+           to renew any certificate that expires within 24 hours.
+
+           This option overrides the core.time-delta configuration setting.
+
+       -F, --force
+           Force renewal of certificates, no matter their expire date.  With
+           --setup, force installing the httpd-letsencrypt.conf file even if
+           it already exists.
+
+       -a, --alt-names
+           Compare the list of alternative names of each certificate with the
+           one gathered from the Apache configuration, and reissue the
+           certificate if the two lists don't match.  This uses an ad-hoc
+           logic, due to the deficiency of the underlying X509 module, and
+           therefore is not enabled by default.
+
+           This option overrides the core.check-alt-names configuration
+           setting.
+
+       -d, --debug
+           Increase debugging level.  Multiple options accumulate.  Three
+           debugging levels are implemented:
+
+           -d      List certificates being renewed.
+
+           -dd     List files being created.  Show basic information about
+                   ACME transactions for each certificate.
+
+           -ddd    Verbosely report parsing of Apache configuration files.
+                   Show detailed debugging information about ACME transactions
+                   for each certificate.
+
+       -f, --config-file=FILE
+           Read configuration from FILE, instead of the default
+           /usr/local/etc/acmeman.conf.
+
+       -n, --dry-run
+           Don't modify any files, just print what would have been done.
+           Implies --debug.
+
+       -S, --setup
+           Set up the acmeman infrastructure files.
+
+       -s, --stage
+           Use LetsEncrypt staging server.
+
+       The following options are informational:
+
+       -h  Prints a short usage summary.
+
+       --help
+           Prints detailed user manual.
+
+       --usage
+           Outputs a terse reminder of the command line syntax along with a
+           list of available options.
+
+AUTHOR
+       Sergey Poznyakoff <gray@gnu.org>
+
+LICENSE
+       GPLv3+: GNU GPL version 3 or later, see
+       <http://gnu.org/licenses/gpl.html>
+
+       This is free software: you are free to change and redistribute it.
+       There is NO WARRANTY, to the extent permitted by law.
+
+perl v5.40.2                      2025-08-10                        ACMEMAN(1)

@@ -1,0 +1,297 @@
+SAFESH(1)               FreeBSD General Commands Manual              SAFESH(1)
+
+NAME
+     safesh – safe key manager for OpenSSH
+
+SYNOPSIS
+     safesh [user@]host [-- ssh-parameters ...]
+     safeshinstall [user@]host
+     cvs-safesh [user@]host [command]
+     scpsh [user@]host
+
+DESCRIPTION
+     NOTE: This text often refers to $VARIABLE in description.  What each of
+     the references will be replaced with when safesh runs is described at the
+     end of the manpage.
+
+     The safesh utility automatically creates one DSA key (called an identity)
+     for each host you connect to, and stores this in a separate agent for
+     each host.  It is also capable of adding keys for other hosts to this
+     agent, so you can use it for restricted forwarding of authentication.
+     Because each host uses its own ssh-agent(1), the hosts you forward
+     authentication to can only get at the authentication for the hosts you
+     specifically say it should be able to get at.
+
+     When run, safesh:
+
+     1.   Normalizes the hostname you are talking about, using the
+          $HOME/.safesh/map file.
+
+     2.   Checks if the user and host has an SSH DSA key in $HOME/.safesh, and
+          creates one using ssh-keygen(1) if it does not.  The DSA key is
+          stored in $HOME/.safesh/$USER@$HOST-$PORT/dsa_id.  You will be asked
+          for a passphrase when the key is created.  Note that if you use the
+          same passphrase for all safesh keys, you will only be asked for the
+          passphrase once per host you connect to.  If you use different
+          passphrases, you will be asked once per forwarded key for each host
+          you connect to (after a machine startup).
+
+     3.   Checks if you have the ssh-agent(1) for this host running, and
+          starts it if not.
+
+     4.   Checks what keys you are supposed to have active when connecting to
+          this host (the key for the host and any keys listed in
+          $HOME/.safesh/$USER@$HOST-$PORT/extra_keys), and which of these are
+          missing from the active agent.
+
+     5.   If any identities were missing from the agent, it executes
+          ssh-add(1) to add them to the agent.
+
+     6.   Executes ssh(1) with either $USER@$HOST or the extra command line
+          supplied by the user.
+
+BASIC CONCEPT DESCRIPTION
+     The safesh utility is an authentication manager for OpenSSH.  It is an
+     attempt at making it easy to use the built-in authentication features of
+     OpenSSH securely.  By default, the SSH security model is that all hosts
+     the user connects to are trusted, and are given complete access,
+     including the ability to authenticate as the user towards other hosts if
+     the user is running ssh-agent(1).  OpenSSH has improved this security
+     model somewhat by not forwarding SSH authentication by default, but still
+     allows the host that you connect to to grab your credentials and
+     authenticate as you to anybody else when you do authentication forwarding
+     to it.
+
+SIMPLE HOWTO
+     Starting to make use of safesh is trivial:
+
+     1.   Do “safeshinstall <[user@]hostname>”.
+
+          This will ask for a passphrase (three times), create a directory
+          $HOME/.safesh/<user>@<hostname>-22, which contains authentication
+          data for your user at ⟨hostname⟩, and add the contents of
+          $HOME/.safesh/<user>@<hostname>-22/id_dsa.pub to
+          $HOME/.ssh/authorized_keys2 on the host you connect to.  The latter
+          will result in ssh(1) asking for authentication in the fashion you
+          already use (most likely by asking for your password).
+
+     2.   Log in with “safesh <hostname>” from now on.
+
+          This will ask you for a passphrase if you have not logged into that
+          host this session, and otherwise just let right in.
+
+UTILITY COMMANDS
+     The safesh utility ships with two utility hacks to work around the fact
+     that it is not a complete ssh(1) replacement, scpsh and cvs-safesh.
+
+     The scpsh utility is for supporting use of scp(1) with safesh.  The scpsh
+     [user@]host command will start a new interactive shell (using the SHELL
+     environment variable to determine which it should be), with the
+     environment variables for using ssh-agent(1) to authenticate to
+     [user@]host already set.  This allows use of scp(1) without having to
+     type passwords to authenticate.
+
+     The cvs-safesh utility makes it easy to use safesh along with cvs(1) and
+     other programs that use rsh(1) or ssh(1) with the format “ssh <user@host>
+     <command>” or “ssh <host> <command>”.  To use with cvs(1), just set
+     CVS_RSH to “cvs-safesh” instead of “ssh”.
+
+FILES
+     $HOME/.safesh/
+                    Directory containing information for safesh.
+
+     $HOME/.safesh/map
+                    Mapping file for safesh, describing how to map host names
+                    to their canonical form.  This is usually used to map
+                    short names to their long form.  The format of the file is
+                    one mapping per line, what it is mapped from as the first
+                    word, what it is mapped to as the second.
+
+                    It is also possible to use this to map domain names to
+                    their safe form by having the name of the host as the
+                    first parameter, and the name of the host with a period
+                    (‘.’) at the end as the second parameter, e.g.,
+                    “freefall.freebsd.org freefall.freebsd.org.”.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/
+                    Directory with data for a particular hostname.
+                    Automatically generated on first connect to a host with
+                    safesh.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/dsa_id
+                    Private key for use to authenticate as $USER@$HOST.
+                    Automatically generated on first connect to a host with
+                    safesh.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/dsa_id.pub
+                    Public key for use by $HOST to authenticate $USER.  To
+                    connect to $HOST as $USER using safesh without giving a
+                    password, add the contents of this file to the end of
+                    $HOME/.ssh/authorized_keys2.  Automatically generated on
+                    first connect to a host with safesh.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/$AUTHTARGET
+                    Private key for use when $HOST authenticates towards
+                    $AUTHTARGET.  This is used in preference to
+                    $HOME/.safesh/$AUTHTARGET/dsa_id for authentication
+                    forwarding through $HOST to $AUTHTARGET.  The file is only
+                    used if $AUTHTARGET is listed in
+                    $HOME/.safesh/$USER@$HOST-$PORT/extra_keys.  This file is
+                    not generated automatically by safesh.  It is only present
+                    if you have generated it using ssh-keygen(1).  Note that
+                    it is usually more than useless (can pose a security risk)
+                    to copy a key used for other authentication to this
+                    location.
+
+                    The use of explict authentication files for authentication
+                    forwarding is primarily for protection against the case
+                    where the machine you run safesh on is compromised.  Using
+                    this file, you can use a separate passphrase from the one
+                    used for the key for connecting directly to $AUTHTARGET;
+                    that key need not even exist.  By using IP restrictions in
+                    the authorized_keys file for the key, you can make sure
+                    that the host safesh runs on cannot connect to $AUTHTARGET
+                    using the authentication forwarding key.  The use of a
+                    separate forwarding key can also be used in combination
+                    with a modified SSH to log which key was used where, and
+                    thus track key propagation.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/$AUTHTARGET.pub
+                    Public key corresponding to the private key described
+                    above.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/extra_keys
+                    List of extra keys to make available for this host.  Each
+                    line in the file is first attempted matched against the
+                    host/user/port database in $HOME/.safesh/.  Username
+                    and/or port is added if just the hostname is specified
+                    extra_keys, and the hostname is always normalized using
+                    the map file.  If a key exists in $HOME/.safesh/, safesh
+                    attempts to add that.  Otherwise, it first tries to look
+                    for the line as a file relative to /, then relative to
+                    $HOME.  If it does not find either of these, safesh will
+                    exit with an error message.  If it finds one, it will add
+                    it using ssh-add(1).
+
+     $HOME/.safesh/$USER@$HOST-$PORT/activeagent-$YOURHOST.sh
+                    Bourne shell (see sh(1), bash(1), zsh(1)) script for
+                    setting up the environment variables for a particular
+                    ssh-agent(1) process used for this host.  Only valid if
+                    safesh has been run against that host as this user since
+                    the machine safesh runs on was last booted.  Note that
+                    this file must be source'd, not just run as a shell
+                    script.
+
+     $HOME/.safesh/$USER@$HOST-$PORT/activeagent-$YOURHOST.csh
+                    CSH (see csh(1), tcsh(1)) script for setting up the
+                    environment variables for a particular ssh-agent(1)
+                    process used for this host.  Only valid if safesh has been
+                    run against that host as this user since the machine
+                    safesh runs on was last booted.  Note that this file must
+                    be source'd, not just run as a shell script.
+
+AUTHORS
+     The safesh utility was written by Eivind Eklund ⟨eivind@FreeBSD.org⟩.
+
+SEE ALSO
+     ssh(1), ssh-add(1), ssh-agent(1), ssh-keygen(1)
+
+KNOWN ISSUES
+     The safesh utility does not handle whitespace in filenames specified in
+     extra_keys correctly.
+
+     The ssh-agent(1) processes that are started by safesh will hang around
+     until next reboot unless you put the “killall ssh-agent” command in
+     .logout or similar.  This allows any login to your account to use your
+     authentication towards machines you have connected to (including anybody
+     with root on the box), persisting after you log out.  You must always
+     assume that root can grab your authentication at the moment you run do
+     it, so this is only an issue in that the authentication stays available
+     longer.  This is not resolvable without rewriting ssh-agent(1).
+
+MISSING FEATURES
+     Two-step secure SSH with an untrusted host in the middle
+           It is possible to use the port forwarding capability of ssh(1) to
+           forward authentication through another server, without allowing the
+           other server to indepently authenticate to a third party, and
+           without allowing it to see what is going on in your connection.
+           This is based on just forwarding a tunnel through the untrusted
+           host, and doing direct authentication to the server on the other
+           side.  With the present version of OpenSSH, this has the problem of
+           leaving the actual port forwarding open while the tunnel is open,
+           allowing other users to set up their own tunnels, and weakening
+           another side of the security model.
+
+     Read out fingerprints
+           The safesh utility should make it trivial to retrieve the
+           fingerprint for:
+
+           1.   The host it is running on.
+
+                This must presently be done with “ssh-keygen -l
+                /etc/ssh/ssh_host_key.pub” (to get the fingerprint for SSH 1)
+                and “ssh-keygen -l -f /etc/ssh/ssh_host_dsa_key” (for SSH 2).
+
+           2.   Other hosts, as registered in the known_host file on the host
+                it is running on.
+
+                This must presently be done by manual inspection.
+
+     Merge known_hosts
+           The safesh utility should make it trivial to merge known_hosts and
+           known_hosts2 with ones from another host, including retrieving and
+           uploading known_hosts as appropriate.
+
+     Manage .ssh/authorized_keys2
+           The safesh utility should be able to automatically remove keys from
+           the authorized_keys2 file on other machines, to make everything
+           about the safesh process self-contained.
+
+     Manage setup of key limitations
+           When managing authorized_keys2, it is also reasonable to manage key
+           limitation in this.  IP restrictions ("from=") should be handled to
+           make it easy to create setups where the local machine does not have
+           direct access to a target.  Command restrictions etc. would be good
+           to have just for completeness.
+
+     Emulate the entire ssh(1) syntax
+           Presently, the safesh utility has a fairly weird syntax.  This is
+           because it is a fairly quick hack, just made to be usable.  Later,
+           it would be nice to rewrite it to be fully compatible with ssh(1).
+           This would allow use as a drop-in replacement.
+
+     Description of the trust/threat/security model
+           It would be nice to have a complete description of the normal SSH
+           threat model as well as the safesh threat model, in order to make
+           people fully conscious of their own model.
+
+     Emulate scp(1)
+           The scp(1) utility is very useful, and the only way to use it with
+           safesh at the moment is through a subshell created by scpsh.  An
+           ideal safesh implementation would include wrapping of scp(1), too.
+
+VARIABLE REPLACEMENT IN DESCRIPTIONS
+     $HOME        Path to your home directory.
+
+     $HOST        The name of the host you are running safesh towards.  This
+                  is the machine you are ssh(1)'ing into.
+
+     $YOURHOST    The name of the host you are running safesh on, as output by
+                  hostname(1).  This is the name of the machine you are
+                  ssh(1)'ing from.  The use of $YOURHOST makes safesh safe to
+                  use with NFS-mounted home directories.
+
+     $AUTHTARGET  The authentication target for an authentication forwarding.
+                  This is not the same as $HOST.  $AUTHTARGET is a machine you
+                  are ssh(1)'ing to from $HOST.  The format of $AUTHTARGET is
+                  ⟨user⟩@⟨somehost⟩-⟨someport⟩, where ⟨⟨user⟩⟩ defaults to the
+                  username you run safesh as, and ⟨⟨someport⟩⟩ default to 22
+                  (and it is not possible to set anything else at this time).
+
+     $USER        The username used on $HOST; defaults to the same as the
+                  username you have on $YOURHOST, but will be different if you
+                  do “safesh user@host” instead of just “safesh host”.
+
+     $PORT        The port used on $HOST.  Presently always 22.
+
+                               January 26, 2002

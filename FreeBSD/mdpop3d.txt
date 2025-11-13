@@ -1,0 +1,345 @@
+IN.MDPOP3D(8)           FreeBSD System Manager's Manual          IN.MDPOP3D(8)
+
+
+
+NAME
+       mdpop3d, in.mdpop3d - Post Office Protocol version 3 daemon for
+       Maildirs.
+
+
+SYNOPSYS
+       mdpop3d [options]
+
+
+DESCRIPTION
+       This implementation of POP3 daemon works with qmail-stype Maildirs,
+       typically in user's home directories.  It is very small and simple but
+       have all required for pop3 daemon features.
+
+       mdpop3d can be used in two modes: it can work with mail storage only,
+       providing only transaction stage of POP3 protocol, and it optionally
+       can provide simple authentication.  In this way it differ from e.g.
+       qmail-pop3d, as by default this mdpop3d will work for most situatuons
+       without additional support programs.  For many sites with regular users
+       this is sufficient.
+
+       mdpop3d can authenticate users using PAM or using plain unix
+       getpwnam(3) and getspnam(3) methods, depending on compilation options.
+       For PAM, service name used is pop3 and may be changed by -p option.
+
+       If PAM support is enabled, mdpop3d can be compiled with support of APOP
+       command (note that this command is available only with PAM, and only if
+       specially compiled in and if activated in command line).  APOP
+       implementation requires special PAM module capable of checking client-
+       provided md5 hash against user's password. mdpop3d simply passes
+       md5hash from client and server-generated timestamp to PAM library in
+       place of a password (see USAGE section below), and some PAM module
+       should be able to use this information to check client-supplied
+       credentials.
+
+       When mdpop3d authenticates user itself (the default), it will by
+       default look to Maildir subdirectory in user's home directory as
+       returned by getpwent(3) call (usually this info stored in /etc/passwd
+       file).  This default directory name may be changed by -m option or by
+       MAILDIR environment variable.
+
+
+OPTIONS
+       mdpop3d accepts the following command-line options:
+
+       -t timeout
+              set timeout value.  If there will be no activity for this number
+              of secounds, mdpop3d will terminate session without any changes
+              in mail directory.  This timeout applies also to output: if
+              mdpop3d will not be able to write a line to client in this time,
+              it will also terminate session.  Default value is 60 (1 minute),
+              that should be more than enouth for almost all situations.  POP
+              protocol is not a long-running protocol like e.g. IMAP, so
+              timeout seemed to be reasonable here.
+
+       -c     commit maildir on error/timeout.  If this option given, mdpop3d
+              will execute implicit QUIT command on any client communication
+              error (i.e. timeout, closed connection etc).  This way, messages
+              marked as deleted will be removed from disk even without QUIT
+              command.  This violates protocol, but can help with broken mail
+              clients on slow unstable dialup links, where client can loop
+              forewer trying to retrieve all the messages at one session (this
+              is known to be the case for some versions of M$ OutGluck).
+
+       -m maildir
+              look to this maildir subdirectory inside user's home directory
+              instead of default Maildir for user's mail.  This option is not
+              ignored in pre-authenticated mode (-a or -u options), the only
+              difference is that mdpop3d will chdir to this directory from
+              current invocation directory, not from user's home.  To specify
+              current directory (or home dir itself), use `-m.' (i.e. use `.'
+              for maildir).  See also MAILDIR environment variable (this
+              option takes precedence).
+
+       -a     request pre-authenticated mode.  mdpop3d goes to transaction
+              state upon invocation, and tries to open Maildir (subject to -m
+              option and MAILDIR environment variable) in current working
+              directory.  Authentication procedure in this case should be
+              performed by the calling program, together with all required
+              setuid(2) etc calls.  This is the only mode of operation
+              supported by qmail-pop3d alone.  mdpop3d will run under
+              whatether user- and group-id as calling process.  Unless -u
+              option is also given, mdpop3d will use value of LOGNAME
+              environment variable as a user name for logging purposes, or, if
+              this variable is not set, it will derermine logged in user by a
+              call to getpwuid().
+
+       -u username
+              similar to -a option (mdpop3d will go to transaction state), but
+              provides also username for logging purposes.  With this option,
+              -a is useless.
+
+       -r host
+              specifies host name or ip address of client, used for logging
+              purposes and as PAM_RHOST if compiled with PAM support.  The
+              same effect have TCPREMOTEIP or REMOTE_HOST environment
+              variables.  If not given, mdpop3d will try to determine client
+              ip address itself using getpeername(2).
+
+       -R hostvar
+              this options names environment variable that holds remote host
+              name or ip address, instead of TCPREMOTEIP and REMOTE_HOST.  If
+              this option given and no hostvar variable exists, mdpop3d will
+              refuse to start.
+
+       -q     be somewhat quiet.  Normally mdpop3d logs all connections and
+              disconnections via syslog at LOG_INFO priority.  With this
+              option it omits this exactly logging (but it still logs error
+              conditions).
+
+       -n     this is mostly debugging option.  With this, mdpop3d will not
+              move messages from new/ directory in maildir to cur/ directory.
+              If this is only one program used for mail retrieval, then this
+              saves some number of system work that may be noticable on
+              heavily loaded machine.  mdpop3d still looks to cur/ directory
+              if it exists, and will remove deleted messages from both
+              directories.
+
+       -d     requests debugging.  With this, all data received from client
+              will be logged via syslog with LOG_DEBUG priority.  Note that
+              this data will not contain user's passwords (all text for the
+              PASS command will be replaced by "<hidden>").
+
+       -p service
+              use PAM service name service instead of default pop3.  May be
+              useful for e.g. supporting ip-based virtual pop service (setup
+              separate PAM configs for each local ip address).  Not valid if
+              mdpop3d was compiled without PAM support.
+
+       -A     enable APOP command.  This option valid only if mdpop3d was
+              compiled with both PAM and APOP support.
+
+       -T htag
+              enable APOP command and use htag for generating server-side APOP
+              tag (timestamp), placing this htag after at (@) sign.  RFC1939
+              recommends that server-side timestamp constructed in the
+              following form <PID.TIME@HTAG>, where HTAG is FQDN of a server.
+              By default (if only -A option is given), mdpop3d will use
+              gethostname() call to determine this htag.  This option valid
+              only if mdpop3d was compiled with both PAM and APOP support.
+
+       -V     if this option given, mdpop3d will print version information and
+              exit. If compiled with PAM or APOP support, this will be
+              indicated.
+
+
+ENVIRONMENT
+       mdpop3d may use some environment variables.  Since this program should
+       be invoked in some "friendly" environment (i.e. inetd(8) or some other
+       daemon), and because environment used for non-critical tasks (mostly
+       logging), usage of environment variables is safe.
+
+
+       TCPREMOTEIP, REMOTE_HOST
+              if set and not empty, will be used as an ip address of client
+              accessing service (mdpop3d uses first of those that is
+              available).  Some inetd implementations sets one of this
+              variables when invoking programs (one such implementation is
+              courier tcpd), and some other programs may set them as well
+              (e.g. stunnel(8)).  Command-line option -h has precedence.  The
+              only usage of this address is for logging purposes, and, if
+              mdpop3d compiled with PAM support, address will become PAM_RHOST
+              PAM item.
+
+       LOGNAME
+              when mdpop3d invoked with -a option, this variable, if set, used
+              as a username of logged in (and authenticated by calling
+              program) user.  The only usage of this username is for logging
+              purposes. Command line option -u have precedence here. Note that
+              this variable will be used only in pre-authenticated mode.
+
+       MAILDIR
+              look to this directory for user's mail (Maildir by default).
+              May be overwritten by -m option.
+
+
+USAGE
+       Typically mdpop3d will be invoked directly by inetd(8) daemon, like
+       this:
+
+        pop3 stream tcp nowait root /usr/sbin/in.mdpop3d mdpop3d
+
+       This is all that needed for usual functionality to serve regular unix
+       users's mails.  Also, mdpop3d may be invoked by some authenticator
+       program, with correct userid, correct current directory and providing
+       -a option.  If you're familiar with qmail, than the qmail-popup(8)
+       program is the best reference for this.
+
+       mdpop3d will always serve only one request, it is not a long-running
+       process.  Then client issues QUIT command, or when there is timeout or
+       client disconnect condition, or if mdpop3d failed to authenticate user,
+       it will terminate session and exit.
+
+       If APOP support was compiled in (requires also PAM support) and enabled
+       in command line (with -A option), mdpop3d will accept and handle APOP
+       command.  This is alternative of using USER and PASS command that
+       avoids transmission of passwords in cleartext over network, but also
+       requires that cleartext password to be known by server.  In order to
+       use/enable APOP command, one should provide some PAM module that will
+       have access to original client's password and can compute md5 hash from
+       it and a timestamp string supplied by mdpop3d and compare computed
+       value with client-supplied md5 hash.  After receiving APOP command,
+       mdpop3d will check if it is syntactically correct (by ensuring that
+       supplied md5 hash value consists of exactly 32 lowercase hexadecimal
+       digits), and will call pam library providing the string "APOP", space,
+       this md5 hash as received from client, space and server-generated
+       timestamp string, all in place of a password.  For example, "password"
+       provided to PAM may look like this:
+
+         APOP 0123456789abcdef0123456789abcdef <12.3456@host>
+
+       PAM module can check if password have this form ("APOP " prefix should
+       be sufficient) and handle it accordingly. Example PAM config entry that
+       support both APOP and USER/PASS:
+
+         auth sufficient pam_apop.so
+         auth required pam_unix.so ...
+
+       In this case, pam_apop module should check if password starts with
+       "APOP ", then obtain original password, compute md5 hash from timestamp
+       string and this password and compare with supplied hash, and then
+       return either success or failure.  If it doesn't starts with "APOP ",
+       then this module should return PAM_IGNORE, so that request will be
+       processed by pam_unix module.
+
+       Note that such hypotetic pam_apop module is very site-dependant and not
+       provided with mdpop3d.  I would be glad to hear if anyone ever use the
+       APOP feature at all...
+
+       If mdpop3d compiled with PAM support, it is trivial to support
+       "virtual" maildirs using only one system account.  For this, PAM module
+       should be written that will check client-supplied credentials (username
+       and password), and sets PAM_USER to the owner of virtual mail storage
+       and $MAILDIR environment (either using pam_putenv() or setenv()) to
+       point to maildir for a user relative to mail owner home.  With this,
+       mdpop3d can be used for both virtual mail storage and for regular
+       user's maildirs simultaneously, having properly configured PAM module
+       stacking.  Please refer to PAM documentation for further details.  To
+       support many virtual domains, one can form POP3 username using both
+       name of a user and domain name.  Again, such a module does not provided
+       with mdpop3d (yet), while it can be of general use.
+
+
+PROTOCOL
+       mdpop3d supports the following POP3 commands:
+
+       NOOP   no operation
+
+       USER user
+              specifies username (not valid in transaction state)
+
+       PASS password
+              specifies user's password (valid only after USER)
+
+       APOP user md5digest
+              alternative way to specify user credentials.  This command
+              recognized only if APOP support compiled in and activated in
+              command line (-A option).
+
+       QUIT   terminates session.  In transaction state mdpop3d will update
+              maildir.
+
+       LIST [msgno]
+              get size of message msgno or for all messages
+
+       UIDL [msgno]
+              return unique identifier(s) for message(s)
+
+       TOP msgno lines
+              return headers of message msgno and at most lines lines of body
+
+       RETR msgno
+              return (retrieve) message msgno
+
+       DELE msgno
+              marks message msgno as deleted
+
+       RSET   reset message deleted flags from all previously deleted messages
+
+       CAPA   list of server's capabilities.  Currently, mdpop3d lists UIDL,
+              TOP and USER as a responce.
+
+       When responding to client's commands, mdpop3d is somewhat quiet.  For
+       example almost all positive responces consists of just three characters
+       +OK followed by CR, LF pair, no additional information used.  POP3 used
+       almost by software clients, not humans, and that additional info will
+       always be discarded.
+
+
+BUGS
+       When using own implementation of password checking (via getpwnam(3) et
+       al), password aging is not checked, and userid also (thus, mdpop3d will
+       allow user with uid=0 and/or expired password to log in) -- only
+       minimal checking done.  This can be easily "cured" by using PAM that is
+       far more preferable method anyway.
+
+       Any possible message from PAM discarded completely.  This really isn't
+       a bug in this daemon itself, but in difficulties communicating of non-
+       interactive application uses predefined protocol with pam framework.
+       On any error in pam mdpop3d responds with generic "login incorrect"
+       message.
+
+       mdpop3d will not allow user to log in with empty password, and there is
+       no way to tell it to do so.  This may be considered a bug, but I mostly
+       disagree.
+
+       POP protocol transmits plaintext passwords over network.  For unsecure
+       networks this may be not acceptable.  As a workaround there may be some
+       "autheticator" that sets up a secure (encrypted) connection and calls
+       this mdpop3d program.  One example of this is ssl wrapper such as
+       stunnel(8).
+
+       mdpop3d reports incorrect message size(s).  It uses message file size
+       as returned by stat(2) system call as a message size, but this does not
+       includes extra carriage return (CR) character at the end of each line,
+       as required by POP3 protocol.  It is a protocol violation, but I think
+       that it isn't a (serious) issue.  Many other pop3 daemons do the same.
+
+       mdpop3d will refuse to work with files in Maildir that have very long
+       names and thus may overflow static mdpop3d buffer.  Such a files will
+       be silently ignored.  Currently limit of filename is about 1018
+       characters, that should be sufficient for all environments where
+       mdpop3d will run.
+
+
+SEE ALSO
+       mail(1), qmail-pop3d(8), sendmail(8), inetd(8), stunnel(8), rfc1939
+       (Post Office Protocol - Version 3), rfc2449 (POP3 Extension Mechanism)
+
+
+LICENSE
+       This software can be distributed under the terms of the GNU General
+       Public License (GPL) version 2 or any further version.
+
+
+AUTHOR
+       This software and manual page has been written by Michael Tokarev,
+       mjt@corpit.ru.
+
+
+System Daemons                    12 Dec 2000                    IN.MDPOP3D(8)

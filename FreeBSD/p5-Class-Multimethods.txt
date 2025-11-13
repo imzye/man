@@ -1,0 +1,708 @@
+Class::Multimethods(3)                     User Contributed Perl Documentation
+
+
+NAME
+       Class::Multimethods - Support multimethods and function overloading in
+       Perl
+
+VERSION
+       This document describes version 1.701 of Class::Multimethods released
+       April  9, 2000.
+
+SYNOPSIS
+        # IMPORT THE multimethod DECLARATION SUB...
+
+           use Class::Multimethods;
+
+        # DECLARE VARIOUS MULTIMETHODS CALLED find...
+
+        # 1. DO THIS IF find IS CALLED WITH A Container REF AND A Query REF...
+
+           multimethod find => (Container, Query)
+                            => sub { $_[0]->findquery($_[1]) };
+
+        # 2. DO THIS IF find IS CALLED WITH A Container REF AND A Sample REF...
+
+           multimethod find => (Container, Sample)
+                            => sub { $_[0]->findlike($_[1]) };
+
+        # 3. DO THIS IF find IS CALLED WITH AN Index REF AND A Word REF...
+
+           multimethod find => (Index, Word)
+                            => sub { $_[0]->lookup_word($_[1]) };
+
+        # 4. DO THIS IF find IS CALLED WITH AN Index REF AND A qr// PATTERN
+
+           multimethod find => (Index, Regexp)
+                            => sub { $_[0]->lookup_rx($_[1]) };
+
+        # 5. DO THIS IF find IS CALLED WITH AN Index REF AND A NUMERIC SCALAR
+
+           multimethod find => (Index, '#')
+                            => sub { $_[0]->lookup_elem($_[1]) };
+
+        # 6. DO THIS IF find IS CALLED WITH AN Index REF AND A NON-NUMERIC SCALAR
+
+           multimethod find => (Index, '$')
+                            => sub { $_[0]->lookup_str($_[1]) };
+
+        # 7. DO THIS IF find IS CALLED WITH AN Index REF AND AN UNBLESSED ARRAY REF
+        #    (NOTE THE RECURSIVE CALL TO THE find MULTIMETHOD)
+
+           multimethod find => (Index, ARRAY)
+                            => sub { map { find($_[0],$_) } @{$_[1]} };
+
+
+        # SET UP SOME OBJECTS...
+
+               my $cntr = new Container ('./datafile');
+               my $indx = $cntr->get_index();
+
+        # ...AND SOME INHERITANCE...
+
+               @BadWord::ISA = qw( Word );
+               my $badword = new BadWord("fubar");
+
+        # ...AND EXERCISE THEM...
+
+               print find($cntr, new Query('cpan OR Perl'));           # CALLS 1.
+               print find($cntr, new Example('by a committee'));       # CALLS 2.
+
+               print find($indx, new Word('sugar'));                   # CALLS 3.
+               print find($indx, $badword);                            # CALLS 3.
+               print find($indx, qr/another brick in the Wall/);       # CALLS 4.
+               print find($indx, 7);                                   # CALLS 5.
+               print find($indx, 'But don't do that.');                # CALLS 6.
+               print find($indx, [1,"one"]);                           # CALLS 7,
+                                                                       # THEN 5 & 6.
+
+DESCRIPTION
+       The Class:Multimethod module exports a subroutine (&multimethod) that
+       can be used to declare other subroutines that are dispatched using a
+       algorithm different from the normal Perl subroutine or method dispatch
+       mechanism.
+
+       Normal Perl subroutines are dispatched by finding the appropriately-
+       named subroutine in the current (or specified) package and calling
+       that. Normal Perl methods are dispatched by attempting to find the
+       appropriately-named subroutine in the package into which the invoking
+       object is blessed or, failing that, recursively searching for it in the
+       packages listed in the appropriate @ISA arrays.
+
+       Class::Multimethods multimethods are dispatched quite differently. The
+       dispatch mechanism looks at the classes or types of each argument to
+       the multimethod (by calling "ref" on each) and determines the "closest"
+       matching variant of the multimethod, according to the argument types
+       specified in the variants' definitions (see "Finding the "nearest"
+       multimethod" for a definition of "closest").
+
+       The result is something akin to C++'s function overloading, but more
+       intelligent, since multimethods take the inheritance relationships of
+       each argument into account. Another way of thinking of the mechanism is
+       that it performs polymorphic dispatch on every argument of a method,
+       not just the first.
+
+   Defining multimethods
+       The Class::Multimethods module exports a subroutine called
+       "multimethod", which can be used to specify multimethod variants with
+       the dispatch behaviour described above. The "multimethod" subroutine
+       takes the name of the desired multimethod, a list of class names, and a
+       subroutine reference, and generates a corresponding multimethod variant
+       within the current package.
+
+       For example, the declaration:
+
+               package LargeInt;   @ISA = (LargeNumeric);
+               package LargeFloat; @ISA = (LargeNumeric);
+
+               package LargeNumeric;
+               use Class::Multimethods;
+
+               multimethod divide => (LargeInt, LargeInt) => sub
+               {
+                       LargeInt::divide($_[0],$_[1]);
+               };
+
+               multimethod divide => (LargeInt, LargeFloat) => sub
+               {
+                       LargeFloat::divide($_[0]->AsLargeFloat(),$_[1]));
+               };
+
+       creates a (single!) multimethod &LargeNumeric::divide with two
+       variants.  If the multimethod is called with two references to
+       "LargeInt" objects as arguments, the first variant (i.e. anonymous
+       subroutine) is invoked. If the multimethod is called with a "LargeInt"
+       reference and a "LargeFloat" reference, the second variant is called.
+
+       Note that if you're running under "use strict", the list of bareword
+       class names in each variant definition will cause problems.  In that
+       case you'll need to say:
+
+               multimethod divide => ('LargeInt', 'LargeInt') => sub
+               {
+                       LargeInt::divide($_[0],$_[1]);
+               };
+
+               multimethod divide => ('LargeInt', 'LargeFloat') => sub
+               {
+                       LargeFloat::divide($_[0]->AsLargeFloat(),$_[1]));
+               };
+
+       or better still:
+
+               multimethod divide => qw( LargeInt LargeInt ) => sub
+               {
+                       LargeInt::divide($_[0],$_[1]);
+               };
+
+               multimethod divide => qw( LargeInt LargeFloat ) => sub
+               {
+                       LargeFloat::divide($_[0]->AsLargeFloat(),$_[1]));
+               };
+
+       or best of all (;-):
+
+               {
+                   no strict;
+
+                   multimethod divide => (LargeInt, LargeInt) => sub
+                   {
+                       LargeInt::divide($_[0],$_[1]);
+                   };
+
+                   multimethod divide => (LargeInt, LargeFloat) => sub
+                   {
+                       LargeFloat::divide($_[0]->AsLargeFloat(),$_[1]));
+                   };
+               }
+
+       Calling the multimethod with any other combination of "LargeNumeric"
+       reference arguments (e.g. a reference to a "LargeFloat" and a reference
+       to a "LargeInt", or two "LargeFloat" referencess) results in an
+       exception being thrown, with the message:
+
+               No viable candidate for call to
+               multimethod LargeNumeric::divide at ...
+
+       To avoid this, we could provide a "catch-all" variant:
+
+               multimethod divide => (LargeNumeric, LargeNumeric) => sub
+               {
+                       LargeFloat::divide($_[0]->AsLargeFloat(),$_[1]->AsLargeFloat));
+               }
+
+       Now, calling &LargeNumeric::divide with either a "LargeFloat" reference
+       and a "LargeInt" reference or two "LargeFloat" references results in
+       this third variant being invoked. Note that, adding this third
+       alternative doesn't affect calls to the other two, since
+       Class::Multimethods always selects the "nearest" match (see "Finding
+       the "nearest" multimethod" below for details of what "nearest" means).
+
+       This "best fit" behaviour is extremely useful, because it means you can
+       code the specific cases you want to handle, and the one or more "catch-
+       all" cases to deal with any other combination of arguments.
+
+   Finding the "nearest" multimethod
+       Of course, the usefulness of the entire system depends on how
+       intelligently Class::Multimethods decides which version of a
+       multimethod is "nearest" to the set of arguments you provided. This
+       decision process is called "dispatch resolution", and
+       Class::Multimethods does it like this:
+
+       1.  If the types of the arguments given (as determined by "ref")
+           exactly match the types specified in any variant of the
+           multimethod, that variant is the one called.
+
+       2.  Otherwise, Class::Multimethods compiles a list of "viable targets".
+           A viable target is a variant of the multimethod with the correct
+           number of parameters, such that for each parameter the specified
+           parameter type is a base class of the actual type of the
+           corresponding argument in the actual call.
+
+       3.  If there is only one viable target, it is immediately called. if
+           there are no viable targets, an exception is thrown indicating the
+           fact.
+
+       4.  Otherwise, Class::Multimethod examines each viable target and
+           computes its "distance" to the actual set of arguments. The
+           distance of a target is the sum of the distances of each of its
+           parameters. The distance of an individual parameter is the number
+           of inheritance steps between its class and the actual class of the
+           corresponding argument.
+
+           Hence, if a specific argument is of the same class as the
+           corresponding parameter type, the distance to that parameter is
+           zero.  If the argument is of a class that is an immediate child of
+           the parameter type, the distance is 1. If the argument is of a
+           class which is a "grandchild" of the parameter type, the distance
+           is 2. Et cetera.
+
+       5.  Class::Multimethod then chooses the viable target with the smallest
+           "distance" as the "final target". If there is more than one viable
+           target with an equally smallest distance, an exception is thrown
+           indicating that the call is ambiguous. If there is only a single
+           final target Class::Multimethod records its identity (so the
+           distance computations don't have to be repeated next time the same
+           set of argument types is used), and then calls that final target.
+
+   Where to define multimethods
+       Class::Multimethods doesn't care which packages the individual variants
+       of a multimethod are defined in. Every variant of a multimethod is
+       visible to the underlying multimethod dispatcher, no matter where it
+       was defined.
+
+       For example, the three variants for the "divide" multimethod shown
+       above could all be defined in the LargeNumeric package, or the
+       LargeFloat package or the LargeInt package, or in "main", or in a
+       separate package of their own.
+
+       Of course, to make a specific multimethod visible within a given
+       package you still need to tell that package about it. That can be done
+       by specifying the name of the multimethod only (i.e. no argument list
+       or variant code):
+
+               package Some::Other::Package::That::Wants::To::Use::divide;
+
+               use Class::Multimethods;
+               multimethod "divide";
+
+       For convenience, the declaration itself can be abbreviated to:
+
+               package Some::Other::Package::That::Wants::To::Use::divide;
+
+               use Class::Multimethods "divide";
+
+       Similarly, Class::Multimethod doesn't actually care whether
+       multimethods are called as methods or as regular subroutines. This is
+       quite different from the behaviour of normal Perl methods and
+       subroutines, where how you call them, determines how they are
+       dispatched.
+
+       With multimethods, since all arguments participate in the polymorphic
+       resolution of a call (instead of just the first), it make no difference
+       whether a multimethod is called as a subroutine:
+
+               numref3 = divide($numref1, $numref2);
+
+       or a method:
+
+               numref3 = $numref1->divide($numref2);
+
+       (so long as the multimethod has been declared in the appropriate place:
+       the current package for subroutine-like calls, or the invoking object's
+       package for method-like calls).
+
+       In other words, Class::Multimethods also provides general subroutine
+       overloading. For example:
+
+               package main;
+               use IO;
+               use Class::Multimethods;
+
+               multimethod debug => (IO::File) => sub
+               {
+                       print $_[0] "This should go in a file\n";
+               }
+
+               multimethod debug => (IO::Pipe) => sub
+               {
+                       print $_[0] "This should go down a pipe\n";
+               }
+
+               multimethod debug => (IO::Socket) => sub
+               {
+                       print $_[0] "This should go out a socket\n";
+               }
+
+               # and later
+
+               debug($some_io_handle);
+
+   Non-class types as parameters
+       Yet another thing Class::Multimethods doesn't care about is whether the
+       parameter types for each multimethod variant are the names of "real"
+       classes or just the identifiers returned when raw Perl data types are
+       passed to the built-in "ref" function. That means you could also define
+       multimethod variants like this:
+
+               multimethod stringify => (ARRAY) => sub
+               {
+                       my @arg = @{$_[0]};
+                       return "[" .  join(", ",@arg) . "]";
+               }
+
+               multimethod stringify => (HASH) => sub
+               {
+                       my %arg = %{$_[0]};
+                       return "{" . join(", ", map("$_=>$arg{$_}",keys %arg)) . "}";
+               }
+
+               multimethod stringify => (CODE) => sub
+               {
+                       return "sub {???}";
+               }
+
+               # and later
+
+               print stringify( [1,2,3] ), "\n";
+               print stringify( {a=>1,b=>2,c=>3} ), "\n";
+               print stringify( $array_or_hash_ref ), "\n";
+
+       Provided you remember that the parameter types ARRAY, HASH, and CODE
+       really mean "reference to array", "reference to hash", and "reference
+       to subroutine", the names of built-in types (i.e. those returned by
+       "ref") are perfectly acceptable as multimethod parameters.
+
+       That's a nice bonus, but there's a problem. Because "ref" returns an
+       empty string when given any literal string or numeric value, the
+       following code:
+
+               print stringify( 2001 ), "\n";
+               print stringify( "a multiple dispatch oddity" ), "\n";
+
+       will produce a nasty surprise:
+
+               No viable candidate for call to multimethod stringify() at line 1
+
+       That's because the dispatch resolution process first calls ref(2001) to
+       get the class name for the first argument, and therefore thinks it's of
+       class "". Since there's no "stringify" variant with an empty string as
+       its parameter type, there are no viable targets for the multimethod
+       call. Hence the exception.
+
+       To overcome this limitation, Class::Multimethods allows three special
+       pseudo-type names within the parameter lists of multimethod variants.
+       The first pseudo-type - "$" - is the class that Class::Multimethods
+       pretends that any scalar value (except a reference) belongs to. Hence,
+       you can make the two recalcitrant stringifications of scalars work by
+       defining:
+
+               multimethod stringify => ("$")
+                       => sub { return qq{"$_[0]"} }
+
+       With that definition in place, the two calls:
+
+               print stringify( 2001 ), "\n";
+               print stringify( "a multiple dispatch oddity" ), "\n";
+
+       would produce:
+
+               "2001"
+               "a multiple dispatch oddity"
+
+       That solves the problem, but not as elegantly as it might. It would be
+       better if numeric values were left unquoted. To this end,
+       Class::Multimethods offers a second pseudo-type - "#" - which is the
+       class it pretends numeric scalar values belong to (where a scalar value
+       is "numeric" if it's truly a numerical value (without implicit
+       coercions):
+
+               $var = 0        # numeric --> '$'
+               $var = 0.0      # numeric --> '$'
+               $var = "0";     # string  --> '#'
+
+       Hence you could now also define:
+
+               multimethod stringify => ("#")
+                       => sub { return "+$_[0]" }
+
+       the two calls to &stringify now produce:
+
+               +2001
+               "a multiple dispatch oddity"
+
+       The final pseudo-type - "*" - is a wild-card or "don't care" type
+       specifier, which matches any argument type exactly. For example, we
+       could provide a "catch-all" "stringify" variant (to handle "GLOB" or
+       "IO" references, for example):
+
+               multimethod stringify => ("*")
+                       => sub { croak "can't stringify a " . ref($_[0]) }
+
+       The "*" pseudo-type can also be used in multiple-argument multimethods.
+       For example:
+
+               # General case...
+
+                   multimethod handle => (Window, Event, Mode)
+                       => sub { ... }
+
+               # Special cases...
+
+                   multimethod handle => (MovableWindow, MoveEvent, NormalMode)
+                       => sub { ... }
+
+                   multimethod handle => (ScalableWindow, ResizeEvent, NormalMode)
+                       => sub { ... }
+
+               # Very special case
+               # (ignore any event in any window in PanicMode)
+
+                   multimethod handle => ("*", "*", PanicMode)
+                       => sub { ... }
+
+   Resolving ambiguities and non-dispatchable calls
+       It's relatively easy to set up a multimethod such that particular
+       combinations of argument types cannot be correctly dispatched. For
+       example, consider the following variants of a multimethod called
+       "put_peg":
+
+               multimethod put_peg => (RoundPeg,Hole) => sub
+               {
+                       print "a round peg in any old hole\n";
+               };
+
+               multimethod put_peg => (Peg,SquareHole) => sub
+               {
+                       print "any old peg in a square hole\n";
+               };
+
+               multimethod put_peg => (Peg,Hole) => sub
+               {
+                       print "any old peg in any old hole\n";
+               };
+
+       If "put_peg" is called like so:
+
+               put_peg( RoundPeg->new(), SquareHole->new() );
+
+       then Class::Multimethods can't dispatch the call, because it cannot
+       decide between the "(RoundPeg,Hole)" and "(Peg,SquareHole)" variants,
+       each of which is the same "distance" (i.e. 1 derivation) from the
+       actual arguments.
+
+       The default behaviour is to throw an exception (i.e. die) like this:
+
+               Cannot resolve call to multimethod put_peg(RoundPeg,SquareHole).
+               The multimethods:
+                       put_peg(RoundPeg,Hole)
+                       put_peg(Peg,SquareHole)
+               are equally viable at ...
+
+       Sometimes, however, the more specialized variants are only
+       optimizations, and a more general case (e.g. the "(Peg,Hole)" variant)
+       would suffice as a default where such an ambiguity exists. If that is
+       the case, it's possible to tell Class::Multimethods to resolve the
+       ambiguity by calling that variant, using the "resolve_ambiguous"
+       subroutine. "resolve_ambiguous" is automatically exported by
+       Class::Multimethods and is used like this:
+
+               resolve_ambiguous put_peg => (Peg,Hole);
+
+       That is, you specify the name of the multimethod being disambiguated,
+       and the signature of the variant to be used in ambiguous cases. Of
+       course, the specified variant must actually exist at the time of the
+       call. If it doesn't, Class::Multimethod ignores it and throws the usual
+       exception.
+
+       Alternatively, if no variant is suitable as a default, you can register
+       a reference to a subroutine that is to be called instead:
+
+               resolve_ambiguous put_peg => \&disambiguator;
+
+       Now, whenever "put_peg" can't dispatch a call because it's ambiguous,
+       "disambiguator" will be called instead, with the same argument list as
+       "put_peg" was given.
+
+       Of course, "resolve_ambiguous" doesn't care what subroutine it's given
+       a reference to, so you can also use an anonymous subroutine:
+
+               resolve_ambiguous put_peg
+                       => sub
+                          {
+                               print "can't put a ", ref($_[0]),
+                                     " into a ", ref($_[1]), "\n";
+                          };
+
+       Dispatch can also fail if there are no suitable variants available to
+       handle a particular call. For example:
+
+               put_peg( JPEG->new(), Loophole->new() );
+
+       which would normally produce the exception:
+
+               No viable candidate for call to
+               multimethod put_peg(JPeg,Loophole) at ...
+
+       since classes JPEG and Loophole are't in the Peg and Hole hierarchies,
+       so there's no inheritance path back to a more general variant.
+
+       To handle cases like this, you can use the <resolve_no_match>
+       subroutine, which is also exported from Class::Multimethods.
+       "resolve_no_match" registers a multimethod variant, or a reference to
+       some other subroutine, that is then used whenever the dispatch
+       mechanism can't find a suitable variant for a given multimethod call.
+
+       For example:
+
+               resolve_no_match put_peg
+                       => sub
+                          {
+                               put_jpeg(@_)
+                                       if ref($_[0]) eq 'JPEG';
+                               shift()->hang(@_)
+                                       if ref($_[0]) eq 'ClothesPeg';
+                               hammer(@_)
+                                       if ref($_[0]) eq 'TentPeg';
+                               # etc.
+
+                          };
+
+       As with "resolve_ambiguous" the registered variant or subroutine is
+       called with the same set of arguments that were passed to the original
+       multimethod call.
+
+   Redispatching multimethod calls
+       Sometimes a polymorphic method in a derived class is used to add
+       functionality to an inherited method. For example, a derived class's
+       "print_me" method might call it's base class's "print_me", making use
+       of Perl's special "$obj-"SUPER::method()> construct:
+
+               class Base;
+
+               sub print_me
+               {
+                       my ($self) = @_;
+                       print "Base stuff\n";
+               }
+
+               class Derived; @ISA = qw( Base );
+
+               sub print_me
+               {
+                       my ($self) = @_;
+                       $self->SUPER::print_me();       # START LOOKING IN ANCESTORS
+                       print "Derived stuff\n";
+               }
+
+       If the "print_me" methods are implemented as multimethods, it's still
+       possible to reinvoke an "ancestral" method, using the automatically
+       exported "Class::Multimethods::superclass" subroutine:
+
+               use Class::Multimethods;
+
+               multimethod print_me => (Base) => sub
+               {
+                       my ($self) = @_;
+                       print "Base stuff\n";
+               }
+
+               multimethod print_me => (Derived) => sub
+               {
+                       my ($self) = @_;
+                       print_me( superclass($self) );  # START LOOKING IN ANCESTORS
+                       print "Derived stuff\n";
+               }
+               }
+
+       Applying "superclass" to the multimethod argument tells
+       Class::Multimethod to start looking for parameter types amongst the
+       ancestors of Derived.
+
+       It's also possible in regular Perl to explcitly tell the polymorphic
+       dispacther where to start looking, by explicitly qualifying the method
+       name:
+
+               sub Derived::print_me
+               {
+                       my ($self) = @_;
+                       $self->Base::print_me();        # START LOOKING IN Base CLASS
+                       print "Derived stuff\n";
+               }
+
+       The same is possible with multimethods. "superclass" takes an optional
+       second argument that tells Class::Multimethods exactly where to start
+       looking:
+
+               multimethod print_me => (Derived) => sub
+               {
+                       my ($self) = @_;
+                       print_me( superclass($self => Base) );  # START LOOKING IN Base
+                       print "Derived stuff\n";
+               }
+
+       Note that, unlike regular method calls, with multimethods you can apply
+       the "superclass" subroutine to any or all of a multimethod's arguments.
+       For example:
+
+               multimethod handle => (MovableWindow, MoveEvent, NormalMode) => sub
+               {
+                       my ($w, $e, $m) = @_;
+
+                       # Do any special stuff,
+                       # then redispatch to more general handler...
+
+                       handle(superclass($w), $e, superclass($m => Mode) );
+               }
+
+       In this case the redispatch would start looking for variants which
+       matched "(any of MovableWindow's ancestors, MoveEvent, Mode)".
+
+       It's also important to remember that, as with regular methods, the
+       class of the actual arguments doesn't change just because we subverted
+       the dispatch sequence. That means if the above redispatch called the
+       handle variant that takes arguments (Window, MoveEvent, Mode), the
+       actual arguments would still be of types (MovableWindow, MoveEvent,
+       NormalMode).
+
+DIAGNOSTICS
+       If you call "multimethod" and forget to provide a code reference as the
+       last argument, it "die"s with the message:
+
+               "multimethod: last arg must be a code reference at %s"
+
+       If the dispatch mechanism cannot find any multimethod with a signature
+       matching the actual arguments, it "die"s with the message:
+
+               "No viable candidate for call to multimethod %s at %s"
+
+       If the dispatch mechanism finds two or more multimethods with
+       signatures equally "close" to the actual arguments (see "The dispatch
+       resolution process"), it "die"s with the message:
+
+               "Cannot resolve call to multimethod %s. The multimethods:
+                       %s
+                are equally viable at %s"
+
+       If you specify two variants with the same parameter lists,
+       Class::Multimethods warns:
+
+               "Multimethod %s redefined at %s"
+
+       but only if $^W is true (i.e. under the "-w" flag).
+
+AUTHOR
+       Damian Conway (damian@conway.org)
+
+BUGS AND IRRITATIONS
+       There are undoubtedly serious bugs lurking somewhere in code this
+       complex :-) Bug reports and other feedback are most welcome.
+
+       Ongoing annoyances include:
+
+       •   The module uses qr// constructs to improve performance. Hence it
+           won't run under Perls earlier than 5.005.
+
+       •   Multimethod dispatch is much slower than regular dispatch when the
+           resolution has to resort to the more generic cases (though it's
+           actually as very nearly as fast as doing the equivalent type
+           resolution "by hand", and certainly more reliable and maintainable)
+
+       •   The cache management is far too dumb. Adding any new multimethod
+           clobbers the entire cache, when it should only expunge those
+           entries "upstream" from the the new multimethod's actual parameter
+           types.
+
+           It's unclear, however, under what circumstances the expense of a
+           more careful cache correction algorithm would ever be recouped by
+           the savings in dispatch (well, obviously, when the installion of
+           multimethods is a rare event and multimethod dispatching is
+           frequent, but where is the breakeven point?)
+
+COPYRIGHT
+               Copyright (c) 1998-2000, Damian Conway. All Rights Reserved.
+             This module is free software. It may be used, redistributed
+             and/or modified under the terms of the Perl Artistic License
+                  (see http://www.perl.com/perl/misc/Artistic.html)
+
+perl v5.40.2                      2016-11-25            Class::Multimethods(3)

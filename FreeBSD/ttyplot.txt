@@ -1,0 +1,245 @@
+TTYPLOT(1)              FreeBSD General Commands Manual             TTYPLOT(1)
+
+NAME
+     ttyplot – realtime terminal plotting utility
+
+SYNOPSIS
+     ttyplot [options]
+     ttyplot -v
+     ttyplot -h
+
+DESCRIPTION
+     ttyplot takes data from standard input, most commonly some tool like
+     ping(1), snmpget(1), netstat(8), ifconfig(8), sar(1), vmstat(8), etc.,
+     and plots in text mode on a terminal in real time.
+
+     Supports rate calculation for counters and up to two graphs on a single
+     display using reverse video for second line.
+
+     The following options are supported:
+
+     -2      Read two values and draw two plots, the second in reverse video.
+
+     -r      Calculate counter rate and divide by measured sample interval.
+
+     -c plotchar
+             Use plotchar for the plot line, e.g.  ‘@ # % .’ etc.
+
+     -e errcharmax
+             Use errcharmax for plot error line when value exceeds hardmax.
+             Default: ‘e’.
+
+     -E errcharmin
+             Use errcharmin for plot error symbol, displayed when plot value
+             is less than hardmin.  Default: ‘v’.
+
+     -s softmax
+             Use softmax as the initial maximum value but allow it to grow
+             with input.
+
+     -m hardmax
+             Use hardmax as a hard value limit after which an error line will
+             be drawn (see -e). Should be greater than hardmin, if set.
+
+     -M hardmin
+             Use hardmin as a definite minimum limit of the plot range. If a
+             plot value is less than this, error symbol will be drawn (see
+             -E).
+
+     -t title
+             Use title as the plot title.
+
+     -u unit
+             Label the vertical axis unit.
+
+     -v      Print the current version and exit.
+
+     -h      Print this help message and exit.
+
+KEY BINDINGS
+     When reading data from a pipe, ttyplot accepts the following commands
+     typed at the terminal:
+
+     q       Quit.
+
+     r       Toggle "rate mode" on and off.
+
+EXAMPLES
+     CPU usage from vmstat(8) using awk(1) to pick the right column:
+
+           vmstat -n 1 \
+            | gawk '{ print 100-int($(NF-2)); fflush(); }' \
+            | ttyplot
+
+     CPU usage from sar(1) with title and fixed scale to 100%:
+
+           sar 1 \
+            | gawk '{ print 100-int($NF); fflush(); }' \
+            | ttyplot -s 100 -t "cpu usage" -u "%"
+
+     Memory usage from sar(1), using perl(1), to pick the right column:
+
+           sar -r 1 \
+            | perl -lane 'BEGIN{$|=1} print "@F[5]"' \
+            | ttyplot -s 100 -t "memory used %" -u "%"
+
+     Number of processes in running and io blocked state:
+
+           vmstat -n 1 \
+            | perl -lane 'BEGIN{$|=1} print "@F[0,1]"' \
+            | ttyplot -2 -t "procs in R and D state"
+
+     Load average via uptime(1) and awk(1):
+
+           { while true; do
+               uptime | gawk '{ gsub(/,/, ""); print $(NF-2) }'
+               sleep 1
+             done } | ttyplot -t "load average" -s load
+
+     Ping plot with sed(1):
+
+           ping 8.8.8.8 \
+            | sed -u 's/^.*time=//g; s/ ms//g' \
+            | ttyplot -t "ping to 8.8.8.8" -u ms
+
+     WiFi signal level in -dBM (higher is worse) using iwconfig(8):
+
+           { while true; do
+               iwconfig 2>/dev/null \
+                | grep "Signal level" \
+                | sed -u 's/^.*Signal level=-//g; s/dBm//g'
+               sleep 1
+             done } | ttyplot -t "wifi signal" -u "-dBm" -s 90
+
+     CPU temperature from proc;
+
+           { while true; do
+               awk '{ printf("%.1f0, $1/1000) }' \
+                    /sys/class/thermal/thermal_zone0/temp
+               sleep 1
+             done } | ttyplot -t "cpu temp" -u C
+
+     Fan speed from sensors(1) using grep(1), tr(1) and cut(1):
+
+           { while true; do
+               sensors | grep fan1: | tr -s " " | cut -d" " -f2
+               sleep 1
+             done } | ttyplot -t "fan speed" -u RPM
+
+     Bitcoin price chart using curl(1) and jq(1):
+
+           { while true; do
+               curl -sL https://api.coindesk.com/v1/bpi/currentprice.json \
+                | jq .bpi.USD.rate_float
+               sleep 600
+             done } | ttyplot -t "bitcoin price" -u usd
+
+     Stock quote chart:
+
+           { while true; do
+               curl -sL https://api.iextrading.com/1.0/stock/googl/price
+               echo
+               sleep 600
+             done } | ttyplot -t "google stock price" -u usd
+
+     Prometheus load average via node_exporter:
+
+           { while true; do
+               curl -s  http://10.4.7.180:9100/metrics \
+                | grep "^node_load1 " \
+                | cut -d" " -f2; sleep 1
+             done } | ttyplot
+
+   Network/disk throughput examples
+     ttyplot supports two-line plots for in/out or read/write.
+
+     Local network throughput for all interfaces combined from sar(1):
+
+           sar -n DEV 1 | gawk '{
+             if($6 ~ /rxkB/) {
+                print iin/1000;
+                print out/1000;
+                iin=0;
+                out=0;
+                fflush();
+             }
+             iin=iin+$6;
+             out=out+$7;
+           }' | ttyplot -2 -u "MB/s"
+
+     SNMP network throughput for an interface using ‘ttg’:
+
+           ttg -i 10 -u Mb 10.23.73.254 public 9 \
+            | gawk '{ print $5,$8; fflush(); }' \
+            | ttyplot -2 -u Mb/s
+
+     SNMP network throughput for an interface using snmpdelta(1):
+
+           snmpdelta -v 2c -c public -Cp 10 \
+                     10.23.73.254 1.3.6.1.2.1.2.2.1.{10,16}.9 \
+            | gawk '{ print $NF/1000/1000/10; fflush(); }' \
+            | ttyplot -2 -t "interface 9 throughput" -u Mb/s
+
+     Disk throughput from iostat(1):
+
+           iostat -xmy 1 nvme0n1 \
+            | stdbuf -o0 tr -s " " \
+            | stdbuf -o0 cut -d " " -f 4,5 \
+            | ttyplot -2 -t "nvme0n1 throughput" -u MB/s
+
+   Rate calculator for counters
+     ttyplot also supports counter style metrics, calculating a rate by
+     measuring time difference between samples.
+
+     SNMP network throughput for an interface using snmpget(1):
+
+           { while true; do
+               snmpget  -v 2c -c public \
+                        10.23.73.254 1.3.6.1.2.1.2.2.1.{10,16}.9 \
+                | awk '{ print $NF/1000/1000; }'
+               sleep 10
+             done } | ttyplot -2 -r -u "MB/s"
+
+     Local interface throughput using ip(8) and jq(1):
+
+           { while true; do
+               ip -s -j link show enp0s31f6 \
+                | jq '.[].stats64.rx.bytes/1024/1024, \
+                      .[].stats64.tx.bytes/1024/1024'
+               sleep 1
+             done } | ttyplot -r -2 -u "MB/s"
+
+     Prometheus node exporter disk throughput for /dev/sda:
+
+           { while true; do
+               curl -s http://10.11.0.173:9100/metrics \
+                | awk '/^node_disk_.+_bytes_total{device="sda"}/ {
+                    printf("%f0, $2/1024/1024);
+                  }'
+               sleep 1
+             done } | ttyplot -r -2 -u MB/s -t "10.11.0.173 sda writes"
+
+AUTHORS
+     ttyplot is written by:
+     Antoni Sawicki <tenox@google.com>,
+     Edgar Bonet <linux@edgar-bonet.org> and
+     Sebastian Pipping <sebastian@pipping.org>.
+
+     Its readme was converted into this manual page by
+     Sijmen J. Mulder <ik@sjmulder.nl>.
+
+BUGS
+     By default in standard in- and output are is buffered.  This can be
+     worked around in various ways:
+     http://www.perkin.org.uk/posts/how-to-fix-stdio-buffering.html.
+
+     ttyplot quits and erases the screen when there is no more data.  This is
+     by design and can be worked around by adding sleep(1) or read(1), for
+     example:
+
+           { echo 1 2 3; sleep 1000; } | ttyplot
+
+     When running interactively and non-numeric data is entered (e.g. some
+     key) ttyplot hangs.  Press ‘Ctrl^J’ to reset.
+
+FreeBSD 14.1-RELEASE           January 20, 2024           FreeBSD 14.1-RELEASE

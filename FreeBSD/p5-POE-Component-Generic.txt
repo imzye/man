@@ -1,0 +1,639 @@
+POE::Component::Generic(3)                 User Contributed Perl Documentation
+
+
+NAME
+       POE::Component::Generic - A POE component that provides non-blocking
+       access to a blocking object.
+
+SYNOPSIS
+           use POE::Component::Generic;
+
+           my $telnet = POE::Component::Generic->spawn(
+
+               # required; main object is of this class
+               package => 'Net::Telnet',
+
+               # optional; Options passed to Net::Telnet->new()
+               object_options => [ ],
+
+               # optional; You can use $poco->session_id() instead
+               alias => 'telnet',
+               # optional; 1 to turn on debugging
+               debug => 1,
+               # optional; 1 to see the child's STDERR
+               verbose => 1,
+
+               # optional; Options passed to the internal session
+               options => { trace => 1 },
+
+               # optional; describe package signatures
+               packages => {
+                   'Net::Telnet' => {
+                       # Methods that require coderefs, and keep them after they
+                       # return.
+
+                       # The first arg is converted to a coderef
+                       postbacks => { option_callback=>0 }
+                   },
+                   'Other::Package' => {
+                       # only these methods are exposed
+                       methods => [ qw( one two ) ],
+
+                       # Methods that require coderefs, but don't keep them
+                       # after they return
+                       callbacks => [ qw( two ) ]
+                   }
+               }
+           );
+
+           # Start your POE session, then...
+
+           $telnet->open( { event => 'result' }, "rainmaker.wunderground.com");
+           # result state
+           sub result {
+               my ($kernel, $ref, $result) = @_[KERNEL, ARG0, ARG1];
+
+               if( $ref->{error} ) {
+                   die join(' ', @{ $ref->{error} ) . "\n";
+               }
+               print "connected: $result\n";
+           }
+
+
+           # Setup a postback
+           $telnet->option_callback( {}, "option_back" );
+
+           # option_back state
+           sub option_back {
+               my( $obj, $option, $is_remote,
+                       $is_enabled, $was_enabled, $buf_position) = @_[ARG0..$#_];
+               # See L<Net::Telnet> for a discussion of the above.
+
+               # NOTE: Callbacks and postbacks can't currently receive objects.
+           }
+
+           # Use a callback
+           # Pretend that $other was created as a proxy to an Other::Package object
+           $other->two( {}, sub { warn "I was called..." } );
+
+           my $code = $session->postback( "my_state" );
+           $other->two( {}, $code );
+
+DESCRIPTION
+       POE::Component::Generic is a POE component that provides a non-blocking
+       wrapper around any object.  This allows you to build a POE component
+       from existing code with minimal effort.
+
+       The following documentation is a tad opaque and complicated.  This is
+       unavoidable; the problem POE::Component::Generic solves is complicated.
+
+       POE::Component::Generic works by forking a child process with
+       POE::Wheel::Run and creating the blocking object in the child process.
+       Method calls on the object are then serialised and sent to the child
+       process to be handled by the object there.  The returned value is
+       serialised and sent to the parent process, where it is posted back to
+       the caller as a POE event.
+
+       Communication is done via the child's "STDIN" and "STDOUT". This means
+       that all method arguments and return values must survive serialisation.
+       If you need to pass coderefs or other data that can't be serialised,
+       use "callbacks" or "postbacks".
+
+       If you want to have multiple objects within a single child process, you
+       will have to create "factories" that create the objects.
+
+       Method calls are wrapped in "eval" in the child process so that errors
+       may be propagated back to your session.  See "OUTPUT".
+
+       Output to "STDERR" in the child, that is from your object, is shown
+       only if "debug" or "verbose" is set.  "STDOUT" in the child, that is
+       from your object, is redirected to STDERR and will be shown in the same
+       circomstances.
+
+METHODS
+   spawn
+           my $obj = POE::Component::Generic->spawn( $package );
+           my $obj = POE::Component::Generic->spawn( %arguments );
+
+       Create the POE::Component::Generic component.
+
+       Takes either a single scalar, which is assumed to be a package name, or
+       a hash of arguments, of which all but "package" are optional.
+
+       alias
+           Session alias to register with the kernel.  Also used as the child
+           processes' name.  See "STATUS" below. Default is none.
+
+       alt_fork
+           Set to "true" if you want to run another perl instance.  That is,
+           the child process will "exec" a new instance of "perl" using $^X to
+           do the work.  @INC is preserved.  If present,
+           $ENV{HARNESS_PERL_SWITCHES} is preserved.
+
+           Using "alt_fork" might help save memory; while the child process
+           will only contain "POE::Component::Generic" and your object, it
+           will not be able to share as many memory pages with other
+           processes.
+
+           Care must be taken that the all necessary modules are loaded in the
+           new perl instance.  Make sure that your main "package" loads all
+           modules that it might interact with.
+
+           Default is false.
+
+           Please note that "alt_fork" does not currently work on MSWin32.
+           The problem is that exec() is failing in POE::Wheel::Run.  If you
+           can fix that I will reactivate "alt_fork" for MSWin32.
+
+           Note also that if you are running in an embedded perl and $^X does
+           not actually point to the perl binary, you may set alt_fork to the
+           path to the perl executable.  POE::Component::Generic will make
+           sure that this path is executable or will silently fall back to
+           $^X.
+
+       callbacks
+           Callbacks are coderefs that are passed as method parameters.
+           Because coderefs can't be serialised, a little bit of magic needs
+           to happen. When a method that has callbacks is called, it's
+           parameters are marshaled in the parent process.  The callback
+           coderef is saved in the parent, and replaced by markers which the
+           child process converts into thunk coderefs when demarshalling.
+           These thunks, when called by the object, will sent a request to the
+           parent process, which is translated into a call of the callback
+           coderef which the parent saved during marshalling.
+
+           Callbacks are only valid during the method's execution. After the
+           method returns, the callback will be invalidated.  If you need to
+           pass a coderef which is valid for longer then one method call, use
+           postbacks.
+
+           The "callbacks" parameter is a list of methods that have callbacks
+           in their parameter list.
+
+           When one of the methods in "callbacks" is called, any coderefs in
+           the parameters are converted into a message to the child process to
+           propagate the call back to the parent.
+
+           IMPORTANT: The callback is called from inside
+           POE::Component::Generic.  This means that the current session is
+           NOT your session.  If you need to be inside your session, use
+           "POE::Session/postback".
+
+           Defaults to empty.
+
+       child_package
+           Set the package that the child process worker object. Sometimes
+           advanced interaction with objects will require more smarts in the
+           child process.  You may control child process behaviour by setting
+           this to an subclass of POE::Component::Generic::Child.  For more
+           details, consult the source!
+
+       debug
+           Set to "true" to see component debug information, such as anything
+           output to STDERR by your code.  Default to "false".
+
+       error
+           Event that all POE::Wheel::Run errors and text from stderr will be
+           posted to.  May be either a hash, in which case it must have
+           "event" and "session" members, like "data".
+
+               POE::Component::Generic->spawn(
+                       ....
+                       error => { event => 'generic_event',
+                                  session => 'error_watcher'
+                                },
+                       ....
+                   );
+
+           If "error" is a string, it is used as an event in the current
+           session.
+
+               POE::Component::Generic->spawn(
+                       ....
+                       error => 'generic_error',   # in the current session
+                       ....
+                   );
+
+           When called, "ARG0" will be a hash reference containing either 1 or
+           3 keys, depending on the situation:
+
+               sub generic_error
+               {
+                   my( $session, $err ) = @_[ SESSION, ARG0 ];
+                   if( $err->{stderr} ) {
+                       # $err->{stderr} is a line that was printed to the
+                       # sub-processes' STDERR.  99% of the time that means from
+                       # your code.
+                   }
+                   else {
+                       # Wheel error.  See L<POE::Wheel::Run/ErrorEvent>
+                       # $err->{operation}
+                       # $err->{errnum}
+                       # $err->{errstr}
+                   }
+               }
+
+           Experimental feature.
+
+       factories
+           List of methods that are object factories.  An object factory is
+           one that returns a different object.  For example, "DBI"'s
+           $dbh->prepare returns a statement handle object, so it is an object
+           factory.
+
+           The first value of the return argument is assumed to be the object.
+           It is kept in the child process.  Your return event will receive a
+           proxy object that will allow you to use the "yield", "call" and
+           "psuedo-method" calls, as documented below.
+
+           See POE::Component::Generic::Object for details.
+
+           You should configure package signatures for the proxy objects that
+           factories return with "packages".
+
+       methods
+           An array ref containing methods that you want the component to
+           expose. If not specified, all the methods of "package" and its
+           super-classes are exposed.
+
+           Note that methods that begin with "_" or don't end with a lower
+           case letter ("a-z") are excluded, as well as methods that end in
+           "carp", "croak" and "confess".
+
+       options
+           A hashref of POE::Session options that are passed to the
+           component's session creator.
+
+       on_exit
+           An event that will be called when the child process exits.  This
+           may be a POEx::URI object, a scalar event name in the current
+           session or an array.
+
+           The event is invoked with any parameters you specified, followed by
+           a hashref that contains "objects", which is a list of all object
+           names it knows of.
+
+           Examples:
+
+               { on_exit => URI->new( 'poe://session/event' ) }
+               { on_exit => 'event' }
+               { on_exit => [ $SESSIONID, $EVENT, $PARAMS ] }
+
+       object_options
+           An optional array ref of options that will be passed to the main
+           object constructor.
+
+       package
+           Package used to create the main object.
+
+           Object creation happens in the child process.  The package is
+           loaded, if it isn't already, then a constructor is called with
+           "object_options" as the parameters.  The constructor is a package
+           method named "new", "spawn" or "create", searching in that order.
+
+       packages
+           Set the package signature for packages that are be created with
+           factory methods.  This allows you to configure the "callbacks",
+           "postbacks" and "methods" for objects that are returned by methods
+           listed with the "factories" parameter.
+
+           Must be a hashref, keys are package names, values are either a
+           scalar, which will case the package will be scanned for methods, a
+           arrayref, which is taken as a list of "methods", or a hashref,
+           which gives you full control.  The hashref may contain the keys
+           "methods", "callbacks" and "postbacks", which work as described
+           above and below.
+
+           It is also possible to specify the package signature for the main
+           object with "packages".
+
+           Example:
+
+               POE::Component::Generic->spawn(
+                                   package   => 'Honk',
+                                   methods   => [ qw(off on fast slow) ],
+                                   postbacks => { slow=>1, fast=>[1,2] }
+                              );
+               # Could also be written as
+               POE::Component::Generic->spawn(
+                               package  =>'Honk',
+                               packages => {
+                                   Honk => {
+                                       methods=>[ qw(off on fast slow) ],
+                                       postbacks=>{ slow=>1, fast=>[1,2] }
+                                   }
+                               }
+                           );
+
+       postbacks
+           Postbacks are like callbacks, but for POE event calls. They will
+           also be valid even after the object method returns.  If the object
+           doesn't hold on to the coderef longer then one method call, you
+           should use callbacks, because postbacks use memory in the parent
+           process.
+
+           The "postbacks" value must be a hashref, keys are method names,
+           values are lists of the offsets of argument that will be converted
+           into postbacks.  These offsets maybe be a number, or an array of
+           numeric offsets.  Remember that argument offsets are numbered from
+           0.
+
+           "postbacks" may also be an array of method names.  In this case,
+           the argument offset for each listed method is assumed to be 0.
+
+           Examples:
+
+               [ qw( new_cert new_connect ) ]
+               { new_cert=>0, new_connect=>0 }     # equivalent to previous
+               { double_set=>[0,3] }               # first and fourth param are coderefs
+
+           When calling a method that has a postback, the parameter should be
+           an event name in the current session, or a hashref containing
+           "event" and "session" keys.  If "session" is missing, the current
+           session is used.  Yes, this means you may create postbacks that go
+           to other sessions.
+
+           Examples:
+
+               $obj->new_cert( "some_back" );
+               $obj->new_cert( { event=>"some_back" } );
+               $obj->new_cert( { event=>"some_back", session=>"my-session" } );
+               $obj->double_set( "postback1", $P1, $P2,
+                                 { event=>"postback1", session=>"other-session" } );
+
+           Use "state" in POE::Kernel to convert coderefs into POE states.
+
+           Your postback will have the arguments that the object calls it
+           with.  Contrary to response events, ARG0 isn't the OUTPUT data
+           hashref.  At least, not for now.
+
+               my $coderef = sub {
+                                 my( $arg1, $arg2 ) = @_[ARG0, ARG1];
+                                 ....
+                             };
+               $poe_kernel->state( "temp-postback" => $coderef );
+               $obj->new_cert( "temp-postback" );
+
+               # Note that you will probably want to remove the 'temp-postback' state
+               # at some point.
+
+       verbose
+           Component tells you more about what is happening in the child
+           process.  The child's PID is reported to STDERR.  All text sent to
+           STDERR in the child process is reported.  Any abnormal error
+           conditions or exits are also reported.  All this reported via warn.
+
+           If you wish to have STDERR delivered to your session, use "error".
+
+   shutdown
+       Shut the component down, doing all the magic so that POE may exit.  The
+       child process will exit, causing "DESTROY" to be called on your object.
+       The child process will of course wait if the object is in a blocking
+       method.
+
+       It is assumed that your object won't prevent the child from exiting. If
+       you want your object to live longer (say for some long-running
+       activity) please fork off a grand-child.
+
+       Shutdown that this is also a POE event, which means you can not call a
+       method named 'shutdown' on your object.
+
+       Shuting down if there are responses pending (see "OUTPUT" below) is
+       undefined.
+
+       Calling "shutdown" will not cause the kernel to exit if you have other
+       components or sessions keeping POE from doing so.
+
+   kill
+           $generic->kill(SIGNAL)
+
+       Sends sub-process a "SIGNAL".
+
+       You may send things like SIGTERM or SIGKILL.  This is a violent way to
+       shutdown the component, but is necessary if you want to implement a
+       timeout on your blocking code.
+
+   session_id
+       Takes no arguments, returns the POE::Session ID of the component.
+       Useful if you don't want to use aliases.
+
+METHOD CALLS
+       There are 4 ways of calling methods on the object.
+
+       All methods need a data hashref that will be handed back to the return
+       event.  This data hash is discussed in the "INPUT" section.
+
+   post
+       Post events to the object. First argument is the event to post, second
+       is the data hashref, following arguments are sent as arguments in the
+       resultant post.
+
+         $poe_kernel->post( $alias => 'open',
+                               { event => 'result' }, "localhost" );
+
+       This will call the "open" method on your object with one parameter:
+       "localhost".  The method's return value is posted to "result" in the
+       current session.
+
+   yield
+       This method provides an alternative object based means of asynchronisly
+       calling methods on the object. First argument is the method to call,
+       second is the data hashref (described in "INPUT"), following arguments
+       are sent as arguments to the resultant post.
+
+         $generic->yield( open => { event => 'result' }, "localhost" );
+
+   call
+       This method provides an alternative object based means of synchronisly
+       calling methods on the object. First argument is the event to call,
+       second is the data hashref (described in "INPUT"), following arguments
+       are following arguments are sent as arguments to the resultant call.
+
+         $generic->call( open => { event => 'result' }, "localhost" );
+
+       Call returns a request ID which may be matched with the response.  NOT
+       IMPLEMENTED.
+
+       The difference between call and yield is that call by-passes POE's
+       event queue and the request is potentially sent faster to the child
+       process.
+
+   psuedo-method
+       All methods of the object can also be called directly, but the first
+       argument must be the data hashref as noted in the "INPUT" section.
+
+           $generic->open( { event => 'opened' }, "localhost" );
+
+INPUT
+       Each method call requires a data hashref as it's first argument.
+
+       The data hashref may have the following keys.
+
+       data
+           Opaque data element that will be present in the "OUTPUT" hash.
+           While it is possible that other hash members will also work for
+           now, only this one is reserved for your use.
+
+       event
+           Event in your session that you want the results of the method to go
+           to.  "event" is needed for all requests that you want a response
+           to.  You may send responses to other sessions with "session".
+
+           No response is sent if "event" is missing.
+
+       obj Don't call the method on the main object, but rather on this
+           object.  Value is the ID of an object returned by a factory method.
+           Doesn't work for "psuedo-method" calls.
+
+       session
+           Session that you want the response event to be sent to.  Defaults
+           to current session. Abuse with caution.
+
+       wantarray
+           Should the method be called in array context (1), scalar context
+           (0) or void context (undef)?  Defaults to void context, unless you
+           specify a response "event", in which case it defaults to scalar
+           context.
+
+       Note that at some point in the future this data hashref is going to be
+       a full object for better encapsulation.
+
+OUTPUT
+       You may specify a response event for each method call. "ARG0" of this
+       event handler contains the data hashref.  "ARG1..$#_" are the returned
+       values, if any.
+
+       data
+           Opaque value that was set in "INPUT".
+
+       error
+           In the event of an error occurring this will be defined.  It is a
+           scalar which contains the text of the error, which is normally $@.
+
+       method
+           Name of the method this is the output of.  That is, if you call the
+           method "foo", "method" is set to "foo" in the response event.
+
+       result
+           This is an arrayref containing the data returned from the function
+           you called.
+
+           Method calls in scalar context have the return value at
+           result->[0].  That is, they look like:
+
+               $response->{result}[0] = $object->method(...);
+
+           Method calls in array context populate as much of the array as
+           needed.  That is, they look like:
+
+               $response->{result} = [ $object->method(...) ];
+
+SUB-CLASSING
+       It might be desirable to overload the following methods in a sub-class
+       of POE::Component::Generic.
+
+   __is_method_name
+           sub __is_method_name {
+               my( $package, $pk, $sub ) = @_;
+               # ...
+           }
+
+       Must return true if $sub is a valid object method of $pk.  Must return
+       false otherwise.
+
+       Method names are verified when a package specified with "spawn"'s
+       "packages" argument is scanned for methods.  The default implementation
+       tries to reject constants ($sub ending in non-uppercase), private
+       methods ($sub begining with "_") and common subroutines (ie, Carp).
+
+HELPER METHODS
+       These methods will help you writing components based on
+       POE::Component::Generic.
+
+   Argument processing
+       Callbacks and postbacks expect the arguments are in order.  This is a
+       pain for your users and isn't really the POE-way.  Instead, your method
+       may accept a hash, and then convert it into the argument list.
+
+       For a given event FOO, there are 2 possible arguments:
+
+       FOOEvent
+           The argument is a POE event, either a simple string (event in the
+           current session) or a hashref ({event=>$event, session=>$session}).
+
+       FOOSub
+           The argument is a subref.
+
+       You may use the following 2 methods to help convert the arguments into
+       the appropriate type for a given situaion.  They return undef() if the
+       argument isn't present.  This so you may use the following idiom and it
+       will Just Work:
+
+           sub method {
+               my( $self, %args ) = @_;
+               my @args;
+               foreach my $ev ( qw(Stdin Stdout Close) ) {
+                   push @args, $self->__postback_argument( $ev, \%args );
+               }
+               $self->true_method( @args );
+           }
+
+   __callback_argument
+           my $coderef = $self->__callback_argument( $event, \%args );
+
+       Converts argument into a coderef appropriate for "callbacks".
+
+       Returns "$args{ "${event}Sub" }" if present.
+
+       If present, converts "$args{ "${event}Event" }" to a coderef and
+       returns that.
+
+       Returns undef() otherwise.
+
+   __postback_argument
+       Converts argument into a POE event call appropriate for "postbacks".
+
+       Returns "$args{ "${event}Event" }" if present.
+
+       If present, converts "$args{ "${event}Sub" }" to a state of the current
+       session and returns a call to that.  NOT YET IMPLEMENTED.
+
+       Returns undef() otherwise.
+
+STATUS
+       For your comfort and conveinence, the child process updates $O to tell
+       you what it is doing.  On many systems, $O is available via
+       "/proc/$PID/cmdline".
+
+AUTHOR
+       Philip Gwyn <gwyn-at-cpan.org>
+
+       Based on work by David Davis <xantus@cpan.org>
+
+SEE ALSO
+       POE
+
+RATING
+       Please rate this module.
+       <http://cpanratings.perl.org/rate/?distribution=POE-Component-Generic>
+
+BUGS
+       Probably.  Report them here:
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=POE%3A%3AComponent%3A%3AGeneric>
+
+CREDITS
+       BinGOs for POE::Component::Win32::Service that helped xantus get
+       started.
+
+       David Davis for POE::Component::Net::Telnet on which this is originally
+       based.
+
+COPYRIGHT AND LICENSE
+       Copyright 2006-2009,2011 by Philip Gwyn;
+
+       Copyright 2005 by David Davis and Teknikill Software.
+
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2012-11-30        POE::Component::Generic(3)

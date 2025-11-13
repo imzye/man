@@ -1,0 +1,4539 @@
+MASAKARI(1)                                                                                    masakari                                                                                    MASAKARI(1)
+
+NAME
+       masakari - masakari 17.0.0
+
+       Masakari is an OpenStack project designed to ensure high availability of instances and compute processes running on hosts.
+
+       This  documentation  is intended to help explain the current scope of the Masakari project and  the architectural decisions made to support this scope.  The documentation will include the fu‐
+       ture architectural roadmap and  the current development process and policies.
+
+MASAKARI API REFERENCES
+       The Masakari API is extensive. We provide a concept guide which gives some of the high level details, as well as a more detailed API reference.
+
+OPERATOR GUIDE
+   Architecture Overview
+       • Masakari architecture: An overview of how all the components in masakari work together.
+
+   Installation
+       A detailed install guide for masakari.
+
+   Masakari services
+   Masakari service overview
+       Masakari provides Virtual Machines High Availability(VMHA), and rescues KVM-based Virtual Machines(VM) from a failure events described below:
+
+       • VM process down - restart vm (use nova stop API, and nova start API).  Libvirt events will be also emitted by other failures.
+
+       • Provisioning process down - restarts process, changes nova-compute service status to maintenance mode (use nova service-disable).
+
+       • nova-compute host failure - evacuate all the VMs from failure host according to the following recovery methods (use nova evacuate API).
+
+            • auto - evacuate all the VMs with no destination node for nova scheduler.
+
+            • reserved_host - evacuate all the VMs with reserved hosts as the destination nodes for nova scheduler.
+
+            • auto_priority - evacuate all the VMs by using auto recovery method firstly.  If failed, then using reserved_host recovery method.
+
+            • rh_priority - evacuate all the VMs by using reserved_host recovery method firstly.  If failed, then using auto recovery method.
+
+       The below services enables deplores to integrate with the Masakari directly or through custom plug-ins.
+
+       The Masakari service consists of the following components:
+
+       masakari-api
+              An OpenStack-native REST API that processes API requests by sending them to the masakari-engine over Remote Procedure Call (RPC).
+
+       masakari-engine
+              Processes the notifications received from masakari-api by executing the recovery workflow in asynchronous way.
+
+   Install and configure
+       This section describes how to install and configure Masakari services on the compute node.
+
+       This section assumes that you already have a working OpenStack environment with the following components installed: Nova, Glance, Cinder, Neutron and Identity.
+
+       The installation and configuration vary by distribution.
+
+   Install and configure for Ubuntu
+       This section describes how to install and configure Masakari for Ubuntu 18.04 (bionic).
+
+   Prerequisites
+       Before you install and configure the masakari service, you must create databases, service credentials, and API endpoints.
+
+       1. To create the masakari database, follow these steps:
+
+          • Use the database access client to connect to the database server as the root user:
+
+                # mysql
+
+          • Create the masakari database:
+
+                mysql> CREATE DATABASE masakari CHARACTER SET utf8;
+
+          • Grant access privileges to the databases:
+
+                mysql> GRANT ALL PRIVILEGES ON masakari.* TO 'username'@'localhost' \
+                  IDENTIFIED BY 'MASAKARI_DBPASS';
+                mysql> GRANT ALL PRIVILEGES ON masakari.* TO 'username'@'%' \
+                  IDENTIFIED BY 'MASAKARI_DBPASS';
+
+             Replace MASAKARI_DBPASS with a suitable password.
+
+          • Exit the database access client.
+
+       2. Source the admin credentials to gain access to admin-only CLI commands:
+
+             $ . admin-openrc
+
+       3. Create the Masakari service credentials:
+
+          • Create the masakari user with password as masakari:
+
+                $ openstack user create --password-prompt masakari
+
+                User Password:
+                Repeat User Password:
+                +---------------------+----------------------------------+
+                | Field               | Value                            |
+                +---------------------+----------------------------------+
+                | domain_id           | default                          |
+                | enabled             | True                             |
+                | id                  | 8a7dbf5279404537b1c7b86c033620fe |
+                | name                | masakari                             |
+                | options             | {}                               |
+                | password_expires_at | None                             |
+                +---------------------+----------------------------------+
+
+          • Add the admin role to the masakari user:
+
+                $ openstack role add --project service --user masakari admin
+
+          • Create the masakari service entity:
+
+                $ openstack service create --name masakari \
+                --description "masakari high availability" instance-ha
+
+                +-------------+----------------------------------+
+                | Field       | Value                            |
+                +-------------+----------------------------------+
+                | description | masakari high availability       |
+                | enabled     | True                             |
+                | id          | 060d59eac51b4594815603d75a00aba2 |
+                | name        | masakari                         |
+                | type        | instance-ha                      |
+                +-------------+----------------------------------+
+
+       4. Create the Masakari API service endpoints:
+
+             $ openstack endpoint create --region RegionOne \
+               masakari public http:// <CONTROLLER_IP>/instance-ha/v1/$\(tenant_id\)s
+
+             +--------------+-------------------------------------------------------+
+             | Field        | Value                                                 |
+             +--------------+-------------------------------------------------------+
+             | enabled      | True                                                  |
+             | id           | 38f7af91666a47cfb97b4dc790b94424                      |
+             | interface    | public                                                 |
+             | region       | RegionOne                                             |
+             | region_id    | RegionOne                                             |
+             | service_id   | 060d59eac51b4594815603d75a00aba2                      |
+             | service_name | masakari                                              |
+             | service_type | instance-ha                                           |
+             | url          | http://<CONTROLLER_IP>/instance-ha/v1/$(tenant_id)s   |
+             +--------------+-------------------------------------------------------+
+
+             $ openstack endpoint create --region RegionOne \
+               masakari internal http:// <CONTROLLER_IP>/instance-ha/v1/$\(tenant_id\)s
+
+             +--------------+-------------------------------------------------------+
+             | Field        | Value                                                 |
+             +--------------+-------------------------------------------------------+
+             | enabled      | True                                                  |
+             | id           | 38f7af91666a47cfb97b4dc790b94424                      |
+             | interface    | internal                                              |
+             | region       | RegionOne                                             |
+             | region_id    | RegionOne                                             |
+             | service_id   | 060d59eac51b4594815603d75a00aba2                      |
+             | service_name | masakari                                              |
+             | service_type | instance-ha                                           |
+             | url          | http://<CONTROLLER_IP>/instance-ha/v1/$(tenant_id)s   |
+             +--------------+-------------------------------------------------------+
+
+             $ openstack endpoint create --region RegionOne \
+               masakari admin http://<CONTROLLER_IP>/instance-ha/v1/$\(tenant_id\)s
+
+             +--------------+-------------------------------------------------------+
+             | Field        | Value                                                 |
+             +--------------+-------------------------------------------------------+
+             | enabled      | True                                                  |
+             | id           | 38f7af91666a47cfb97b4dc790b94424                      |
+             | interface    | admin                                                 |
+             | region       | RegionOne                                             |
+             | region_id    | RegionOne                                             |
+             | service_id   | 060d59eac51b4594815603d75a00aba2                      |
+             | service_name | masakari                                              |
+             | service_type | instance-ha                                           |
+             | url          | http://<CONTROLLER_IP>/instance-ha/v1/$(tenant_id)s   |
+             +--------------+-------------------------------------------------------+
+
+   Install and configure Masakari
+       NOTE:
+
+          • You must install Masakari on the Controller Nodes only.
+
+       1. Clone masakari using:
+
+             # git clone https://opendev.org/openstack/masakari.git
+
+       2. Prepare the masakari configuration files:
+
+          1. Generate via tox:
+
+             Go to /opt/stack/masakari and execute the command below.  This will generate masakari.conf.sample, a sample configuration file, at /opt/stack/masakari/etc/masakari/:
+
+                # tox -egenconfig
+
+          2. Download from:
+
+             # masakari.conf.sample
+
+          3. Rename masakari.conf.sample file to masakari.conf, and edit sections as shown below:
+
+                [DEFAULT]
+                transport_url = rabbit://stackrabbit:admin@<CONTROLLER_IP>:5672/
+                graceful_shutdown_timeout = 5
+                os_privileged_user_tenant = service
+                os_privileged_user_password = admin
+                os_privileged_user_auth_url = http://<CONTROLLER_IP>/identity
+                os_privileged_user_name = nova
+                logging_exception_prefix = %(color)s%(asctime)s.%(msecs)03d TRACE %(name)s [01;35m%(instance)s[00m
+                logging_debug_format_suffix = [00;33mfrom (pid=%(process)d) %(funcName)s %(pathname)s:%(lineno)d[00m
+                logging_default_format_string = %(asctime)s.%(msecs)03d %(color)s%(levelname)s %(name)s [[00;36m-%(color)s] [01;35m%(instance)s%(color)s%(message)s[00m
+                logging_context_format_string = %(asctime)s.%(msecs)03d %(color)s%(levelname)s %(name)s [[01;36m%(request_id)s [00;36m%(project_name)s %(user_name)s%(color)s] [01;35m%(instance)s%(color)s%(message)s[00m
+                use_syslog = False
+                debug = True
+                masakari_api_workers = 2
+
+                [database]
+                connection = mysql+pymysql://root:admin@1<CONTROLLER_IP>/masakari?charset=utf8
+
+                [keystone_authtoken]
+                memcached_servers = localhost:11211
+                cafile = /opt/stack/data/ca-bundle.pem
+                project_domain_name = Default
+                project_name = service
+                user_domain_name = Default
+                password = <MASAKARI_PASS>
+                username = masakari
+                auth_url = http://<CONTROLLER_IP>/identity
+                auth_type = password
+
+                [taskflow]
+                connection = mysql+pymysql://root:admin@<CONTROLLER_IP>/masakari?charset=utf8
+
+             NOTE:
+                Replace CONTROLLER_IP with the IP address of controller node.
+
+                Replace MASAKARI_PASS with the password you chose for the masakari user in the Identity service.
+
+          4. Create masakari directory in /etc/:
+
+             Copy masakari.conf file to /etc/masakari/
+
+                # cp -p etc/masakari/masakari.conf.sample /etc/masakari/masakari.conf
+
+       3. To install masakari run setup.py from masakari:
+
+             # cd masakari
+             # sudo python setup.py install
+
+       4. Run below db command to sync database:
+
+             # masakari-manage db sync
+
+   Finalize installation
+       • Start masakari services:
+
+            # masakari-api
+            # masakari-engine
+
+   Verify operation
+       Verify Masakari installation.
+
+       1. Source the admin credentials to gain access to admin-only CLI commands:
+
+             $ . admin-openrc
+
+       2. List API endpoints in the Identity service to verify connectivity with the Identity service:
+
+          NOTE:
+             Below endpoints list may differ depending on the installation of OpenStack components.
+
+             $ openstack endpoint list
+
+             +-------------+----------------+--------------------------------------------------------+
+             | Name        | Type           | Endpoints                                              |
+             +-------------+----------------+--------------------------------------------------------+
+             | nova_legacy | compute_legacy | RegionOne                                              |
+             |             |                |   public: http://controller/compute/v2/<tenant_id>     |
+             |             |                |                                                        |
+             | nova        | compute        | RegionOne                                              |
+             |             |                |   public: http://controller/compute/v2.1               |
+             |             |                |                                                        |
+             | cinder      | block-storage  | RegionOne                                              |
+             |             |                |   public: http://controller/volume/v3/<tenant_id>      |
+             |             |                |                                                        |
+             | glance      | image          | RegionOne                                              |
+             |             |                |   public: http://controller/image                      |
+             |             |                |                                                        |
+             | cinderv3    | volumev3       | RegionOne                                              |
+             |             |                |   public: http://controller/volume/v3/<tenant_id>      |
+             |             |                |                                                        |
+             | masakari    | instance-ha    | RegionOne                                              |
+             |             |                | internal: http://controller/instance-ha/v1/<tenant_id> |
+             |             |                | RegionOne                                              |
+             |             |                |  admin: http://controller/instance-ha/v1/<tenant_id>   |
+             |             |                | RegionOne                                              |
+             |             |                |  public: http://controller/instance-ha/v1/<tenant_id>  |
+             |             |                |                                                        |
+             | keystone    | identity       | RegionOne                                              |
+             |             |                |   public: http://controller/identity                   |
+             |             |                | RegionOne                                              |
+             |             |                |   admin: http://controller/identity                    |
+             |             |                |                                                        |
+             | cinderv2    | volumev2       | RegionOne                                              |
+             |             |                |   public: http://controller/volume/v2/<tenant_id>      |
+             |             |                |                                                        |
+             | placement   | placement      | RegionOne                                              |
+             |             |                |   public: http://controller/placement                  |
+             |             |                |                                                        |
+             | neutron     | network        | RegionOne                                              |
+             |             |                |   public: http://controller:9696/                      |
+             |             |                |                                                        |
+             +-------------+----------------+--------------------------------------------------------+
+
+       3. Run segment list command to verify masakari-api is running properly.  This will return empty segment list as you haven’t yet configured Failover segments.
+
+             $ openstack segment list
+
+          NOTE:
+             Since Failover segments are not configured, there is no way to verify masakari-engine is running properly as the notification cannot be sent from masakari-api to masakari-engine.
+
+   Reference Material
+       • Configuration Guide: Information on configuration files.
+
+       • Custom Recovery Workflow Configuration Guide
+
+       • CLI Commands for Masakari: The complete command reference for Masakari.
+
+       • Versioned Notifications: This provides the list of existing versioned notifications with sample payloads.  This will help newcomers understand basics of Masakari
+
+       • Nova Docs: A collection of guides for Nova.
+
+   Masakari CLI Documentation
+       In this section you will find information on Masakari’s command line interface.
+
+   masakari-status
+   CLI interface for Masakari status commands
+   Synopsis
+          masakari-status <category> <command> [<args>]
+
+   Description
+       masakari-status is a tool that provides routines for checking the status of a Masakari deployment.
+
+   Options
+       The standard pattern for executing a masakari-status command is:
+
+          masakari-status <category> <command> [<args>]
+
+       Run without arguments to see a list of available command categories:
+
+          masakari-status
+
+       Categories are:
+
+       • upgrade
+
+       Detailed descriptions are below:
+
+       You can also run with a category argument such as upgrade to see a list of all commands in that category:
+
+          masakari-status upgrade
+
+       These sections describe the available categories and arguments for masakari-status.
+
+   Upgrade
+       masakari-status upgrade check
+              Performs a release-specific readiness check before restarting services with new code. For example, missing or changed configuration options, incompatible object states, or other condi‐
+              tions that could lead to failures while upgrading.
+
+              Return Codes
+                                                               ┌─────────────┬────────────────────────────────────────────────────────────────────┐
+                                                               │ Return code │ Description                                                        │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ 0           │ All upgrade readiness checks  passed  successfully  and  there  is │
+                                                               │             │ nothing to do.                                                     │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ 1           │ At  least  one check encountered an issue and requires further in‐ │
+                                                               │             │ vestigation. This is considered a warning but the upgrade  may  be │
+                                                               │             │ OK.                                                                │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ 2           │ There  was an upgrade status check failure that needs to be inves‐ │
+                                                               │             │ tigated. This should be considered something  that  stops  an  up‐ │
+                                                               │             │ grade.                                                             │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ 255         │ An unexpected error occurred.                                      │
+                                                               └─────────────┴────────────────────────────────────────────────────────────────────┘
+
+              History of Checks
+
+              7.0.0 (Stein)
+
+              • Sample check to be filled in with checks as they are added in Stein.
+
+   masakari-manage
+   Control and manage masakari database
+   Synopsis
+          masakari-manage <category> <action> [<args>]
+
+   Description
+       masakari-manage controls DB by managing various admin-only aspects of masakari.
+
+   Options
+       The standard pattern for executing a masakari-manage command is:
+
+          masakari-manage <category> <command> [<args>]
+
+       Run without arguments to see a list of available command categories:
+
+          masakari-manage
+
+       You can also run with a category argument such as db to see a list of all commands in that category:
+
+          masakari-manage db
+
+       These sections describe the available categories and arguments for masakari-manage.
+
+   Masakari Database
+       masakari-manage db version
+              Print the current main database version.
+
+       masakari-manage db sync [--version <version>]
+              Upgrade the main database schema up to the most recent version or --version if specified.
+
+       masakari-manage db purge
+              Deleting rows older than 30 day(s) from table hosts, failover_segments and notifications.
+
+   openstack masakari
+       To control and manage masakari operations, the extended command list available in openstack command.
+
+   api-paste.ini
+       The masakari service stores its API configuration settings in the api-paste.ini file.
+
+          [composite:masakari_api]
+          use = call:masakari.api.urlmap:urlmap_factory
+          /: apiversions
+          /v1: masakari_api_v1
+
+          [composite:masakari_api_v1]
+          use = call:masakari.api.auth:pipeline_factory_v1
+          keystone = cors http_proxy_to_wsgi request_id faultwrap sizelimit authtoken keystonecontext osapi_masakari_app_v1
+          noauth2 = cors http_proxy_to_wsgi request_id faultwrap sizelimit noauth2 osapi_masakari_app_v1
+
+          # filters
+          [filter:cors]
+          paste.filter_factory = oslo_middleware.cors:filter_factory
+          oslo_config_project = masakari
+
+          [filter:http_proxy_to_wsgi]
+          paste.filter_factory = oslo_middleware.http_proxy_to_wsgi:HTTPProxyToWSGI.factory
+
+          [filter:request_id]
+          paste.filter_factory = oslo_middleware:RequestId.factory
+
+          [filter:faultwrap]
+          paste.filter_factory = masakari.api.openstack:FaultWrapper.factory
+
+          [filter:sizelimit]
+          paste.filter_factory = oslo_middleware:RequestBodySizeLimiter.factory
+
+          [filter:authtoken]
+          paste.filter_factory = keystonemiddleware.auth_token:filter_factory
+
+          [filter:keystonecontext]
+          paste.filter_factory = masakari.api.auth:MasakariKeystoneContext.factory
+
+          [filter:noauth2]
+          paste.filter_factory = masakari.api.auth:NoAuthMiddleware.factory
+
+          # apps
+          [app:osapi_masakari_app_v1]
+          paste.app_factory = masakari.api.openstack.ha:APIRouterV1.factory
+
+          [pipeline:apiversions]
+          pipeline = faultwrap http_proxy_to_wsgi apiversionsapp
+
+          [app:apiversionsapp]
+          paste.app_factory = masakari.api.openstack.ha.versions:Versions.factory
+
+   Configuration Options
+       The following is an overview of all available configuration options in Masakari.
+
+   DEFAULT
+       auth_strategy
+
+              Type   string
+
+              Default
+                     keystone
+
+              Valid Values
+                     keystone, noauth2
+
+              This  determines  the strategy to use for authentication: keystone or noauth2.  ‘noauth2’ is designed for testing only, as it does no actual credential checking. ‘noauth2’ provides ad‐
+              ministrative credentials only if ‘admin’ is specified as the username.
+
+              • Possible values:
+                   Either ‘keystone’ (default) or ‘noauth2’.
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   None
+
+       use_forwarded_for
+
+              Type   boolean
+
+              Default
+                     False
+
+              When True, the ‘X-Forwarded-For’ header is treated as the canonical remote address. When False (the default), the ‘remote_address’ header is used.
+
+              You should only enable this if you have an HTML sanitizing proxy.
+
+              • Possible values:
+                   True, False (default)
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   None
+
+       osapi_max_limit
+
+              Type   integer
+
+              Default
+                     1000
+
+              As a query can potentially return many thousands of items, you can limit the maximum number of items in a single response by setting this option.
+
+              • Possible values:
+                   Any positive integer. Default is 1000.
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   None
+
+       osapi_masakari_link_prefix
+
+              Type   string
+
+              Default
+                     <None>
+
+              This string is prepended to the normal URL that is returned in links to the OpenStack Masakari API. If it is empty (the default), the URLs are returned unchanged.
+
+              • Possible values:
+                   Any string, including an empty string (the default).
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   None
+
+       tempdir
+
+              Type   string
+
+              Default
+                     <None>
+
+              Explicitly specify the temporary working directory.
+
+       monkey_patch
+
+              Type   boolean
+
+              Default
+                     False
+
+              Determine if monkey patching should be applied.
+
+              Related options:
+
+                 • monkey_patch_modules: This must have values set for this option to have
+
+                 any effect
+
+       monkey_patch_modules
+
+              Type   list
+
+              Default
+                     ['masakari.api:masakari.cmd']
+
+              List of modules/decorators to monkey patch.
+
+              This option allows you to patch a decorator for all functions in specified modules.
+
+              Related options:
+
+                 • monkey_patch: This must be set to True for this option to have any effect
+
+       masakari_topic
+
+              Type   string
+
+              Default
+                     ha_engine
+
+              This is the message queue topic that the masakari engine ‘listens’ on. It is used when the masakari engine is started up to configure the  queue,  and  whenever  an  RPC  call  to  the
+              masakari engine is made.
+
+              • Possible values:
+                   Any string, but there is almost never any reason to ever change this value from its default of ‘engine’.
+
+              • Services that use this:
+                   masakari-engine
+
+              • Related options:
+                   None
+
+              WARNING:
+                 This option is deprecated for removal since 3.0.0.  Its value may be silently ignored in the future.
+
+                 Reason Configurable RPC topic provides little value and it can easily break Masakari if operator configures it to the same topic used by other OpenStack services.
+
+       duplicate_notification_detection_interval
+
+              Type   integer
+
+              Default
+                     180
+
+              Minimum Value
+                     0
+
+              Interval  in  seconds  for  identifying  duplicate  notifications. If the notification received is identical to the previous ones whose status is either new or running and if it’s cre‐
+              ated_timestamp and the current timestamp is less than this config option value, then the notification will be considered as duplicate and it will be ignored.
+
+       wait_period_after_service_update
+
+              Type   integer
+
+              Default
+                     180
+
+              Number of seconds to wait after a service is enabled or disabled.
+
+       wait_period_after_evacuation
+
+              Type   integer
+
+              Default
+                     90
+
+              Wait until instance is evacuated
+
+       verify_interval
+
+              Type   integer
+
+              Default
+                     1
+
+              The monitoring interval for looping
+
+       wait_period_after_power_off
+
+              Type   integer
+
+              Default
+                     180
+
+              Number of seconds to wait for instance to shut down
+
+       wait_period_after_power_on
+
+              Type   integer
+
+              Default
+                     60
+
+              Number of seconds to wait for instance to start
+
+       process_unfinished_notifications_interval
+
+              Type   integer
+
+              Default
+                     120
+
+              Interval in seconds for processing notifications which are in error or new state.
+
+       retry_notification_new_status_interval
+
+              Type   integer
+
+              Default
+                     60
+
+              Mutable
+                     This option can be changed without restarting.
+
+              Interval in seconds for identifying notifications which are in new state. If the notification is in new state till this config option value after it’s generated_time, then it  is  con‐
+              sidered that notification is ignored by the messaging queue and will be processed by ‘process_unfinished_notifications’ periodic task.
+
+       check_expired_notifications_interval
+
+              Type   integer
+
+              Default
+                     600
+
+              Interval in seconds for checking running notifications.
+
+       notifications_expired_interval
+
+              Type   integer
+
+              Default
+                     86400
+
+              Interval in seconds for identifying running notifications expired.
+
+       host_failure_recovery_threads
+
+              Type   integer
+
+              Default
+                     3
+
+              Minimum Value
+                     1
+
+              Number of threads to be used for evacuating and confirming instances during execution of host_failure workflow.
+
+       notification_driver
+
+              Type   string
+
+              Default
+                     taskflow_driver
+
+              Defines which driver to use for executing notification workflows.
+
+       fatal_exception_format_errors
+
+              Type   boolean
+
+              Default
+                     False
+
+              Make exception message format errors fatal
+
+       nova_catalog_admin_info
+
+              Type   string
+
+              Default
+                     compute:nova:publicURL
+
+              Match this value when searching for nova in the service catalog. Format is: separated values of the form: <service_type>:<service_name>:<endpoint_type>
+
+       os_region_name
+
+              Type   string
+
+              Default
+                     <None>
+
+              Region name of this node
+
+       nova_ca_certificates_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Location of ca certificates file to use for nova client requests.
+
+       nova_api_insecure
+
+              Type   boolean
+
+              Default
+                     False
+
+              Allow to perform insecure SSL requests to nova
+
+       os_privileged_user_name
+
+              Type   string
+
+              Default
+                     <None>
+
+              OpenStack privileged account username. Used for requests to other services (such as Nova) that require an account with special rights.
+
+       os_privileged_user_password
+
+              Type   string
+
+              Default
+                     <None>
+
+              Password associated with the OpenStack privileged account.
+
+       os_privileged_user_tenant
+
+              Type   string
+
+              Default
+                     <None>
+
+              Tenant name associated with the OpenStack privileged account.
+
+       os_privileged_user_auth_url
+
+              Type   URI
+
+              Default
+                     <None>
+
+              Auth URL associated with the OpenStack privileged account.
+
+       os_user_domain_name
+
+              Type   string
+
+              Default
+                     default
+
+              User domain name associated with the OpenStack privileged account.
+
+       os_project_domain_name
+
+              Type   string
+
+              Default
+                     default
+
+              Project domain name associated with the OpenStack privileged account.
+
+       os_system_scope
+
+              Type   string
+
+              Default
+                     <None>
+
+              Scope for system operations.
+
+       pybasedir
+
+              Type   string
+
+              Default
+                     /build/masakari-FF1dfn/masakari-17.0.0
+
+              Directory where the masakari python module is installed
+
+       bindir
+
+              Type   string
+
+              Default
+                     /usr/local/bin
+
+              Directory where masakari binaries are installed
+
+       state_path
+
+              Type   string
+
+              Default
+                     $pybasedir
+
+              Top-level directory for maintaining masakari’s state
+
+       host
+
+              Type   host address
+
+              Default
+                     lcy02-amd64-036
+
+              Hostname, FQDN or IP address of this host. Must be valid within AMQP key.
+
+              Possible values:
+
+              • String with hostname, FQDN or IP address. Default is hostname of this host.
+
+       engine_manager
+
+              Type   string
+
+              Default
+                     masakari.engine.manager.MasakariManager
+
+              Full class name for the Manager for masakari engine
+
+       report_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Seconds between nodes reporting state to datastore
+
+       periodic_enable
+
+              Type   boolean
+
+              Default
+                     True
+
+              Enable periodic tasks
+
+       periodic_interval_max
+
+              Type   integer
+
+              Default
+                     300
+
+              Max interval time between periodic tasks execution in seconds.
+
+       periodic_fuzzy_delay
+
+              Type   integer
+
+              Default
+                     60
+
+              Range of seconds to randomly delay when starting the periodic task scheduler to reduce stampeding. (Disable by setting to 0)
+
+       use_ssl
+
+              Type   boolean
+
+              Default
+                     False
+
+              Use APIs with SSL enabled
+
+       masakari_api_listen
+
+              Type   host address
+
+              Default
+                     0.0.0.0
+
+              The IP address on which the Masakari API will listen.
+
+       masakari_api_listen_port
+
+              Type   integer
+
+              Default
+                     15868
+
+              Minimum Value
+                     1
+
+              Maximum Value
+                     65535
+
+              The port on which the Masakari API will listen.
+
+       masakari_api_workers
+
+              Type   integer
+
+              Default
+                     <None>
+
+              Number of workers for Masakari API service. The default will be the number of CPUs available.
+
+       service_down_time
+
+              Type   integer
+
+              Default
+                     60
+
+              Maximum time since last check-in for up service
+
+       debug
+
+              Type   boolean
+
+              Default
+                     False
+
+              Mutable
+                     This option can be changed without restarting.
+
+              If set to true, the logging level will be set to DEBUG instead of the default INFO level.
+
+       log_config_append
+
+              Type   string
+
+              Default
+                     <None>
+
+              Mutable
+                     This option can be changed without restarting.
+
+              The  name of a logging configuration file. This file is appended to any existing logging configuration files. For details about logging configuration files, see the Python logging mod‐
+              ule documentation. Note that when logging configuration files are used then all logging configuration is set in the configuration file and other logging configuration options  are  ig‐
+              nored (for example, log-date-format).
+
+   Deprecated Variations
+                                                                                          ┌─────────┬────────────┐
+                                                                                          │ Group   │ Name       │
+                                                                                          ├─────────┼────────────┤
+                                                                                          │ DEFAULT │ log-config │
+                                                                                          ├─────────┼────────────┤
+                                                                                          │ DEFAULT │ log_config │
+                                                                                          └─────────┴────────────┘
+
+       log_date_format
+
+              Type   string
+
+              Default
+                     %Y-%m-%d %H:%M:%S
+
+              Defines the format string for %(asctime)s in log records. Default: the value above . This option is ignored if log_config_append is set.
+
+       log_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              (Optional) Name of log file to send logging output to. If no default is set, logging will go to stderr as defined by use_stderr. This option is ignored if log_config_append is set.
+
+   Deprecated Variations
+                                                                                           ─────────────────────
+                                                                                             Group     Name
+                                                                                           ─────────────────────
+                                                                                             DEFAULT   logfile
+                                                                                           ─────────────────────
+                                                                                           │         │         │
+       log_dir                                                                             │         │         │
+                                                                                           │         │         │
+              Type   string                                                                │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     <None>                                                                │         │         │
+                                                                                           │         │         │
+              (Optional) The base directory used for relative log_file  paths. This option is ignored│if log_config_append is set.
+                                                                                           │         │         │
+   Deprecated Variations                                                                   │         │         │
+                                                                                           │┌────────┼┬────────┤
+                                                                                           ││ Group  ││ Name   │
+                                                                                           │├────────┼┼────────┤
+                                                                                           ││ DEFAULT││ logdir │
+                                                                                           │└────────┼┴────────┤
+                                                                                           │         │         │
+       watch_log_file                                                                      │         │         │
+                                                                                           │         │         │
+              Type   boolean                                                               │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     False                                                                 │         │         │
+                                                                                           │         │         │
+              Uses  logging handler designed to watch file system. When log file is moved or removed this handler will open a new log file with specified path instantaneously. It makes sense only if
+              log_file option is specified and Linux platform is used. This option is ignored if log_config_append is set.
+                                                                                           │         │         │
+       use_syslog                                                                          │         │         │
+                                                                                           │         │         │
+              Type   boolean                                                               │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     False                                                                 │         │         │
+                                                                                           │         │         │
+              Use syslog for logging. Existing syslog format is DEPRECATED and will be changed later to honor RFC5424. This option is ignored if log_config_append is set.
+                                                                                           │         │         │
+       use_journal                                                                         │         │         │
+                                                                                           │         │         │
+              Type   boolean                                                               │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     False                                                                 │         │         │
+                                                                                           │         │         │
+              Enable journald for logging. If running in a systemd environment you may wish│to enable│journal support. Doing so will use the journal native protocol which includes  structured  meta‐
+              data in addition to log messages.This option is ignored if log_config_append is set.   │         │
+                                                                                           │         │         │
+       syslog_log_facility                                                                 │         │         │
+                                                                                           │         │         │
+              Type   string                                                                │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     LOG_USER                                                              │         │         │
+                                                                                           │         │         │
+              Syslog facility to receive log lines. This option is ignored if log_config_append is set.        │
+                                                                                           │         │         │
+       use_json                                                                            │         │         │
+                                                                                           │         │         │
+              Type   boolean                                                               │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     False                                                                 │         │         │
+                                                                                           │         │         │
+              Use JSON formatting for logging. This option is ignored if log_config_append is set.   │         │
+                                                                                           │         │         │
+       use_stderr                                                                          │         │         │
+                                                                                           │         │         │
+              Type   boolean                                                               │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     False                                                                 │         │         │
+                                                                                           │         │         │
+              Log output to standard error. This option is ignored if log_config_append is set.      │         │
+                                                                                           │         │         │
+       use_eventlog                                                                        │         │         │
+                                                                                           │         │         │
+              Type   boolean                                                               │         │         │
+                                                                                           │         │         │
+              Default                                                                      │         │         │
+                     False                                                                 │         │         │
+                                                                                           │         │         │
+              Log output to Windows Event Log.                                             │         │         │
+
+              WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+                 Reason Windows support is no longer maintained.
+
+       log_rotate_interval
+
+              Type   integer
+
+              Default
+                     1
+
+              The amount of time before the log files are rotated. This option is ignored unless log_rotation_type is set to “interval”.
+
+       log_rotate_interval_type
+
+              Type   string
+
+              Default
+                     days
+
+              Valid Values
+                     Seconds, Minutes, Hours, Days, Weekday, Midnight
+
+              Rotation interval type. The time of the last file change (or the time when the service was started) is used when scheduling the next rotation.
+
+       max_logfile_count
+
+              Type   integer
+
+              Default
+                     30
+
+              Maximum number of rotated log files.
+
+       max_logfile_size_mb
+
+              Type   integer
+
+              Default
+                     200
+
+              Log file maximum size in MB. This option is ignored if “log_rotation_type” is not set to “size”.
+
+       log_rotation_type
+
+              Type   string
+
+              Default
+                     none
+
+              Valid Values
+                     interval, size, none
+
+              Log rotation type.
+
+              Possible values
+
+              interval
+                     Rotate logs at predefined time intervals.
+
+              size   Rotate logs once they reach a predefined size.
+
+              none   Do not rotate log files.
+
+       logging_context_format_string
+
+              Type   string
+
+              Default
+                     %(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [%(global_request_id)s %(request_id)s %(user_identity)s] %(instance)s%(message)s
+
+              Format string to use for log messages with context. Used by oslo_log.formatters.ContextFormatter
+
+       logging_default_format_string
+
+              Type   string
+
+              Default
+                     %(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(instance)s%(message)s
+
+              Format string to use for log messages when context is undefined. Used by oslo_log.formatters.ContextFormatter
+
+       logging_debug_format_suffix
+
+              Type   string
+
+              Default
+                     %(funcName)s %(pathname)s:%(lineno)d
+
+              Additional data to append to log message when logging level for the message is DEBUG. Used by oslo_log.formatters.ContextFormatter
+
+       logging_exception_prefix
+
+              Type   string
+
+              Default
+                     %(asctime)s.%(msecs)03d %(process)d ERROR %(name)s %(instance)s
+
+              Prefix each line of exception output with this format. Used by oslo_log.formatters.ContextFormatter
+
+       logging_user_identity_format
+
+              Type   string
+
+              Default
+                     %(user)s %(project)s %(domain)s %(system_scope)s %(user_domain)s %(project_domain)s
+
+              Defines the format string for %(user_identity)s that is used in logging_context_format_string. Used by oslo_log.formatters.ContextFormatter
+
+       default_log_levels
+
+              Type   list
+
+              Default
+                     ['amqp=WARN',  'amqplib=WARN',  'boto=WARN',  'qpid=WARN',  'sqlalchemy=WARN', 'suds=INFO', 'oslo.messaging=INFO', 'oslo_messaging=INFO', 'iso8601=WARN', 'requests.packages.url‐
+                     lib3.connectionpool=WARN', 'urllib3.connectionpool=WARN', 'websocket=WARN',  'requests.packages.urllib3.util.retry=WARN',  'urllib3.util.retry=WARN',  'keystonemiddleware=WARN',
+                     'routes.middleware=WARN', 'stevedore=WARN', 'taskflow=WARN', 'keystoneauth=WARN', 'oslo.cache=INFO', 'oslo_policy=INFO', 'dogpile.core.dogpile=INFO']
+
+              List of package logging levels in logger=LEVEL pairs. This option is ignored if log_config_append is set.
+
+       publish_errors
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enables or disables publication of error events.
+
+       instance_format
+
+              Type   string
+
+              Default
+                     "[instance: %(uuid)s] "
+
+              The format for an instance that is passed with the log message.
+
+       instance_uuid_format
+
+              Type   string
+
+              Default
+                     "[instance: %(uuid)s] "
+
+              The format for an instance UUID that is passed with the log message.
+
+       rate_limit_interval
+
+              Type   integer
+
+              Default
+                     0
+
+              Interval, number of seconds, of log rate limiting.
+
+       rate_limit_burst
+
+              Type   integer
+
+              Default
+                     0
+
+              Maximum number of logged messages per rate_limit_interval.
+
+       rate_limit_except_level
+
+              Type   string
+
+              Default
+                     CRITICAL
+
+              Log  level  name  used  by  rate limiting: CRITICAL, ERROR, INFO, WARNING, DEBUG or empty string. Logs with level greater or equal to rate_limit_except_level are not filtered. An empty
+              string means that all levels are filtered.
+
+       fatal_deprecations
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enables or disables fatal status of deprecations.
+
+       backdoor_port
+
+              Type   string
+
+              Default
+                     <None>
+
+              Enable eventlet backdoor.  Acceptable values are 0, <port>, and <start>:<end>, where 0 results in listening on a random tcp port number; <port> results in listening  on  the  specified
+              port  number  (and  not enabling backdoor if that port is in use); and <start>:<end> results in listening on the smallest unused port number within the specified range of port numbers.
+              The chosen port is displayed in the service’s log file.
+
+       backdoor_socket
+
+              Type   string
+
+              Default
+                     <None>
+
+              Enable eventlet backdoor, using the provided path as a unix socket that can receive connections. This option is mutually exclusive with ‘backdoor_port’ in that only one should be  pro‐
+              vided. If both are provided then the existence of this option overrides the usage of that option. Inside the path {pid} will be replaced with the PID of the current process.
+
+       log_options
+
+              Type   boolean
+
+              Default
+                     True
+
+              Enables or disables logging values of all registered options when starting a service (at DEBUG level).
+
+       graceful_shutdown_timeout
+
+              Type   integer
+
+              Default
+                     60
+
+              Specify a timeout after which a gracefully shutdown server will exit. Zero value means endless wait.
+
+       api_paste_config
+
+              Type   string
+
+              Default
+                     api-paste.ini
+
+              File name for the paste.deploy config for api service
+
+       wsgi_log_format
+
+              Type   string
+
+              Default
+                     %(client_ip)s "%(request_line)s" status: %(status_code)s  len: %(body_length)s time: %(wall_seconds).7f
+
+              A  python  format string that is used as the template to generate log lines. The following values can beformatted into it: client_ip, date_time, request_line, status_code, body_length,
+              wall_seconds.
+
+       tcp_keepidle
+
+              Type   integer
+
+              Default
+                     600
+
+              Sets the value of TCP_KEEPIDLE in seconds for each server socket. Not supported on OS X.
+
+       wsgi_default_pool_size
+
+              Type   integer
+
+              Default
+                     100
+
+              Size of the pool of greenthreads used by wsgi
+
+       max_header_line
+
+              Type   integer
+
+              Default
+                     16384
+
+              Maximum line size of message headers to be accepted. max_header_line may need to be increased when using large tokens (typically those generated when keystone is configured to use  PKI
+              tokens with big service catalogs).
+
+       wsgi_keep_alive
+
+              Type   boolean
+
+              Default
+                     True
+
+              If False, closes the client socket connection explicitly.
+
+       client_socket_timeout
+
+              Type   integer
+
+              Default
+                     900
+
+              Timeout for client connections’ socket operations. If an incoming connection is idle for this number of seconds it will be closed. A value of ‘0’ means wait forever.
+
+       wsgi_server_debug
+
+              Type   boolean
+
+              Default
+                     False
+
+              True if the server should send exception tracebacks to the clients on 500 errors. If False, the server will respond with empty bodies.
+
+       rpc_conn_pool_size
+
+              Type   integer
+
+              Default
+                     30
+
+              Minimum Value
+                     1
+
+              Size of RPC connection pool.
+
+   Deprecated Variations
+                                                                                      ┌─────────┬────────────────────┐
+                                                                                      │ Group   │ Name               │
+                                                                                      ├─────────┼────────────────────┤
+                                                                                      │ DEFAULT │ rpc_conn_pool_size │
+                                                                                      └─────────┴────────────────────┘
+
+       conn_pool_min_size
+
+              Type   integer
+
+              Default
+                     2
+
+              The pool size limit for connections expiration policy
+
+       conn_pool_ttl
+
+              Type   integer
+
+              Default
+                     1200
+
+              The time-to-live in sec of idle connections in the pool
+
+       executor_thread_pool_size
+
+              Type   integer
+
+              Default
+                     64
+
+              Size of executor thread pool when executor is threading or eventlet.
+
+   Deprecated Variations
+                                                                                     ┌─────────┬──────────────────────┐
+                                                                                     │ Group   │ Name                 │
+                                                                                     ├─────────┼──────────────────────┤
+                                                                                     │ DEFAULT │ rpc_thread_pool_size │
+                                                                                     └─────────┴──────────────────────┘
+
+       rpc_response_timeout
+
+              Type   integer
+
+              Default
+                     60
+
+              Seconds to wait for a response from a call.
+
+       transport_url
+
+              Type   string
+
+              Default
+                     rabbit://
+
+              The network address and optional user credentials for connecting to the messaging backend, in URL format. The expected format is:
+
+              driver://[user:pass@]host:port[,[userN:passN@]hostN:portN]/virtual_host?query
+
+              Example: rabbit://rabbitmq:password@127.0.0.1:5672//
+
+              For full details on the fields in the URL see the documentation of oslo_messaging.TransportURL at https://docs.openstack.org/oslo.messaging/latest/reference/transport.html
+
+       control_exchange
+
+              Type   string
+
+              Default
+                     openstack
+
+              The default exchange under which topics are scoped. May be overridden by an exchange name specified in the transport_url option.
+
+       rpc_ping_enabled
+
+              Type   boolean
+
+              Default
+                     False
+
+              Add an endpoint to answer to ping calls. Endpoint is named oslo_rpc_server_ping
+
+   coordination
+       backend_url
+
+              Type   string
+
+              Default
+                     <None>
+
+              The  backend URL to use for distributed coordination.By default it’s None which means that coordination is disabled. The coordination is implemented for distributed lock management and
+              was tested with etcd.Coordination doesn’t work for file driver because lock files aren’t removed after lock releasing.
+
+   cors
+       allowed_origin
+
+              Type   list
+
+              Default
+                     <None>
+
+              Indicate whether this resource may be shared with  the  domain  received  in  the  requests  “origin”  header.  Format:  “<protocol>://<host>[:<port>]”,  no  trailing  slash.  Example:
+              https://horizon.example.com
+
+       allow_credentials
+
+              Type   boolean
+
+              Default
+                     True
+
+              Indicate that the actual request can include user credentials
+
+       expose_headers
+
+              Type   list
+
+              Default
+                     []
+
+              Indicate which headers are safe to expose to the API. Defaults to HTTP Simple Headers.
+
+       max_age
+
+              Type   integer
+
+              Default
+                     3600
+
+              Maximum cache age of CORS preflight requests.
+
+       allow_methods
+
+              Type   list
+
+              Default
+                     ['OPTIONS', 'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'TRACE', 'PATCH']
+
+              Indicate which methods can be used during the actual request.
+
+       allow_headers
+
+              Type   list
+
+              Default
+                     []
+
+              Indicate which header field names may be used during the actual request.
+
+   database
+       sqlite_synchronous
+
+              Type   boolean
+
+              Default
+                     True
+
+              If True, SQLite uses synchronous mode.
+
+       backend
+
+              Type   string
+
+              Default
+                     sqlalchemy
+
+              The back end to use for the database.
+
+       connection
+
+              Type   string
+
+              Default
+                     <None>
+
+              The SQLAlchemy connection string to use to connect to the database.
+
+       slave_connection
+
+              Type   string
+
+              Default
+                     <None>
+
+              The SQLAlchemy connection string to use to connect to the slave database.
+
+       mysql_sql_mode
+
+              Type   string
+
+              Default
+                     TRADITIONAL
+
+              The SQL mode to be used for MySQL sessions. This option, including the default, overrides any server-set SQL mode. To use whatever SQL mode is set by the server configuration, set this
+              to no value. Example: mysql_sql_mode=
+
+       mysql_wsrep_sync_wait
+
+              Type   integer
+
+              Default
+                     <None>
+
+              For Galera only, configure wsrep_sync_wait causality checks on new connections.  Default is None, meaning don’t configure any setting.
+
+       connection_recycle_time
+
+              Type   integer
+
+              Default
+                     3600
+
+              Connections which have been present in the connection pool longer than this number of seconds will be replaced with a new one the next time they are checked out from the pool.
+
+       max_pool_size
+
+              Type   integer
+
+              Default
+                     5
+
+              Maximum number of SQL connections to keep open in a pool. Setting a value of 0 indicates no limit.
+
+       max_retries
+
+              Type   integer
+
+              Default
+                     10
+
+              Maximum number of database connection retries during startup. Set to -1 to specify an infinite retry count.
+
+       retry_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Interval between retries of opening a SQL connection.
+
+       max_overflow
+
+              Type   integer
+
+              Default
+                     50
+
+              If set, use this value for max_overflow with SQLAlchemy.
+
+       connection_debug
+
+              Type   integer
+
+              Default
+                     0
+
+              Minimum Value
+                     0
+
+              Maximum Value
+                     100
+
+              Verbosity of SQL debugging information: 0=None, 100=Everything.
+
+       connection_trace
+
+              Type   boolean
+
+              Default
+                     False
+
+              Add Python stack traces to SQL as comment strings.
+
+       pool_timeout
+
+              Type   integer
+
+              Default
+                     <None>
+
+              If set, use this value for pool_timeout with SQLAlchemy.
+
+       use_db_reconnect
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enable the experimental use of database reconnect on connection lost.
+
+       db_retry_interval
+
+              Type   integer
+
+              Default
+                     1
+
+              Seconds between retries of a database transaction.
+
+       db_inc_retry_interval
+
+              Type   boolean
+
+              Default
+                     True
+
+              If True, increases the interval between retries of a database operation up to db_max_retry_interval.
+
+       db_max_retry_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              If db_inc_retry_interval is set, the maximum seconds between retries of a database operation.
+
+       db_max_retries
+
+              Type   integer
+
+              Default
+                     20
+
+              Maximum retries in case of connection error or deadlock error before error is raised. Set to -1 to specify an infinite retry count.
+
+       connection_parameters
+
+              Type   string
+
+              Default
+                     ''
+
+              Optional URL parameters to append onto the connection URL at connect time; specify as param1=value1&param2=value2&…
+
+       use_tpool
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enable the experimental use of thread pooling for all DB API calls
+
+   Deprecated Variations
+                                                                                       ┌─────────┬─────────────────┐
+                                                                                       │ Group   │ Name            │
+                                                                                       ├─────────┼─────────────────┤
+                                                                                       │ DEFAULT │ dbapi_use_tpool │
+                                                                                       └─────────┴─────────────────┘
+
+       WARNING:
+                 This option is deprecated for removal since 10.0.0.  Its value may be silently ignored in the future.
+
+                 Reason This feature has never graduated from experimental status and is now being removed due to lack of maintenance and test coverage
+
+   healthcheck
+       path
+
+              Type   string
+
+              Default
+                     /healthcheck
+
+              The path to respond to healtcheck requests on.
+
+              WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+       detailed
+
+              Type   boolean
+
+              Default
+                     False
+
+              Show  more  detailed  information as part of the response. Security note: Enabling this option may expose sensitive details about the service being monitored. Be sure to verify that it
+              will not violate your security policies.
+
+       backends
+
+              Type   list
+
+              Default
+                     []
+
+              Additional backends that can perform health checks and report that information back as part of a request.
+
+       allowed_source_ranges
+
+              Type   list
+
+              Default
+                     []
+
+              A list of network addresses to limit source ip allowed to access healthcheck information. Any request from ip outside of these network addresses are ignored.
+
+       ignore_proxied_requests
+
+              Type   boolean
+
+              Default
+                     False
+
+              Ignore requests with proxy headers.
+
+       disable_by_file_path
+
+              Type   string
+
+              Default
+                     <None>
+
+              Check the presence of a file to determine if an application is running on a port. Used by DisableByFileHealthcheck plugin.
+
+       disable_by_file_paths
+
+              Type   list
+
+              Default
+                     []
+
+              Check the presence of a file based on a port to determine if an application is running on a port. Expects a “port:path” list of strings. Used by DisableByFilesPortsHealthcheck plugin.
+
+   host_failure
+       evacuate_all_instances
+
+              Type   boolean
+
+              Default
+                     True
+
+              Operators can decide whether all instances or only those instances which have [host_failure]\ha_enabled_instance_metadata_key set to True should be allowed for evacuation from a failed
+              source compute node.  When set to True, it will evacuate all instances from a failed source compute node.  First preference will be given to  those  instances  which  have  [host_fail‐
+              ure]\ha_enabled_instance_metadata_key  set  to  True,  and  then  it  will evacuate the remaining ones.  When set to False, it will evacuate only those instances which have [host_fail‐
+              ure]\ha_enabled_instance_metadata_key set to True.
+
+       ha_enabled_instance_metadata_key
+
+              Type   string
+
+              Default
+                     HA_Enabled
+
+              Operators can decide on the instance metadata key naming that affects the per-instance behaviour of [host_failure]\evacuate_all_instances.  The default is the  same  for  both  failure
+              types (host, instance) but the value can be overridden to make the metadata key different per failure type.
+
+       ignore_instances_in_error_state
+
+              Type   boolean
+
+              Default
+                     False
+
+              Operators can decide whether error instances should be allowed for evacuation from a failed source compute node or not. When set to True, it will ignore error instances from evacuation
+              from a failed source compute node. When set to False, it will evacuate error instances along with other instances from a failed source compute node.
+
+       add_reserved_host_to_aggregate
+
+              Type   boolean
+
+              Default
+                     False
+
+              Operators  can  decide  whether  reserved_host should be added to aggregate group of failed compute host. When set to True, reserved host will be added to the aggregate group of failed
+              compute host. When set to False, the reserved_host will not be added to the aggregate group of failed compute host.
+
+       service_disable_reason
+
+              Type   string
+
+              Default
+                     Masakari detected host failed.
+
+              Compute disable reason in case Masakari detects host failure.
+
+   instance_failure
+       process_all_instances
+
+              Type   boolean
+
+              Default
+                     False
+
+              Operators can decide whether all instances or only those instances which have [instance_failure]\ha_enabled_instance_metadata_key set to True should be taken into  account  to  recover
+              from  instance failure events.  When set to True, it will execute instance failure recovery actions for an instance irrespective of whether that particular instance has [instance_fail‐
+              ure]\ha_enabled_instance_metadata_key set to True.  When set to False, it will only execute instance failure recovery  actions  for  an  instance  which  has  [instance_failure]\ha_en‐
+              abled_instance_metadata_key set to True.
+
+       ha_enabled_instance_metadata_key
+
+              Type   string
+
+              Default
+                     HA_Enabled
+
+              Operators  can decide on the instance metadata key naming that affects the per-instance behaviour of [instance_failure]\process_all_instances.  The default is the same for both failure
+              types (host, instance) but the value can be overridden to make the metadata key different per failure type.
+
+   keystone_authtoken
+       www_authenticate_uri
+
+              Type   string
+
+              Default
+                     <None>
+
+              Complete “public” Identity API endpoint. This endpoint should not be an “admin” endpoint, as it should be accessible by all end users. Unauthenticated clients are  redirected  to  this
+              endpoint to authenticate. Although this endpoint should ideally be unversioned, client support in the wild varies. If you’re using a versioned v2 endpoint here, then this should not be
+              the same endpoint the service user utilizes for validating tokens, because normal end users may not be able to reach that endpoint.
+
+   Deprecated Variations
+                                                                                     ┌────────────────────┬──────────┐
+                                                                                     │ Group              │ Name     │
+                                                                                     ├────────────────────┼──────────┤
+                                                                                     │ keystone_authtoken │ auth_uri │
+                                                                                     └────────────────────┴──────────┘
+
+       auth_uri
+
+              Type   string
+
+              Default
+                     <None>
+
+              Complete  “public”  Identity  API endpoint. This endpoint should not be an “admin” endpoint, as it should be accessible by all end users. Unauthenticated clients are redirected to this
+              endpoint to authenticate. Although this endpoint should ideally be unversioned, client support in the wild varies. If you’re using a versioned v2 endpoint here, then this should not be
+              the same endpoint the service user utilizes for validating tokens, because normal end users may not be able to reach that endpoint. This option is deprecated in favor of  www_authenti‐
+              cate_uri and will be removed in the S release.
+
+              WARNING:
+                 This option is deprecated for removal since Queens.  Its value may be silently ignored in the future.
+
+                 Reason The auth_uri option is deprecated in favor of www_authenticate_uri and will be removed in the S  release.
+
+       auth_version
+
+              Type   string
+
+              Default
+                     <None>
+
+              API version of the Identity API endpoint.
+
+       interface
+
+              Type   string
+
+              Default
+                     internal
+
+              Interface to use for the Identity API endpoint. Valid values are “public”, “internal” (default) or “admin”.
+
+       delay_auth_decision
+
+              Type   boolean
+
+              Default
+                     False
+
+              Do not handle authorization requests within the middleware, but delegate the authorization decision to downstream WSGI components.
+
+       http_connect_timeout
+
+              Type   integer
+
+              Default
+                     <None>
+
+              Request timeout value for communicating with Identity API server.
+
+       http_request_max_retries
+
+              Type   integer
+
+              Default
+                     3
+
+              How many times are we trying to reconnect when communicating with Identity API Server.
+
+       cache
+
+              Type   string
+
+              Default
+                     <None>
+
+              Request  environment key where the Swift cache object is stored. When auth_token middleware is deployed with a Swift cache, use this option to have the middleware share a caching back‐
+              end with swift. Otherwise, use the memcached_servers option instead.
+
+       certfile
+
+              Type   string
+
+              Default
+                     <None>
+
+              Required if identity server requires client certificate
+
+       keyfile
+
+              Type   string
+
+              Default
+                     <None>
+
+              Required if identity server requires client certificate
+
+       cafile
+
+              Type   string
+
+              Default
+                     <None>
+
+              A PEM encoded Certificate Authority to use when verifying HTTPs connections. Defaults to system CAs.
+
+       insecure
+
+              Type   boolean
+
+              Default
+                     False
+
+              Verify HTTPS connections.
+
+       region_name
+
+              Type   string
+
+              Default
+                     <None>
+
+              The region in which the identity server can be found.
+
+       memcached_servers
+
+              Type   list
+
+              Default
+                     <None>
+
+              Optionally specify a list of memcached server(s) to use for caching. If left undefined, tokens will instead be cached in-process.
+
+   Deprecated Variations
+                                                                                 ┌────────────────────┬──────────────────┐
+                                                                                 │ Group              │ Name             │
+                                                                                 ├────────────────────┼──────────────────┤
+                                                                                 │ keystone_authtoken │ memcache_servers │
+                                                                                 └────────────────────┴──────────────────┘
+
+       token_cache_time
+
+              Type   integer
+
+              Default
+                     300
+
+              In order to prevent excessive effort spent validating tokens, the middleware caches previously-seen tokens for a configurable duration (in seconds). Set to -1 to disable  caching  com‐
+              pletely.
+
+       memcache_security_strategy
+
+              Type   string
+
+              Default
+                     None
+
+              Valid Values
+                     None, MAC, ENCRYPT
+
+              (Optional) If defined, indicate whether token data should be authenticated or authenticated and encrypted. If MAC, token data is authenticated (with HMAC) in the cache. If ENCRYPT, to‐
+              ken data is encrypted and authenticated in the cache. If the value is not one of these options or empty, auth_token will raise an exception on initialization.
+
+       memcache_secret_key
+
+              Type   string
+
+              Default
+                     <None>
+
+              (Optional, mandatory if memcache_security_strategy is defined) This string is used for key derivation.
+
+       memcache_pool_dead_retry
+
+              Type   integer
+
+              Default
+                     300
+
+              (Optional) Number of seconds memcached server is considered dead before it is tried again.
+
+       memcache_pool_maxsize
+
+              Type   integer
+
+              Default
+                     10
+
+              (Optional) Maximum total number of open connections to every memcached server.
+
+       memcache_pool_socket_timeout
+
+              Type   integer
+
+              Default
+                     3
+
+              (Optional) Socket timeout in seconds for communicating with a memcached server.
+
+       memcache_pool_unused_timeout
+
+              Type   integer
+
+              Default
+                     60
+
+              (Optional) Number of seconds a connection to memcached is held unused in the pool before it is closed.
+
+       memcache_pool_conn_get_timeout
+
+              Type   integer
+
+              Default
+                     10
+
+              (Optional) Number of seconds that an operation will wait to get a memcached client connection from the pool.
+
+       memcache_use_advanced_pool
+
+              Type   boolean
+
+              Default
+                     True
+
+              (Optional) Use the advanced (eventlet safe) memcached client pool.
+
+       include_service_catalog
+
+              Type   boolean
+
+              Default
+                     True
+
+              (Optional)  Indicate  whether  to  set  the  X-Service-Catalog  header. If False, middleware will not ask for service catalog on token validation and will not set the X-Service-Catalog
+              header.
+
+       enforce_token_bind
+
+              Type   string
+
+              Default
+                     permissive
+
+              Used to control the use and type of token binding. Can be set to: “disabled” to not check token binding. “permissive” (default) to validate binding information if the bind type is of a
+              form known to the server and ignore it if not. “strict” like “permissive” but if the bind type is unknown the token will be rejected. “required” any form of token binding is needed  to
+              be allowed. Finally the name of a binding method that must be present in tokens.
+
+       service_token_roles
+
+              Type   list
+
+              Default
+                     ['service']
+
+              A  choice  of  roles that must be present in a service token. Service tokens are allowed to request that an expired token can be used and so this check should tightly control that only
+              actual services should be sending this token. Roles here are applied as an ANY check so any role in this list must be present. For backwards compatibility reasons this  currently  only
+              affects the allow_expired check.
+
+       service_token_roles_required
+
+              Type   boolean
+
+              Default
+                     False
+
+              For  backwards compatibility reasons we must let valid service tokens pass that don’t pass the service_token_roles check as valid. Setting this true will become the default in a future
+              release and should be enabled if possible.
+
+       service_type
+
+              Type   string
+
+              Default
+                     <None>
+
+              The name or type of the service as it appears in the service catalog. This is used to validate tokens that have restricted access rules.
+
+       auth_type
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Authentication type to load
+
+   Deprecated Variations
+                                                                                    ┌────────────────────┬─────────────┐
+                                                                                    │ Group              │ Name        │
+                                                                                    ├────────────────────┼─────────────┤
+                                                                                    │ keystone_authtoken │ auth_plugin │
+                                                                                    └────────────────────┴─────────────┘
+
+       auth_section
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Config Section from which to load plugin specific options
+
+   osapi_v1
+       extensions_blacklist
+
+              Type   list
+
+              Default
+                     []
+
+              DEPRECATED
+
+              This option is a list of all of the v2.1 API extensions to never load. However, it will be removed in the near future, after which the all the functionality that was previously in  ex‐
+              tensions will be part of the standard API, and thus always accessible.
+
+              • Possible values:
+                   A list of strings, each being the alias of an extension that you do not wish to load.
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   enabled, extensions_whitelist
+
+   Deprecated Variations
+                                                                                    ┌──────────┬──────────────────────┐
+                                                                                    │ Group    │ Name                 │
+                                                                                    ├──────────┼──────────────────────┤
+                                                                                    │ osapi_v1 │ extensions_blacklist │
+                                                                                    └──────────┴──────────────────────┘
+
+       WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+       extensions_whitelist
+
+              Type   list
+
+              Default
+                     []
+
+              DEPRECATED
+
+              This  is  a list of extensions. If it is empty, then all extensions except those specified in the extensions_blacklist option will be loaded. If it is not empty, then only those exten‐
+              sions in this list will be loaded, provided that they are also not in the extensions_blacklist option. Once this deprecated option is removed, after which  the  all  the  functionality
+              that was previously in extensions will be part of the standard API, and thus always accessible.
+
+              • Possible values:
+                   A list of strings, each being the alias of an extension that you wish to load, or an empty list, which indicates that all extensions are to be run.
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   enabled, extensions_blacklist
+
+   Deprecated Variations
+                                                                                    ┌──────────┬──────────────────────┐
+                                                                                    │ Group    │ Name                 │
+                                                                                    ├──────────┼──────────────────────┤
+                                                                                    │ osapi_v1 │ extensions_whitelist │
+                                                                                    └──────────┴──────────────────────┘
+
+       WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+       project_id_regex
+
+              Type   string
+
+              Default
+                     <None>
+
+              DEPRECATED
+
+              This option is a string representing a regular expression (regex) that matches the project_id as contained in URLs. If not set, it will match normal UUIDs created by keystone.
+
+              • Possible values:
+                   A string representing any legal regular expression
+
+              • Services that use this:
+                   masakari-api
+
+              • Related options:
+                   None
+
+   Deprecated Variations
+                                                                                      ┌──────────┬──────────────────┐
+                                                                                      │ Group    │ Name             │
+                                                                                      ├──────────┼──────────────────┤
+                                                                                      │ osapi_v1 │ project_id_regex │
+                                                                                      └──────────┴──────────────────┘
+
+       WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+   oslo_messaging_amqp
+       container_name
+
+              Type   string
+
+              Default
+                     <None>
+
+              Name for the AMQP container. must be globally unique. Defaults to a generated UUID
+
+   Deprecated Variations
+                                                                                         ┌───────┬────────────────┐
+                                                                                         │ Group │ Name           │
+                                                                                         ├───────┼────────────────┤
+                                                                                         │ amqp1 │ container_name │
+                                                                                         └───────┴────────────────┘
+
+       idle_timeout
+
+              Type   integer
+
+              Default
+                     0
+
+              Timeout for inactive connections (in seconds)
+
+   Deprecated Variations
+                                                                                          ┌───────┬──────────────┐
+                                                                                          │ Group │ Name         │
+                                                                                          ├───────┼──────────────┤
+                                                                                          │ amqp1 │ idle_timeout │
+                                                                                          └───────┴──────────────┘
+
+       trace
+
+              Type   boolean
+
+              Default
+                     False
+
+              Debug: dump AMQP frames to stdout
+
+   Deprecated Variations
+                                                                                             ┌───────┬───────┐
+                                                                                             │ Group │ Name  │
+                                                                                             ├───────┼───────┤
+                                                                                             │ amqp1 │ trace │
+                                                                                             └───────┴───────┘
+
+       ssl
+
+              Type   boolean
+
+              Default
+                     False
+
+              Attempt to connect via SSL. If no other ssl-related parameters are given, it will use the system’s CA-bundle to verify the server’s certificate.
+
+       ssl_ca_file
+
+              Type   string
+
+              Default
+                     ''
+
+              CA certificate PEM file used to verify the server’s certificate
+
+   Deprecated Variations
+                                                                                          ┌───────┬─────────────┐
+                                                                                          │ Group │ Name        │
+                                                                                          ├───────┼─────────────┤
+                                                                                          │ amqp1 │ ssl_ca_file │
+                                                                                          └───────┴─────────────┘
+
+       ssl_cert_file
+
+              Type   string
+
+              Default
+                     ''
+
+              Self-identifying certificate PEM file for client authentication
+
+   Deprecated Variations
+                                                                                         ┌───────┬───────────────┐
+                                                                                         │ Group │ Name          │
+                                                                                         ├───────┼───────────────┤
+                                                                                         │ amqp1 │ ssl_cert_file │
+                                                                                         └───────┴───────────────┘
+
+       ssl_key_file
+
+              Type   string
+
+              Default
+                     ''
+
+              Private key PEM file used to sign ssl_cert_file certificate (optional)
+
+   Deprecated Variations
+                                                                                          ┌───────┬──────────────┐
+                                                                                          │ Group │ Name         │
+                                                                                          ├───────┼──────────────┤
+                                                                                          │ amqp1 │ ssl_key_file │
+                                                                                          └───────┴──────────────┘
+
+       ssl_key_password
+
+              Type   string
+
+              Default
+                     <None>
+
+              Password for decrypting ssl_key_file (if encrypted)
+
+   Deprecated Variations
+                                                                                        ┌───────┬──────────────────┐
+                                                                                        │ Group │ Name             │
+                                                                                        ├───────┼──────────────────┤
+                                                                                        │ amqp1 │ ssl_key_password │
+                                                                                        └───────┴──────────────────┘
+
+       ssl_verify_vhost
+
+              Type   boolean
+
+              Default
+                     False
+
+              By  default  SSL checks that the name in the server’s certificate matches the hostname in the transport_url. In some configurations it may be preferable to use the virtual hostname in‐
+              stead, for example if the server uses the Server Name Indication TLS extension (rfc6066) to provide a certificate per virtual host. Set ssl_verify_vhost to True  if  the  server’s  SSL
+              certificate uses the virtual host name instead of the DNS name.
+
+       sasl_mechanisms
+
+              Type   string
+
+              Default
+                     ''
+
+              Space separated list of acceptable SASL mechanisms
+
+   Deprecated Variations
+                                                                                        ┌───────┬─────────────────┐
+                                                                                        │ Group │ Name            │
+                                                                                        ├───────┼─────────────────┤
+                                                                                        │ amqp1 │ sasl_mechanisms │
+                                                                                        └───────┴─────────────────┘
+
+       sasl_config_dir
+
+              Type   string
+
+              Default
+                     ''
+
+              Path to directory that contains the SASL configuration
+
+   Deprecated Variations
+                                                                                        ┌───────┬─────────────────┐
+                                                                                        │ Group │ Name            │
+                                                                                        ├───────┼─────────────────┤
+                                                                                        │ amqp1 │ sasl_config_dir │
+                                                                                        └───────┴─────────────────┘
+
+       sasl_config_name
+
+              Type   string
+
+              Default
+                     ''
+
+              Name of configuration file (without .conf suffix)
+
+   Deprecated Variations
+                                                                                        ┌───────┬──────────────────┐
+                                                                                        │ Group │ Name             │
+                                                                                        ├───────┼──────────────────┤
+                                                                                        │ amqp1 │ sasl_config_name │
+                                                                                        └───────┴──────────────────┘
+
+       sasl_default_realm
+
+              Type   string
+
+              Default
+                     ''
+
+              SASL realm to use if no realm present in username
+
+       connection_retry_interval
+
+              Type   integer
+
+              Default
+                     1
+
+              Minimum Value
+                     1
+
+              Seconds to pause before attempting to re-connect.
+
+       connection_retry_backoff
+
+              Type   integer
+
+              Default
+                     2
+
+              Minimum Value
+                     0
+
+              Increase the connection_retry_interval by this many seconds after each unsuccessful failover attempt.
+
+       connection_retry_interval_max
+
+              Type   integer
+
+              Default
+                     30
+
+              Minimum Value
+                     1
+
+              Maximum limit for connection_retry_interval + connection_retry_backoff
+
+       link_retry_delay
+
+              Type   integer
+
+              Default
+                     10
+
+              Minimum Value
+                     1
+
+              Time to pause between re-connecting an AMQP 1.0 link that failed due to a recoverable error.
+
+       default_reply_retry
+
+              Type   integer
+
+              Default
+                     0
+
+              Minimum Value
+                     -1
+
+              The maximum number of attempts to re-send a reply message which failed due to a recoverable error.
+
+       default_reply_timeout
+
+              Type   integer
+
+              Default
+                     30
+
+              Minimum Value
+                     5
+
+              The deadline for an rpc reply message delivery.
+
+       default_send_timeout
+
+              Type   integer
+
+              Default
+                     30
+
+              Minimum Value
+                     5
+
+              The deadline for an rpc cast or call message delivery. Only used when caller does not provide a timeout expiry.
+
+       default_notify_timeout
+
+              Type   integer
+
+              Default
+                     30
+
+              Minimum Value
+                     5
+
+              The deadline for a sent notification message delivery. Only used when caller does not provide a timeout expiry.
+
+       default_sender_link_timeout
+
+              Type   integer
+
+              Default
+                     600
+
+              Minimum Value
+                     1
+
+              The duration to schedule a purge of idle sender links. Detach link after expiry.
+
+       addressing_mode
+
+              Type   string
+
+              Default
+                     dynamic
+
+              Indicates  the  addressing  mode  used by the driver.  Permitted values: ‘legacy’   - use legacy non-routable addressing ‘routable’ - use routable addresses ‘dynamic’  - use legacy ad‐
+              dresses if the message bus does not support routing otherwise use routable addressing
+
+       pseudo_vhost
+
+              Type   boolean
+
+              Default
+                     True
+
+              Enable virtual host support for those message buses that do not natively support virtual hosting (such as qpidd). When set to true the virtual host name will be added  to  all  message
+              bus  addresses,  effectively creating a private ‘subnet’ per virtual host. Set to False if the message bus supports virtual hosting using the ‘hostname’ field in the AMQP 1.0 Open per‐
+              formative as the name of the virtual host.
+
+       server_request_prefix
+
+              Type   string
+
+              Default
+                     exclusive
+
+              address prefix used when sending to a specific server
+
+   Deprecated Variations
+                                                                                     ┌───────┬───────────────────────┐
+                                                                                     │ Group │ Name                  │
+                                                                                     ├───────┼───────────────────────┤
+                                                                                     │ amqp1 │ server_request_prefix │
+                                                                                     └───────┴───────────────────────┘
+
+       broadcast_prefix
+
+              Type   string
+
+              Default
+                     broadcast
+
+              address prefix used when broadcasting to all servers
+
+   Deprecated Variations
+                                                                                        ┌───────┬──────────────────┐
+                                                                                        │ Group │ Name             │
+                                                                                        ├───────┼──────────────────┤
+                                                                                        │ amqp1 │ broadcast_prefix │
+                                                                                        └───────┴──────────────────┘
+
+       group_request_prefix
+
+              Type   string
+
+              Default
+                     unicast
+
+              address prefix when sending to any server in group
+
+   Deprecated Variations
+                                                                                      ┌───────┬──────────────────────┐
+                                                                                      │ Group │ Name                 │
+                                                                                      ├───────┼──────────────────────┤
+                                                                                      │ amqp1 │ group_request_prefix │
+                                                                                      └───────┴──────────────────────┘
+
+       rpc_address_prefix
+
+              Type   string
+
+              Default
+                     openstack.org/om/rpc
+
+              Address prefix for all generated RPC addresses
+
+       notify_address_prefix
+
+              Type   string
+
+              Default
+                     openstack.org/om/notify
+
+              Address prefix for all generated Notification addresses
+
+       multicast_address
+
+              Type   string
+
+              Default
+                     multicast
+
+              Appended to the address prefix when sending a fanout message. Used by the message bus to identify fanout messages.
+
+       unicast_address
+
+              Type   string
+
+              Default
+                     unicast
+
+              Appended to the address prefix when sending to a particular RPC/Notification server. Used by the message bus to identify messages sent to a single destination.
+
+       anycast_address
+
+              Type   string
+
+              Default
+                     anycast
+
+              Appended to the address prefix when sending to a group of consumers. Used by the message bus to identify messages that should be delivered in a round-robin fashion across consumers.
+
+       default_notification_exchange
+
+              Type   string
+
+              Default
+                     <None>
+
+              Exchange name used in notification addresses.  Exchange name resolution precedence: Target.exchange if set else default_notification_exchange if set else control_exchange if  set  else
+              ‘notify’
+
+       default_rpc_exchange
+
+              Type   string
+
+              Default
+                     <None>
+
+              Exchange name used in RPC addresses.  Exchange name resolution precedence: Target.exchange if set else default_rpc_exchange if set else control_exchange if set else ‘rpc’
+
+       reply_link_credit
+
+              Type   integer
+
+              Default
+                     200
+
+              Minimum Value
+                     1
+
+              Window size for incoming RPC Reply messages.
+
+       rpc_server_credit
+
+              Type   integer
+
+              Default
+                     100
+
+              Minimum Value
+                     1
+
+              Window size for incoming RPC Request messages
+
+       notify_server_credit
+
+              Type   integer
+
+              Default
+                     100
+
+              Minimum Value
+                     1
+
+              Window size for incoming Notification messages
+
+       pre_settled
+
+              Type   multi-valued
+
+              Default
+                     rpc-cast
+
+              Default
+                     rpc-reply
+
+              Send  messages of this type pre-settled.  Pre-settled messages will not receive acknowledgement from the peer. Note well: pre-settled messages may be silently discarded if the delivery
+              fails.  Permitted values: ‘rpc-call’ - send RPC Calls pre-settled ‘rpc-reply’- send RPC Replies pre-settled ‘rpc-cast’ - Send RPC Casts  pre-settled  ‘notify’    -  Send  Notifications
+              pre-settled
+
+   oslo_messaging_kafka
+       kafka_max_fetch_bytes
+
+              Type   integer
+
+              Default
+                     1048576
+
+              Max fetch bytes of Kafka consumer
+
+       kafka_consumer_timeout
+
+              Type   floating point
+
+              Default
+                     1.0
+
+              Default timeout(s) for Kafka consumers
+
+       pool_size
+
+              Type   integer
+
+              Default
+                     10
+
+              Pool Size for Kafka Consumers
+
+              WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+                 Reason Driver no longer uses connection pool.
+
+       conn_pool_min_size
+
+              Type   integer
+
+              Default
+                     2
+
+              The pool size limit for connections expiration policy
+
+              WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+                 Reason Driver no longer uses connection pool.
+
+       conn_pool_ttl
+
+              Type   integer
+
+              Default
+                     1200
+
+              The time-to-live in sec of idle connections in the pool
+
+              WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+                 Reason Driver no longer uses connection pool.
+
+       consumer_group
+
+              Type   string
+
+              Default
+                     oslo_messaging_consumer
+
+              Group id for Kafka consumer. Consumers in one group will coordinate message consumption
+
+       producer_batch_timeout
+
+              Type   floating point
+
+              Default
+                     0.0
+
+              Upper bound on the delay for KafkaProducer batching in seconds
+
+       producer_batch_size
+
+              Type   integer
+
+              Default
+                     16384
+
+              Size of batch for the producer async send
+
+       compression_codec
+
+              Type   string
+
+              Default
+                     none
+
+              Valid Values
+                     none, gzip, snappy, lz4, zstd
+
+              The compression codec for all data generated by the producer. If not set, compression will not be used. Note that the allowed values of this depend on the kafka version
+
+       enable_auto_commit
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enable asynchronous consumer commits
+
+       max_poll_records
+
+              Type   integer
+
+              Default
+                     500
+
+              The maximum number of records returned in a poll call
+
+       security_protocol
+
+              Type   string
+
+              Default
+                     PLAINTEXT
+
+              Valid Values
+                     PLAINTEXT, SASL_PLAINTEXT, SSL, SASL_SSL
+
+              Protocol used to communicate with brokers
+
+       sasl_mechanism
+
+              Type   string
+
+              Default
+                     PLAIN
+
+              Mechanism when security protocol is SASL
+
+       ssl_cafile
+
+              Type   string
+
+              Default
+                     ''
+
+              CA certificate PEM file used to verify the server certificate
+
+       ssl_client_cert_file
+
+              Type   string
+
+              Default
+                     ''
+
+              Client certificate PEM file used for authentication.
+
+       ssl_client_key_file
+
+              Type   string
+
+              Default
+                     ''
+
+              Client key PEM file used for authentication.
+
+       ssl_client_key_password
+
+              Type   string
+
+              Default
+                     ''
+
+              Client key password file used for authentication.
+
+   oslo_messaging_notifications
+       driver
+
+              Type   multi-valued
+
+              Default
+                     ''
+
+              The Drivers(s) to handle sending notifications. Possible values are messaging, messagingv2, routing, log, test, noop
+
+   Deprecated Variations
+                                                                                     ┌─────────┬─────────────────────┐
+                                                                                     │ Group   │ Name                │
+                                                                                     ├─────────┼─────────────────────┤
+                                                                                     │ DEFAULT │ notification_driver │
+                                                                                     └─────────┴─────────────────────┘
+
+       transport_url
+
+              Type   string
+
+              Default
+                     <None>
+
+              A URL representing the messaging driver to use for notifications. If not set, we fall back to the same configuration used for RPC.
+
+   Deprecated Variations
+                                                                                  ┌─────────┬────────────────────────────┐
+                                                                                  │ Group   │ Name                       │
+                                                                                  ├─────────┼────────────────────────────┤
+                                                                                  │ DEFAULT │ notification_transport_url │
+                                                                                  └─────────┴────────────────────────────┘
+
+       topics
+
+              Type   list
+
+              Default
+                     ['notifications']
+
+              AMQP topic used for OpenStack notifications.
+
+   Deprecated Variations
+                                                                                  ┌───────────────┬─────────────────────┐
+                                                                                  │ Group         │ Name                │
+                                                                                  ├───────────────┼─────────────────────┤
+                                                                                  │ rpc_notifier2 │ topics              │
+                                                                                  ├───────────────┼─────────────────────┤
+                                                                                  │ DEFAULT       │ notification_topics │
+                                                                                  └───────────────┴─────────────────────┘
+
+       retry
+
+              Type   integer
+
+              Default
+                     -1
+
+              The maximum number of attempts to re-send a notification message which failed to be delivered due to a recoverable error. 0 - No retry, -1 - indefinite
+
+   oslo_messaging_rabbit
+       amqp_durable_queues
+
+              Type   boolean
+
+              Default
+                     False
+
+              Use durable queues in AMQP. If rabbit_quorum_queue is enabled, queues will be durable and this value will be ignored.
+
+       amqp_auto_delete
+
+              Type   boolean
+
+              Default
+                     False
+
+              Auto-delete queues in AMQP.
+
+   Deprecated Variations
+                                                                                       ┌─────────┬──────────────────┐
+                                                                                       │ Group   │ Name             │
+                                                                                       ├─────────┼──────────────────┤
+                                                                                       │ DEFAULT │ amqp_auto_delete │
+                                                                                       └─────────┴──────────────────┘
+
+       ssl
+
+              Type   boolean
+
+              Default
+                     False
+
+              Connect over SSL.
+
+   Deprecated Variations
+                                                                                 ┌───────────────────────┬────────────────┐
+                                                                                 │ Group                 │ Name           │
+                                                                                 ├───────────────────────┼────────────────┤
+                                                                                 │ oslo_messaging_rabbit │ rabbit_use_ssl │
+                                                                                 └───────────────────────┴────────────────┘
+
+       ssl_version
+
+              Type   string
+
+              Default
+                     ''
+
+              SSL version to use (valid only if SSL enabled). Valid values are TLSv1 and SSLv23. SSLv2, SSLv3, TLSv1_1, and TLSv1_2 may be available on some distributions.
+
+   Deprecated Variations
+                                                                               ┌───────────────────────┬───────────────────┐
+                                                                               │ Group                 │ Name              │
+                                                                               ├───────────────────────┼───────────────────┤
+                                                                               │ oslo_messaging_rabbit │ kombu_ssl_version │
+                                                                               └───────────────────────┴───────────────────┘
+
+       ssl_key_file
+
+              Type   string
+
+              Default
+                     ''
+
+              SSL key file (valid only if SSL enabled).
+
+   Deprecated Variations
+                                                                               ┌───────────────────────┬───────────────────┐
+                                                                               │ Group                 │ Name              │
+                                                                               ├───────────────────────┼───────────────────┤
+                                                                               │ oslo_messaging_rabbit │ kombu_ssl_keyfile │
+                                                                               └───────────────────────┴───────────────────┘
+
+       ssl_cert_file
+
+              Type   string
+
+              Default
+                     ''
+
+              SSL cert file (valid only if SSL enabled).
+
+   Deprecated Variations
+                                                                               ┌───────────────────────┬────────────────────┐
+                                                                               │ Group                 │ Name               │
+                                                                               ├───────────────────────┼────────────────────┤
+                                                                               │ oslo_messaging_rabbit │ kombu_ssl_certfile │
+                                                                               └───────────────────────┴────────────────────┘
+
+       ssl_ca_file
+
+              Type   string
+
+              Default
+                     ''
+
+              SSL certification authority file (valid only if SSL enabled).
+
+   Deprecated Variations
+                                                                               ┌───────────────────────┬────────────────────┐
+                                                                               │ Group                 │ Name               │
+                                                                               ├───────────────────────┼────────────────────┤
+                                                                               │ oslo_messaging_rabbit │ kombu_ssl_ca_certs │
+                                                                               └───────────────────────┴────────────────────┘
+
+       ssl_enforce_fips_mode
+
+              Type   boolean
+
+              Default
+                     False
+
+              Global  toggle  for  enforcing  the  OpenSSL  FIPS mode. This feature requires Python support. This is available in Python 3.9 in all environments and may have been backported to older
+              Python versions on select environments. If the Python executable used does not support OpenSSL FIPS mode, an exception will be raised.
+
+       heartbeat_in_pthread
+
+              Type   boolean
+
+              Default
+                     False
+
+              Run the health check heartbeat thread through a native python thread by default. If this option is equal to False then the health check heartbeat will inherit the execution model  from
+              the parent process. For example if the parent process has monkey patched the stdlib by using eventlet/greenlet then the heartbeat will be run through a green thread. This option should
+              be set to True only for the wsgi services.
+
+       kombu_reconnect_delay
+
+              Type   floating point
+
+              Default
+                     1.0
+
+              Minimum Value
+                     0.0
+
+              Maximum Value
+                     4.5
+
+              How long to wait (in seconds) before reconnecting in response to an AMQP consumer cancel notification.
+
+   Deprecated Variations
+                                                                                    ┌─────────┬───────────────────────┐
+                                                                                    │ Group   │ Name                  │
+                                                                                    ├─────────┼───────────────────────┤
+                                                                                    │ DEFAULT │ kombu_reconnect_delay │
+                                                                                    └─────────┴───────────────────────┘
+
+       kombu_compression
+
+              Type   string
+
+              Default
+                     <None>
+
+              EXPERIMENTAL: Possible values are: gzip, bz2. If not set compression will not be used. This option may not be available in future versions.
+
+       kombu_missing_consumer_retry_timeout
+
+              Type   integer
+
+              Default
+                     60
+
+              How long to wait a missing client before abandoning to send it its replies. This value should not be longer than rpc_response_timeout.
+
+   Deprecated Variations
+                                                                            ┌───────────────────────┬─────────────────────────┐
+                                                                            │ Group                 │ Name                    │
+                                                                            ├───────────────────────┼─────────────────────────┤
+                                                                            │ oslo_messaging_rabbit │ kombu_reconnect_timeout │
+                                                                            └───────────────────────┴─────────────────────────┘
+
+       kombu_failover_strategy
+
+              Type   string
+
+              Default
+                     round-robin
+
+              Valid Values
+                     round-robin, shuffle
+
+              Determines  how the next RabbitMQ node is chosen in case the one we are currently connected to becomes unavailable. Takes effect only if more than one RabbitMQ node is provided in con‐
+              fig.
+
+       rabbit_login_method
+
+              Type   string
+
+              Default
+                     AMQPLAIN
+
+              Valid Values
+                     PLAIN, AMQPLAIN, EXTERNAL, RABBIT-CR-DEMO
+
+              The RabbitMQ login method.
+
+   Deprecated Variations
+                                                                                     ┌─────────┬─────────────────────┐
+                                                                                     │ Group   │ Name                │
+                                                                                     ├─────────┼─────────────────────┤
+                                                                                     │ DEFAULT │ rabbit_login_method │
+                                                                                     └─────────┴─────────────────────┘
+
+       rabbit_retry_interval
+
+              Type   integer
+
+              Default
+                     1
+
+              How frequently to retry connecting with RabbitMQ.
+
+       rabbit_retry_backoff
+
+              Type   integer
+
+              Default
+                     2
+
+              How long to backoff for between retries when connecting to RabbitMQ.
+
+   Deprecated Variations
+                                                                                     ┌─────────┬──────────────────────┐
+                                                                                     │ Group   │ Name                 │
+                                                                                     ├─────────┼──────────────────────┤
+                                                                                     │ DEFAULT │ rabbit_retry_backoff │
+                                                                                     └─────────┴──────────────────────┘
+
+       rabbit_interval_max
+
+              Type   integer
+
+              Default
+                     30
+
+              Maximum interval of RabbitMQ connection retries. Default is 30 seconds.
+
+       rabbit_ha_queues
+
+              Type   boolean
+
+              Default
+                     False
+
+              Try to use HA queues in RabbitMQ (x-ha-policy: all). If you change this option, you must wipe the RabbitMQ database. In RabbitMQ 3.0, queue mirroring is no  longer  controlled  by  the
+              x-ha-policy  argument  when  declaring  a queue. If you just want to make sure that all queues (except those with auto-generated names) are mirrored across all nodes, run: “rabbitmqctl
+              set_policy HA ‘^(?!amq.).*’ ‘{“ha-mode”: “all”}’ “
+
+   Deprecated Variations
+                                                                                       ┌─────────┬──────────────────┐
+                                                                                       │ Group   │ Name             │
+                                                                                       ├─────────┼──────────────────┤
+                                                                                       │ DEFAULT │ rabbit_ha_queues │
+                                                                                       └─────────┴──────────────────┘
+
+       rabbit_quorum_queue
+
+              Type   boolean
+
+              Default
+                     False
+
+              Use quorum queues in RabbitMQ (x-queue-type: quorum). The quorum queue is a modern queue type for RabbitMQ implementing a durable, replicated FIFO queue based on the Raft consensus al‐
+              gorithm. It is available as of RabbitMQ 3.8.0. If set this option will conflict with the HA queues (rabbit_ha_queues) aka mirrored queues, in other words the HA queues should  be  dis‐
+              abled, quorum queues durable by default so the amqp_durable_queues opion is ignored when this option enabled.
+
+       rabbit_quorum_delivery_limit
+
+              Type   integer
+
+              Default
+                     0
+
+              Each time a message is redelivered to a consumer, a counter is incremented. Once the redelivery count exceeds the delivery limit the message gets dropped or dead-lettered (if a DLX ex‐
+              change has been configured) Used only when rabbit_quorum_queue is enabled, Default 0 which means dont set a limit.
+
+       rabbit_quorum_max_memory_length
+
+              Type   integer
+
+              Default
+                     0
+
+              By  default  all messages are maintained in memory if a quorum queue grows in length it can put memory pressure on a cluster. This option can limit the number of messages in the quorum
+              queue. Used only when rabbit_quorum_queue is enabled, Default 0 which means dont set a limit.
+
+   Deprecated Variations
+                                                                        ┌───────────────────────┬─────────────────────────────────┐
+                                                                        │ Group                 │ Name                            │
+                                                                        ├───────────────────────┼─────────────────────────────────┤
+                                                                        │ oslo_messaging_rabbit │ rabbit_quroum_max_memory_length │
+                                                                        └───────────────────────┴─────────────────────────────────┘
+
+       rabbit_quorum_max_memory_bytes
+
+              Type   integer
+
+              Default
+                     0
+
+              By default all messages are maintained in memory if a quorum queue grows in length it can put memory pressure on a cluster. This option can limit the number of memory bytes used by the
+              quorum queue. Used only when rabbit_quorum_queue is enabled, Default 0 which means dont set a limit.
+
+   Deprecated Variations
+                                                                         ┌───────────────────────┬────────────────────────────────┐
+                                                                         │ Group                 │ Name                           │
+                                                                         ├───────────────────────┼────────────────────────────────┤
+                                                                         │ oslo_messaging_rabbit │ rabbit_quroum_max_memory_bytes │
+                                                                         └───────────────────────┴────────────────────────────────┘
+
+       rabbit_transient_queues_ttl
+
+              Type   integer
+
+              Default
+                     1800
+
+              Minimum Value
+                     0
+
+              Positive integer representing duration in seconds for queue TTL (x-expires). Queues which are unused for the duration of the TTL are automatically deleted. The parameter  affects  only
+              reply and fanout queues. Setting 0 as value will disable the x-expires. If doing so, make sure you have a rabbitmq policy to delete the queues or you deployment will create an infinite
+              number of queue over time.
+
+       rabbit_qos_prefetch_count
+
+              Type   integer
+
+              Default
+                     0
+
+              Specifies the number of messages to prefetch. Setting to zero allows unlimited messages.
+
+       heartbeat_timeout_threshold
+
+              Type   integer
+
+              Default
+                     60
+
+              Number of seconds after which the Rabbit broker is considered down if heartbeat’s keep-alive fails (0 disables heartbeat).
+
+       heartbeat_rate
+
+              Type   integer
+
+              Default
+                     3
+
+              How often times during the heartbeat_timeout_threshold we check the heartbeat.
+
+       direct_mandatory_flag
+
+              Type   boolean
+
+              Default
+                     True
+
+              (DEPRECATED) Enable/Disable the RabbitMQ mandatory flag for direct send. The direct send is used as reply, so the MessageUndeliverable exception is raised in case the client queue does
+              not exist.MessageUndeliverable exception will be used to loop for a timeout to lets a chance to sender to recover.This flag is deprecated and it will not be possible to deactivate this
+              functionality anymore
+
+              WARNING:
+                 This option is deprecated for removal.  Its value may be silently ignored in the future.
+
+                 Reason Mandatory flag no longer deactivable.
+
+       enable_cancel_on_failover
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enable x-cancel-on-ha-failover flag so that rabbitmq server will cancel and notify consumerswhen queue is down
+
+   oslo_middleware
+       max_request_body_size
+
+              Type   integer
+
+              Default
+                     114688
+
+              The maximum body size for each  request, in bytes.
+
+   Deprecated Variations
+                                                                                 ┌─────────┬─────────────────────────────┐
+                                                                                 │ Group   │ Name                        │
+                                                                                 ├─────────┼─────────────────────────────┤
+                                                                                 │ DEFAULT │ osapi_max_request_body_size │
+                                                                                 ├─────────┼─────────────────────────────┤
+                                                                                 │ DEFAULT │ max_request_body_size       │
+                                                                                 └─────────┴─────────────────────────────┘
+
+       enable_proxy_headers_parsing
+
+              Type   boolean
+
+              Default
+                     False
+
+              Whether the application is behind a proxy or not. This determines if the middleware should parse the headers or not.
+
+       http_basic_auth_user_file
+
+              Type   string
+
+              Default
+                     /etc/htpasswd
+
+              HTTP basic auth password file.
+
+   oslo_policy
+       enforce_scope
+
+              Type   boolean
+
+              Default
+                     False
+
+              This  option  controls  whether or not to enforce scope when evaluating policies. If True, the scope of the token used in the request is compared to the scope_types of the policy being
+              enforced. If the scopes do not match, an InvalidScope exception will be raised. If False, a message will be logged informing operators that policies are being invoked with  mismatching
+              scope.
+
+       enforce_new_defaults
+
+              Type   boolean
+
+              Default
+                     False
+
+              This  option  controls whether or not to use old deprecated defaults when evaluating policies. If True, the old deprecated defaults are not going to be evaluated. This means if any ex‐
+              isting token is allowed for old defaults but is disallowed for new defaults, it will be disallowed. It is encouraged to enable this flag along with the enforce_scope flag so  that  you
+              can  get  the benefits of new defaults and scope_type together. If False, the deprecated policy check string is logically OR’d with the new policy check string, allowing for a graceful
+              upgrade experience between releases with new policies, which is the default behavior.
+
+       policy_file
+
+              Type   string
+
+              Default
+                     policy.yaml
+
+              The relative or absolute path of a file that maps roles to permissions for a given service. Relative paths must be specified in relation to the configuration file setting this option.
+
+   Deprecated Variations
+                                                                                         ┌─────────┬─────────────┐
+                                                                                         │ Group   │ Name        │
+                                                                                         ├─────────┼─────────────┤
+                                                                                         │ DEFAULT │ policy_file │
+                                                                                         └─────────┴─────────────┘
+
+       policy_default_rule
+
+              Type   string
+
+              Default
+                     default
+
+              Default rule. Enforced when a requested rule is not found.
+
+   Deprecated Variations
+                                                                                     ┌─────────┬─────────────────────┐
+                                                                                     │ Group   │ Name                │
+                                                                                     ├─────────┼─────────────────────┤
+                                                                                     │ DEFAULT │ policy_default_rule │
+                                                                                     └─────────┴─────────────────────┘
+
+       policy_dirs
+
+              Type   multi-valued
+
+              Default
+                     policy.d
+
+              Directories where policy configuration files are stored. They can be relative to any directory in the search path defined by the config_dir option, or absolute paths. The file  defined
+              by policy_file must exist for these directories to be searched.  Missing or empty directories are ignored.
+
+   Deprecated Variations
+                                                                                         ┌─────────┬─────────────┐
+                                                                                         │ Group   │ Name        │
+                                                                                         ├─────────┼─────────────┤
+                                                                                         │ DEFAULT │ policy_dirs │
+                                                                                         └─────────┴─────────────┘
+
+       remote_content_type
+
+              Type   string
+
+              Default
+                     application/x-www-form-urlencoded
+
+              Valid Values
+                     application/x-www-form-urlencoded, application/json
+
+              Content Type to send and receive data for REST based policy check
+
+       remote_ssl_verify_server_crt
+
+              Type   boolean
+
+              Default
+                     False
+
+              server identity verification for REST based policy check
+
+       remote_ssl_ca_crt_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Absolute path to ca cert file for REST based policy check
+
+       remote_ssl_client_crt_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Absolute path to client cert for REST based policy check
+
+       remote_ssl_client_key_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Absolute path client key file REST based policy check
+
+   oslo_versionedobjects
+       fatal_exception_format_errors
+
+              Type   boolean
+
+              Default
+                     False
+
+              Make exception message format errors fatal
+
+   process_failure
+       service_disable_reason
+
+              Type   string
+
+              Default
+                     Masakari detected process failed.
+
+              Compute disable reason in case Masakari detects process failure.
+
+   ssl
+       ca_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              CA certificate file to use to verify connecting clients.
+
+   Deprecated Variations
+                                                                                         ┌─────────┬─────────────┐
+                                                                                         │ Group   │ Name        │
+                                                                                         ├─────────┼─────────────┤
+                                                                                         │ DEFAULT │ ssl_ca_file │
+                                                                                         └─────────┴─────────────┘
+
+       cert_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Certificate file to use when starting the server securely.
+
+   Deprecated Variations
+                                                                                        ┌─────────┬───────────────┐
+                                                                                        │ Group   │ Name          │
+                                                                                        ├─────────┼───────────────┤
+                                                                                        │ DEFAULT │ ssl_cert_file │
+                                                                                        └─────────┴───────────────┘
+
+       key_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Private key file to use when starting the server securely.
+
+   Deprecated Variations
+                                                                                         ┌─────────┬──────────────┐
+                                                                                         │ Group   │ Name         │
+                                                                                         ├─────────┼──────────────┤
+                                                                                         │ DEFAULT │ ssl_key_file │
+                                                                                         └─────────┴──────────────┘
+
+       version
+
+              Type   string
+
+              Default
+                     <None>
+
+              SSL version to use (valid only if SSL enabled). Valid values are TLSv1 and SSLv23. SSLv2, SSLv3, TLSv1_1, and TLSv1_2 may be available on some distributions.
+
+       ciphers
+
+              Type   string
+
+              Default
+                     <None>
+
+              Sets the list of available ciphers. value should be a string in the OpenSSL cipher list format.
+
+   taskflow
+       connection
+
+              Type   string
+
+              Default
+                     <None>
+
+              The SQLAlchemy connection string to use to connect to the taskflow database.
+
+   wsgi
+       api_paste_config
+
+              Type   string
+
+              Default
+                     api-paste.ini
+
+              File name for the paste.deploy config for masakari-api
+
+   Deprecated Variations
+                                                                                       ┌─────────┬──────────────────┐
+                                                                                       │ Group   │ Name             │
+                                                                                       ├─────────┼──────────────────┤
+                                                                                       │ DEFAULT │ api_paste_config │
+                                                                                       └─────────┴──────────────────┘
+
+       wsgi_log_format
+
+              Type   string
+
+              Default
+                     %(client_ip)s "%(request_line)s" status: %(status_code)s len: %(body_length)s time: %(wall_seconds).7f
+
+              A  python format string that is used as the template to generate log lines. The following values can be formatted into it: client_ip, date_time, request_line, status_code, body_length,
+              wall_seconds.
+
+   Deprecated Variations
+                                                                                       ┌─────────┬─────────────────┐
+                                                                                       │ Group   │ Name            │
+                                                                                       ├─────────┼─────────────────┤
+                                                                                       │ DEFAULT │ wsgi_log_format │
+                                                                                       └─────────┴─────────────────┘
+
+       secure_proxy_ssl_header
+
+              Type   string
+
+              Default
+                     <None>
+
+              The HTTP header used to determine the scheme for the original request, even if it was removed by an SSL terminating proxy. Typical value is “HTTP_X_FORWARDED_PROTO”.
+
+   Deprecated Variations
+                                                                                   ┌─────────┬─────────────────────────┐
+                                                                                   │ Group   │ Name                    │
+                                                                                   ├─────────┼─────────────────────────┤
+                                                                                   │ DEFAULT │ secure_proxy_ssl_header │
+                                                                                   └─────────┴─────────────────────────┘
+
+       ssl_ca_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              CA certificate file to use to verify connecting clients
+
+   Deprecated Variations
+                                                                                         ┌─────────┬─────────────┐
+                                                                                         │ Group   │ Name        │
+                                                                                         ├─────────┼─────────────┤
+                                                                                         │ DEFAULT │ ssl_ca_file │
+                                                                                         └─────────┴─────────────┘
+
+       ssl_cert_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              SSL certificate of API server
+
+   Deprecated Variations
+                                                                                        ───────────────────────────
+                                                                                          Group     Name
+                                                                                        ───────────────────────────
+                                                                                          DEFAULT   ssl_cert_file
+                                                                                        ───────────────────────────
+                                                                                        │         │               │
+       ssl_key_file                                                                     │         │               │
+                                                                                        │         │               │
+              Type   string                                                             │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     <None>                                                             │         │               │
+                                                                                        │         │               │
+              SSL private key of API server                                             │         │               │
+                                                                                        │         │               │
+   Deprecated Variations                                                                │         │               │
+                                                                                        │┌────────┼┬──────────────┤
+                                                                                        ││ Group  ││ Name         │
+                                                                                        │├────────┼┼──────────────┤
+                                                                                        ││ DEFAULT││ ssl_key_file │
+                                                                                        │└────────┼┴──────────────┤
+                                                                                        │         │               │
+       tcp_keepidle                                                                     │         │               │
+                                                                                        │         │               │
+              Type   integer                                                            │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     600                                                                │         │               │
+                                                                                        │         │               │
+              Sets the value of TCP_KEEPIDLE in seconds for each server socket. Not supported on OS X.            │
+                                                                                        │         │               │
+   Deprecated Variations                                                                │         │               │
+                                                                                        │┌────────┼┬──────────────┤
+                                                                                        ││ Group  ││ Name         │
+                                                                                        │├────────┼┼──────────────┤
+                                                                                        ││ DEFAULT││ tcp_keepidle │
+                                                                                        │└────────┼┴──────────────┤
+                                                                                        │         │               │
+       default_pool_size                                                                │         │               │
+                                                                                        │         │               │
+              Type   integer                                                            │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     1000                                                               │         │               │
+                                                                                        │         │               │
+              Size of the pool of greenthreads used by wsgi                             │         │               │
+                                                                                        │         │               │
+   Deprecated Variations                                                                │         │               │
+                                                                                    ┌───┼─────┬───┼───────────────┼────┐
+                                                                                    │ Group   │ Name              │    │
+                                                                                    ├───┼─────┼───┼───────────────┼────┤
+                                                                                    │ DEFAULT │ wsgi_default_pool_size │
+                                                                                    └───┼─────┴───┼───────────────┼────┘
+                                                                                        │         │               │
+       max_header_line                                                                  │         │               │
+                                                                                        │         │               │
+              Type   integer                                                            │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     16384                                                              │         │               │
+                                                                                        │         │               │
+              Maximum line size of message headers to be accepted. max_header_line may need to be increased when using large tokens (typically those generated by the Keystone v3 API with big service
+              catalogs).                                                                │         │               │
+                                                                                        │         │               │
+   Deprecated Variations                                                                │         │               │
+                                                                                       ┌┼────────┬┼───────────────┼┐
+                                                                                       ││Group   ││Name           ││
+                                                                                       ├┼────────┼┼───────────────┼┤
+                                                                                       ││DEFAULT ││max_header_line││
+                                                                                       └┼────────┴┼───────────────┼┘
+                                                                                        │         │               │
+       keep_alive                                                                       │         │               │
+                                                                                        │         │               │
+              Type   boolean                                                            │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     True                                                               │         │               │
+                                                                                        │         │               │
+              If False, closes the client socket connection explicitly.                 │         │               │
+                                                                                        │         │               │
+   Deprecated Variations                                                                │         │               │
+                                                                                       ┌┼────────┬┼───────────────┼┐
+                                                                                       ││Group   ││Name           ││
+                                                                                       ├┼────────┼┼───────────────┼┤
+                                                                                       ││DEFAULT ││wsgi_keep_alive││
+                                                                                       └┼────────┴┼───────────────┼┘
+                                                                                        │         │               │
+       client_socket_timeout                                                            │         │               │
+                                                                                        │         │               │
+              Type   integer                                                            │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     900                                                                │         │               │
+                                                                                        │         │               │
+              Timeout for client connections’ socket operations. If an incoming connection is idle│for this number│of seconds it will be closed. A value of ‘0’ means wait forever.
+                                                                                        │         │               │
+   Deprecated Variations                                                                │         │               │
+                                                                                    ┌───┼─────┬───┼───────────────┼───┐
+                                                                                    │ Group   │ Name              │   │
+                                                                                    ├───┼─────┼───┼───────────────┼───┤
+                                                                                    │ DEFAULT │ client_socket_timeout │
+                                                                                    └───┼─────┴───┼───────────────┼───┘
+                                                                                        │         │               │
+   Configuration Guide                                                                  │         │               │
+       The configuration for masakari lies in below described files.                    │         │               │
+                                                                                        │         │               │
+   Configuration                                                                        │         │               │
+       Masakari has two main config files: masakari.conf and recovery_workflow_sample_config.conf.│               │
+                                                                                        │         │               │
+       • Config Reference: A complete reference of all config points in masakari and what they impact.            │
+                                                                                        │         │               │
+       • Recovery Config Reference: A complete reference of all config points in masakari and what│they impact.   │
+                                                                                        │         │               │
+   Policy                                                                               │         │               │
+       Masakari, like most OpenStack projects, uses a policy language to restrict permissions on REST API actions.│
+                                                                                        │         │               │
+       • Policy Reference: A complete reference of all policy points in masakari and what they impact.            │
+                                                                                        │         │               │
+       • Sample policy File: A sample policy file with inline documentation.            │         │               │
+                                                                                        │         │               │
+   API configuration settings                                                           │         │               │
+       • API configuration: A complete reference of API configuration settings.         │         │               │
+                                                                                        │         │               │
+   Masakari Policies                                                                    │         │               │
+       WARNING:                                                                         │         │               │
+          JSON formatted policy file is deprecated since Masakari 11.0.0 (Wallaby).  This oslopolicy-convert-json-to-yaml tool will migrate your existing JSON-formatted policy  file  to  YAML  in  a
+          backward-compatible way.                                                      │         │               │
+                                                                                        │         │               │
+       The following is an overview of all available policies in masakari.  For a sample│configuration file, refer│to Sample Masakari Policy File.
+                                                                                        │         │               │
+   masakari                                                                             │         │               │
+       context_is_admin                                                                 │         │               │
+                                                                                        │         │               │
+              Default                                                                   │         │               │
+                     role:admin                                                         │         │               │
+
+              Decides what is required for the ‘is_admin:True’ check to succeed.
+
+       admin_or_owner
+
+              Default
+                     is_admin:True or project_id:%(project_id)s
+
+              Default rule for most non-Admin APIs.
+
+       admin_api
+
+              Default
+                     is_admin:True
+
+              Default rule for most Admin APIs.
+
+       os_masakari_api:extensions:index
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /extensions
+
+              List available extensions.
+
+       os_masakari_api:extensions:detail
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /extensions/{extensions_id}
+
+              Shows information for an extension.
+
+       os_masakari_api:extensions:discoverable
+
+              Default
+                     rule:admin_api
+
+              Extension Info API extensions to change the API.
+
+       os_masakari_api:os-hosts:index
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /segments/{segment_id}/hosts
+
+              Lists IDs, names, type, reserved, on_maintenance for all hosts.
+
+       os_masakari_api:os-hosts:detail
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /segments/{segment_id}/hosts/{host_id}
+
+              Shows details for a host.
+
+       os_masakari_api:os-hosts:create
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • POST /segments/{segment_id}/hosts
+
+              Creates a host under given segment.
+
+       os_masakari_api:os-hosts:update
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • PUT /segments/{segment_id}/hosts/{host_id}
+
+              Updates the editable attributes of an existing host.
+
+       os_masakari_api:os-hosts:delete
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • DELETE /segments/{segment_id}/hosts/{host_id}
+
+              Deletes a host from given segment.
+
+       os_masakari_api:os-hosts:discoverable
+
+              Default
+                     rule:admin_api
+
+              Host API extensions to change the API.
+
+       os_masakari_api:notifications:index
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /notifications
+
+              Lists IDs, notification types, host_name, generated_time, payload and status for all notifications.
+
+       os_masakari_api:notifications:detail
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /notifications/{notification_id}
+
+              Shows details for a notification.
+
+       os_masakari_api:notifications:create
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • POST /notifications
+
+              Creates a notification.
+
+       os_masakari_api:notifications:discoverable
+
+              Default
+                     rule:admin_api
+
+              Notification API extensions to change the API.
+
+       os_masakari_api:segments:index
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /segments
+
+              Lists IDs, names, description, recovery_method, service_type for all segments.
+
+       os_masakari_api:segments:detail
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /segments/{segment_id}
+
+              Shows details for a segment.
+
+       os_masakari_api:segments:create
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • POST /segments
+
+              Creates a segment.
+
+       os_masakari_api:segments:update
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • PUT /segments/{segment_id}
+
+              Updates the editable attributes of an existing host.
+
+       os_masakari_api:segments:delete
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • DELETE /segments/{segment_id}
+
+              Deletes a segment.
+
+       os_masakari_api:segments:discoverable
+
+              Default
+                     rule:admin_api
+
+              Segment API extensions to change the API.
+
+       os_masakari_api:versions:index
+
+              Default
+                     @
+
+              Operations
+
+                     • GET /
+
+              List all versions.
+
+       os_masakari_api:versions:discoverable
+
+              Default
+                     @
+
+              Version API extensions to change the API.
+
+       os_masakari_api:vmoves:index
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /notifications/{notification_id}/vmoves
+
+              Lists IDs, notification_id, instance_id, source_host, dest_host, status and type for all VM moves.
+
+       os_masakari_api:vmoves:detail
+
+              Default
+                     rule:admin_api
+
+              Operations
+
+                     • GET /notifications/{notification_id}/vmoves/{vmove_id}
+
+              Shows details for one VM move.
+
+       os_masakari_api:vmoves:discoverable
+
+              Default
+                     rule:admin_api
+
+              VM moves API extensions to change the API.
+
+   Configuration Options
+       The following is an overview of all available configuration options in Masakari.
+
+   taskflow_driver_recovery_flows
+       host_auto_failure_recovery_tasks
+
+              Type   unknown type
+
+              Default
+                     {'pre': ['disable_compute_service_task'], 'main': ['prepare_HA_enabled_instances_task'], 'post': ['evacuate_instances_task']}
+
+              This option allows operator to customize tasks to be executed for host failure auto recovery workflow.
+
+              Provide  list  of strings reflecting to the task classes that should be included to the host failure recovery workflow. The full classname path of all task classes should be defined in
+              the ‘masakari.task_flow.tasks’ of setup.cfg and these classes may be implemented by OpenStack Masaskari project team, deployer or third party.
+
+              By default below three tasks will be part of this config option:- 1. disable_compute_service_task 2. prepare_HA_enabled_instances_task 3. evacuate_instances_task
+
+              The allowed values for this option is comma separated dictionary of object names in between { and }.
+
+       host_rh_failure_recovery_tasks
+
+              Type   unknown type
+
+              Default
+                     {'pre': ['disable_compute_service_task'], 'main': ['prepare_HA_enabled_instances_task', 'evacuate_instances_task'], 'post': []}
+
+              This option allows operator to customize tasks to be executed for host failure reserved_host recovery workflow.
+
+              Provide list of strings reflecting to the task classes that should be included to the host failure recovery workflow. The full classname path of all task classes should be  defined  in
+              the ‘masakari.task_flow.tasks’ of setup.cfg and these classes may be implemented by OpenStack Masaskari project team, deployer or third party.
+
+              By default below three tasks will be part of this config option:- 1. disable_compute_service_task 2. prepare_HA_enabled_instances_task 3. evacuate_instances_task
+
+              The allowed values for this option is comma separated dictionary of object names in between { and }.
+
+       instance_failure_recovery_tasks
+
+              Type   unknown type
+
+              Default
+                     {'pre': ['stop_instance_task'], 'main': ['start_instance_task'], 'post': ['confirm_instance_active_task']}
+
+              This option allows operator to customize tasks to be executed for instance failure recovery workflow.
+
+              Provide  list of strings reflecting to the task classes that should be included to the instance failure recovery workflow. The full classname path of all task classes should be defined
+              in the ‘masakari.task_flow.tasks’ of setup.cfg and these classes may be implemented by OpenStack Masaskari project team, deployer or third party.
+
+              By default below three tasks will be part of this config option:- 1. stop_instance_task 2. start_instance_task 3. confirm_instance_active_task
+
+              The allowed values for this option is comma separated dictionary of object names in between { and }.
+
+       process_failure_recovery_tasks
+
+              Type   unknown type
+
+              Default
+                     {'pre': ['disable_compute_node_task'], 'main': ['confirm_compute_node_disabled_task'], 'post': []}
+
+              This option allows operator to customize tasks to be executed for process failure recovery workflow.
+
+              Provide list of strings reflecting to the task classes that should be included to the process failure recovery workflow. The full classname path of all task classes should  be  defined
+              in the ‘masakari.task_flow.tasks’ of setup.cfg and these classes may be implemented by OpenStack Masaskari project team, deployer or third party.
+
+              By default below two tasks will be part of this config option:- 1. disable_compute_node_task 2. confirm_compute_node_disabled_task
+
+              The allowed values for this option is comma separated dictionary of object names in between { and }.
+
+   Guide for Custom Recovery Workflow Configuration
+       If operator wants customized recovery workflow, so here is guidelines mentioned for how to associate custom tasks from Third Party Library along with standard recovery workflows in Masakari.:
+
+       1. First make sure required Third Party Library is installed on the Masakari engine node. Below is the sample custom task file.  For example:
+
+          from oslo_log import log as logging
+          from taskflow import task
+
+          LOG = logging.getLogger(__name__)
+
+          class Noop(task.Task):
+
+              def __init__(self, novaclient):
+                  self.novaclient = novaclient
+                  super(Noop, self).__init__()
+
+              def execute(self, **kwargs):
+                  LOG.info("Custom task executed successfully..!!")
+                  return
+
+       1. Configure custom task in Third Party Library’s setup.cfg as below:
+
+       For example, Third Party Library’s setup.cfg will have following entry points
+
+          masakari.task_flow.tasks =
+              custom_pre_task = <custom_task_class_path_from_third_party_library>
+              custom_main_task = <custom_task_class_path_from_third_party_library>
+              custom_post_task = <custom_task_class_path_from_third_party_library>
+
+       Note: Entry point in Third Party Library’s setup.cfg should have same key as in Masakari setup.cfg for respective failure recovery.
+
+       1. Configure  custom task in Masakari’s new conf file custom-recovery-methods.conf with same name which was given in the setup.cfg to locate class path.  For example(custom task added in host
+          auto failure config option):
+
+          host_auto_failure_recovery_tasks = {
+          'pre': ['disable_compute_service_task', 'custom_pre_task'],
+          'main': ['custom_main_task', 'prepare_HA_enabled_instances_task'],
+          'post': ['evacuate_instances_task', 'custom_post_task']}
+
+       1. If there are any configuration parameters required for custom task, then add them into custom-recovery-methods.conf under the same group/section where they are registered  in  Third  Party
+          Library.   All  config parameters related to recovery method customization should be part of newly added conf file.  Operator will be responsible to generate masakari.conf and related con‐
+          figuration files by themselves.
+
+       2. Operator should ensure output of each task should be made available to the next tasks needing them.
+
+   Sample Masakari Policy File
+       WARNING:
+          JSON formatted policy file is deprecated since Masakari 11.0.0 (Wallaby).  This oslopolicy-convert-json-to-yaml tool will migrate your existing JSON-formatted policy  file  to  YAML  in  a
+          backward-compatible way.
+
+       The following is a sample masakari policy file for adaptation and use.
+
+       The sample policy can also be viewed in file form.
+
+       IMPORTANT:
+          The sample policy file is auto-generated from masakari when this documentation is built.
+
+          # Decides what is required for the 'is_admin:True' check to succeed.
+          #"context_is_admin": "role:admin"
+
+          # Default rule for most non-Admin APIs.
+          #"admin_or_owner": "is_admin:True or project_id:%(project_id)s"
+
+          # Default rule for most Admin APIs.
+          #"admin_api": "is_admin:True"
+
+          # List available extensions.
+          # GET  /extensions
+          #"os_masakari_api:extensions:index": "rule:admin_api"
+
+          # Shows information for an extension.
+          # GET  /extensions/{extensions_id}
+          #"os_masakari_api:extensions:detail": "rule:admin_api"
+
+          # Extension Info API extensions to change the API.
+          #"os_masakari_api:extensions:discoverable": "rule:admin_api"
+
+          # Lists IDs, names, type, reserved, on_maintenance for all hosts.
+          # GET  /segments/{segment_id}/hosts
+          #"os_masakari_api:os-hosts:index": "rule:admin_api"
+
+          # Shows details for a host.
+          # GET  /segments/{segment_id}/hosts/{host_id}
+          #"os_masakari_api:os-hosts:detail": "rule:admin_api"
+
+          # Creates a host under given segment.
+          # POST  /segments/{segment_id}/hosts
+          #"os_masakari_api:os-hosts:create": "rule:admin_api"
+
+          # Updates the editable attributes of an existing host.
+          # PUT  /segments/{segment_id}/hosts/{host_id}
+          #"os_masakari_api:os-hosts:update": "rule:admin_api"
+
+          # Deletes a host from given segment.
+          # DELETE  /segments/{segment_id}/hosts/{host_id}
+          #"os_masakari_api:os-hosts:delete": "rule:admin_api"
+
+          # Host API extensions to change the API.
+          #"os_masakari_api:os-hosts:discoverable": "rule:admin_api"
+
+          # Lists IDs, notification types, host_name, generated_time, payload
+          # and status for all notifications.
+          # GET  /notifications
+          #"os_masakari_api:notifications:index": "rule:admin_api"
+
+          # Shows details for a notification.
+          # GET  /notifications/{notification_id}
+          #"os_masakari_api:notifications:detail": "rule:admin_api"
+
+          # Creates a notification.
+          # POST  /notifications
+          #"os_masakari_api:notifications:create": "rule:admin_api"
+
+          # Notification API extensions to change the API.
+          #"os_masakari_api:notifications:discoverable": "rule:admin_api"
+
+          # Lists IDs, names, description, recovery_method, service_type for all
+          # segments.
+          # GET  /segments
+          #"os_masakari_api:segments:index": "rule:admin_api"
+
+          # Shows details for a segment.
+          # GET  /segments/{segment_id}
+          #"os_masakari_api:segments:detail": "rule:admin_api"
+
+          # Creates a segment.
+          # POST  /segments
+          #"os_masakari_api:segments:create": "rule:admin_api"
+
+          # Updates the editable attributes of an existing host.
+          # PUT  /segments/{segment_id}
+          #"os_masakari_api:segments:update": "rule:admin_api"
+
+          # Deletes a segment.
+          # DELETE  /segments/{segment_id}
+          #"os_masakari_api:segments:delete": "rule:admin_api"
+
+          # Segment API extensions to change the API.
+          #"os_masakari_api:segments:discoverable": "rule:admin_api"
+
+          # List all versions.
+          # GET  /
+          #"os_masakari_api:versions:index": "@"
+
+          # Version API extensions to change the API.
+          #"os_masakari_api:versions:discoverable": "@"
+
+          # Lists IDs, notification_id, instance_id, source_host, dest_host,
+          # status and type for all VM moves.
+          # GET  /notifications/{notification_id}/vmoves
+          #"os_masakari_api:vmoves:index": "rule:admin_api"
+
+          # Shows details for one VM move.
+          # GET  /notifications/{notification_id}/vmoves/{vmove_id}
+          #"os_masakari_api:vmoves:detail": "rule:admin_api"
+
+          # VM moves API extensions to change the API.
+          #"os_masakari_api:vmoves:discoverable": "rule:admin_api"
+
+   Masakari System Architecture
+       Masakari  comprises  of  two  services  api and engine, each performing different functions. The user-facing interface is a REST API, while internally Masakari communicates via an RPC message
+       passing mechanism.
+
+       The API servers process REST requests, which typically involve database reads/writes, sending RPC messages to other Masakari engine, and generating responses to the REST calls.  RPC messaging
+       is done via the oslo.messaging library, an abstraction on top of message queues.  The Masakari engine will run on the same host where the Masakari api is running, and has a  manager  that  is
+       listening for RPC messages.  The manager too has periodic tasks.
+
+   Components
+       Below you will find a helpful explanation of the key components of a typical Masakari deployment.  [image]
+
+       • DB: sql database for data storage.
+
+       • API: component that receives HTTP requests, converts commands and communicates with masakari engine via the oslo.messaging queue.
+
+       • Engine: Executes recovery workflow and communicates with nova via HTTP.
+
+   Notifications in Masakari
+       Similar  to other OpenStack services Masakari emits notifications to the message bus with the Notifier class provided by oslo.messaging-doc. From the notification consumer point of view a no‐
+       tification consists of two parts: an envelope with a fixed structure defined by oslo.messaging and a payload defined by the service emitting the notification. The envelope format is the  fol‐
+       lowing:
+
+          {
+              "priority": <string, selected from a predefined list by the sender>,
+              "event_type": <string, defined by the sender>,
+              "timestamp": <string, the isotime of when the notification emitted>,
+              "publisher_id": <string, defined by the sender>,
+              "message_id": <uuid, generated by oslo>,
+              "payload": <json serialized dict, defined by the sender>
+          }
+
+       oslo.messaging provides below choices of notification drivers:
+                                                               ┌─────────────┬────────────────────────────────────────────────────────────────────┐
+                                                               │ Driver      │ Description                                                        │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ messaging   │ Send notifications using the 1.0 message format                    │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ messagingv2 │ Send  notifications  using  the 2.0 message format (with a message │
+                                                               │             │ envelope)                                                          │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ routing     │ Configurable routing notifier (by priority or event_type)          │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ log         │ Publish notifications via Python logging infrastructure            │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ test        │ Store notifications in memory for test verification                │
+                                                               ├─────────────┼────────────────────────────────────────────────────────────────────┤
+                                                               │ noop        │ Disable sending notifications entirely                             │
+                                                               └─────────────┴────────────────────────────────────────────────────────────────────┘
+
+       So notifications can be completely disabled by setting the following in Masakari configuration file:
+
+          [oslo_messaging_notifications]
+          driver = noop
+
+       Masakari supports only Versioned notifications.
+
+   Versioned notifications
+       Masakari code uses the masakari.rpc.get_notifier call to get a configured oslo.messaging Notifier object and it uses the oslo provided functions on the Notifier object to emit  notifications.
+       The  configuration  of  the  returned Notifier object depends on the parameters of the get_notifier call and the value of the oslo.messaging configuration options driver and topics.  The ver‐
+       sioned notification the the payload is not a free form dictionary but a serialized oslo.versionedobjects-doc.
+
+       For example the wire format of the segment.update notification looks like the following:
+
+          {
+              "event_type": "api.update.segments.start",
+              "timestamp": "2018-11-27 14:32:20.396940",
+              "payload": {
+                  "masakari_object.name": "SegmentApiPayload",
+                  "masakari_object.data": {
+                      "description": null,
+                      "fault": null,
+                      "recovery_method": "auto",
+                      "name": "test",
+                      "service_type": "compute",
+                      "id": 877,
+                      "uuid": "89597691-bebd-4860-a93e-1b6e9de34b9e"
+                  }, "
+                  "masakari_object.version": "1.0",
+                  "masakari_object.namespace": "masakari"
+              },
+              "priority": "INFO",
+              "publisher_id": "masakari-api:test-virtualbox",
+              "message_id": "e6322900-025d-4dd6-a3a1-3e0e1e9badeb"
+          }
+
+       The serialized oslo versionedobject as a payload provides a version number to the consumer so the consumer can detect if the structure of the payload is changed. Masakari provides the follow‐
+       ing contract regarding the versioned notification payload:
+
+       • the payload version defined by the masakari_object.version field of the payload will be increased only if the syntax or the semantics of the masakari_object.data field  of  the  payload  is
+         changed.
+
+       • a  minor  version  bump indicates a backward compatible change which means that only new fields are added to the payload so a well written consumer can still consume the new payload without
+         any change.
+
+       • a major version bump indicates a backward incompatible change of the payload which can mean removed fields, type change, etc in the payload.
+
+       • there is an additional field ‘masakari_object.name’ for every payload besides ‘masakari_object.data’ and ‘masakari_object.version’. This field contains the name  of  the  Masakari  internal
+         representation of the payload type. Client code should not depend on this name.
+
+   Existing versioned notifications
+       • This provides the list of existing versioned notifications with sample payloads.
+                                                       ┌────────────────────────────┬─────────────────────────────┬────────────────────────┬────────┐
+                                                       │ Event type                 │ Notification class          │ Payload class          │ Sample │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ error.exception            │ ExceptionNotification       │ ExceptionPayload       │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ create.host.end            │ HostApiNotification         │ HostApiPayload         │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ create.host.start          │ HostApiNotification         │ HostApiPayload         │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ delete.host.end            │ HostApiNotification         │ HostApiPayload         │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ delete.host.start          │ HostApiNotification         │ HostApiPayload         │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ update.host.end            │ HostApiNotification         │ HostApiPayload         │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ update.host.start          │ HostApiNotification         │ HostApiPayload         │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ create.notification.end    │ NotificationApiNotification │ NotificationApiPayload │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ create.notification.start  │ NotificationApiNotification │ NotificationApiPayload │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ process.notification.end   │ NotificationApiNotification │ NotificationApiPayload │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ process.notification.error │ NotificationApiNotification │ NotificationApiPayload │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ process.notification.start │ NotificationApiNotification │ NotificationApiPayload │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ create.segment.end         │ SegmentApiNotification      │ SegmentApiPayload      │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ create.segment.start       │ SegmentApiNotification      │ SegmentApiPayload      │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ delete.segment.end         │ SegmentApiNotification      │ SegmentApiPayload      │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ delete.segment.start       │ SegmentApiNotification      │ SegmentApiPayload      │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ update.segment.end         │ SegmentApiNotification      │ SegmentApiPayload      │        │
+                                                       ├────────────────────────────┼─────────────────────────────┼────────────────────────┼────────┤
+                                                       │ update.segment.start       │ SegmentApiNotification      │ SegmentApiPayload      │        │
+                                                       └────────────────────────────┴─────────────────────────────┴────────────────────────┴────────┘
+
+AUTHOR
+       unknown
+
+COPYRIGHT
+       2024, OpenStack Foundation
+
+17.0.0                                                                                       Apr 05, 2024                                                                                  MASAKARI(1)

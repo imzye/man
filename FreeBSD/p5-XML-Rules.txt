@@ -1,0 +1,1160 @@
+XML::Rules(3)         User Contributed Perl Documentation        XML::Rules(3)
+
+
+NAME
+       XML::Rules - parse XML and specify what and how to keep/process for
+       individual tags
+
+VERSION
+       Version 1.16
+
+SYNOPSIS
+               use XML::Rules;
+
+               $xml = <<'*END*';
+               <doc>
+                <person>
+                 <fname>...</fname>
+                 <lname>...</lname>
+                 <email>...</email>
+                 <address>
+                  <street>...</street>
+                  <city>...</city>
+                  <country>...</country>
+                  <bogus>...</bogus>
+                 </address>
+                 <phones>
+                  <phone type="home">123-456-7890</phone>
+                  <phone type="office">663-486-7890</phone>
+                  <phone type="fax">663-486-7000</phone>
+                 </phones>
+                </person>
+                <person>
+                 <fname>...</fname>
+                 <lname>...</lname>
+                 <email>...</email>
+                 <address>
+                  <street>...</street>
+                  <city>...</city>
+                  <country>...</country>
+                  <bogus>...</bogus>
+                 </address>
+                 <phones>
+                  <phone type="office">663-486-7891</phone>
+                 </phones>
+                </person>
+               </doc>
+               *END*
+
+               @rules = (
+                       _default => sub {$_[0] => $_[1]->{_content}},
+                               # by default I'm only interested in the content of the tag, not the attributes
+                       bogus => undef,
+                               # let's ignore this tag and all inner ones as well
+                       address => sub {address => "$_[1]->{street}, $_[1]->{city} ($_[1]->{country})"},
+                               # merge the address into a single string
+                       phone => sub {$_[1]->{type} => $_[1]->{_content}},
+                               # let's use the "type" attribute as the key and the content as the value
+                       phones => sub {delete $_[1]->{_content}; %{$_[1]}},
+                               # remove the text content and pass along the type => content from the child nodes
+                       person => sub { # lets print the values, all the data is readily available in the attributes
+                               print "$_[1]->{lname}, $_[1]->{fname} <$_[1]->{email}>\n";
+                               print "Home phone: $_[1]->{home}\n" if $_[1]->{home};
+                               print "Office phone: $_[1]->{office}\n" if $_[1]->{office};
+                               print "Fax: $_[1]->{fax}\n" if $_[1]->{fax};
+                               print "$_[1]->{address}\n\n";
+                               return; # the <person> tag is processed, no need to remember what it contained
+                       },
+               );
+               $parser = XML::Rules->new(rules => \@rules);
+               $parser->parse( $xml);
+
+INTRODUCTION
+       There are several ways to extract data from XML. One that's often used
+       is to read the whole file and transform it into a huge maze of objects
+       and then write code like
+
+               foreach my $obj ($XML->forTheLifeOfMyMotherGiveMeTheFirstChildNamed("Peter")->pleaseBeSoKindAndGiveMeAllChildrenNamedSomethingLike("Jane")) {
+                       my $obj2 = $obj->sorryToKeepBotheringButINeedTheChildNamed("Theophile");
+                       my $birth = $obj2->whatsTheValueOfAttribute("BirthDate");
+                       print "Theophile was born at $birth\n";
+               }
+
+       I'm exagerating of course, but you probably know what I mean. You can
+       of course shorten the path and call just one method ... that is if you
+       spend the time to learn one more "cool" thing starting with X. XPath.
+
+       You can also use XML::Simple and generate an almost equaly huge maze of
+       hashes and arrays ... which may make the code more or less complex. In
+       either case you need to have enough memory to store all that data, even
+       if you only need a piece here and there.
+
+       Another way to parse the XML is to create some subroutines that handle
+       the start and end tags and the text and whatever else may appear in the
+       XML. Some modules will let you specify just one for start tag, one for
+       text and one for end tag, others will let you install different
+       handlers for different tags. The catch is that you have to build your
+       data structures yourself, you have to know where you are, what tag is
+       just open and what is the parent and its parent etc. so that you could
+       add the attributes and especially the text to the right place. And the
+       handlers have to do everything as their side effect. Does anyone
+       remember what do they say about side efects? They make the code hard to
+       debug, they tend to change the code into a maze of interdependent
+       snippets of code.
+
+       So what's the difference in the way XML::Rules works? At the first
+       glance, not much. You can also specify subroutines to be called for the
+       tags encountered while parsing the XML, just like the other even based
+       XML parsers. The difference is that you do not have to rely on side-
+       effects if all you want is to store the value of a tag. You simply
+       return whatever you need from the current tag and the module will add
+       it at the right place in the data structure it builds and will provide
+       it to the handlers for the parent tag. And if the parent tag does
+       return that data again it will be passed to its parent and so forth.
+       Until we get to the level at which it's convenient to handle all the
+       data we accumulated from the twig.
+
+       Do we want to keep just the content and access it in the parent tag
+       handler under a specific name?
+
+               foo => sub {return 'foo' => $_[1]->{_content}}
+
+       Do we want to ornament the content a bit and add it to the parent tag's
+       content?
+
+               u => sub {return '_' . $_[1]->{_content} . '_'}
+               strong =>  sub {return '*' . $_[1]->{_content} . '*'}
+               uc =>  sub {return uc($_[1]->{_content})}
+
+       Do we want to merge the attributes into a string and access the string
+       from the parent tag under a specified name?
+
+               address => sub {return 'Address' => "Street: $_[1]->{street} $_[1]->{bldngNo}\nCity: $_[1]->{city}\nCountry: $_[1]->{country}\nPostal code: $_[1]->{zip}"}
+
+       and in this case the $_[1]->{street} may either be an attribute of the
+       <address> tag or it may be ther result of the handler (rule)
+
+               street => sub {return 'street' => $_[1]->{_content}}
+
+       and thus come from a child tag <street>. You may also use the rules to
+       convert codes to values
+
+               our %states = (
+                 AL => 'Alabama',
+                 AK => 'Alaska',
+                 ...
+               );
+               ...
+               state => sub {return 'state' => $states{$_[1]->{_content}}; }
+
+        or
+
+               address => sub {
+                       if (exists $_[1]->{id}) {
+                               $sthFetchAddress->execute($_[1]->{id});
+                               my $addr = $sthFetchAddress->fetchrow_hashref();
+                               $sthFetchAddress->finish();
+                               return 'address' => $addr;
+                       } else {
+                               return 'address' => $_[1];
+                       }
+               }
+
+       so that you do not have to care whether there was
+
+               <address id="147"/>
+
+       or
+
+               <address><street>Larry Wall's St.</street><streetno>478</streetno><city>Core</city><country>The Programming Republic of Perl</country></address>
+
+       And if you do not like to end up with a datastructure of plain old
+       arrays and hashes, you can create application specific objects in the
+       rules
+
+               address => sub {
+                       my $type = lc(delete $_[1]->{type});
+                       $type.'Address' => MyApp::Address->new(%{$_[1]})
+               },
+               person => sub {
+                       '@person' => MyApp::Person->new(
+                               firstname => $_[1]->{fname},
+                               lastname => $_[1]->{lname},
+                               deliveryAddress => $_[1]->{deliveryAddress},
+                               billingAddress => $_[1]->{billingAddress},
+                               phone => $_[1]->{phone},
+                       )
+               }
+
+       At each level in the tree structure serialized as XML you can decide
+       what to keep, what to throw away, what to transform and then just
+       return the stuff you care about and it will be available to the handler
+       at the next level.
+
+CONSTRUCTOR
+               my $parser = XML::Rules->new(
+                       rules => \@rules,
+                       [ start_rules => \@start_rules, ]
+                       [ stripspaces => 0 / 1 / 2 / 3   +   0 / 4   +   0 / 8, ]
+                       [ normalisespaces => 0 / 1, ]
+                       [ style => 'parser' / 'filter', ]
+                       [ ident => '  ', [reformat_all => 0 / 1] ],
+                       [ encode => 'encoding specification', ]
+                       [ output_encoding => 'encoding specification', ]
+                       [ namespaces => \%namespace2alias_mapping, ]
+                       [ handlers => \%additional_expat_handlers, ]
+                       # and optionaly parameters passed to XML::Parser::Expat
+               );
+
+       Options passed to XML::Parser::Expat : ProtocolEncoding Namespaces
+       NoExpand Stream_Delimiter ErrorContext ParseParamEnt Base
+
+       The "stripspaces" controls the handling of whitespace. Please see the
+       "Whitespace handling" bellow.
+
+       The "style" specifies whether you want to build a parser used to
+       extract stuff from the XML or filter/modify the XML. If you specify
+       style => 'filter' then all tags for which you do not specify a
+       subroutine rule or that occure inside such a tag are copied to the
+       output filehandle passed to the ->filter() or ->filterfile() methods.
+
+       The "ident" specifies what character(s) to use to ident the tags when
+       filtering, by default the tags are not formatted in any way. If the
+       "reformat_all" is not set then this affects only the tags that have a
+       rule and their subtags. And in case of subtags only those that were
+       added into the attribute hash by their rules, not those left in the
+       _content array!
+
+       The "warnoverwrite" instructs XML::Rules to issue a warning whenever
+       the rule cause a key in a tag's hash to be overwritten by new data
+       produced by the rule of a subtag. This happens eg. if a tag is repeated
+       and its rule doesn't expect it.
+
+       The "encode" allows you to ask the module to run all data through
+       Encode::encode( 'encoding_specification', ...) before being passed to
+       the rules. Otherwise all data comes as UTF8.
+
+       The "output_encoding" on the other hand specifies in what encoding is
+       the resulting data going to be, the default is again UTF8.  This means
+       that if you specify
+
+               encode => 'windows-1250',
+               output_encoding => 'utf8',
+
+       and the XML is in ISO-8859-2 (Latin2) then the filter will 1) convert
+       the content and attributes of the tags you are not interested in from
+       Latin2 directly to utf8 and output and 2) convert the content and
+       attributes of the tags you want to process from Latin2 to Windows-1250,
+       let you mangle the data and then convert the results to utf8 for the
+       output.
+
+       The "encode" and "output_enconding" affects also the
+       "$parser-"toXML(...)>, if they are different then the data are
+       converted from one encoding to the other.
+
+       The "handlers" allow you to set additional handlers for
+       XML::Parser::Expat->setHandlers.  Your Start, End, Char and XMLDecl
+       handlers are evaluated before the ones installed by XML::Rules and may
+       modify the values in @_, but you should be very carefull with that.
+       Consider that experimental and if you do make that work the way you
+       needed, please let me know so that I know what was it good for and can
+       make sure it doesn't break in a new version.
+
+   The Rules
+       The rules option may be either an arrayref or a hashref, the module
+       doesn't care, but if you want to use regexps to specify the groups of
+       tags to be handled by the same rule you should use the array ref. The
+       rules array/hash is made of pairs in form
+
+               tagspecification => action
+
+       where the tagspecification may be either a name of a tag, a string
+       containing comma or pipe ( "|" ) delimited list of tag names or a
+       string containing a regexp enclosed in // optionaly followed by the
+       regular expression modifiers or a qr// compiled regular expressions.
+       The tag names and tag name lists take precedence to the regexps, the
+       regexps are (in case of arrayrefs only!!!) tested in the order in which
+       they are specified.
+
+       These rules are evaluated/executed whenever a tag if fully parsed
+       including all the content and child tags and they may access the
+       content and attributes of the specified tag plus the stuff produced by
+       the rules evaluated for the child tags.
+
+       The action may be either
+
+               - an undef or empty string = ignore the tag and all its children
+               - a subroutine reference = the subroutine will be called to handle the tag data&contents
+                       sub { my ($tagname, $attrHash, $contexArray, $parentDataArray, $parser) = @_; ...}
+               - one of the built in rules below
+
+       Custom rules
+
+       The subroutines in the rules specification receive five parameters:
+
+               $rule->( $tag_name, \%attrs, \@context, \@parent_data, $parser)
+
+       It's OK to destroy the first two parameters, but you should treat the
+       other three as read only or at least treat them with care!
+
+               $tag_name = string containing the tag name
+               \%attrs = hash containing the attributes of the tag plus the _content key
+                       containing the text content of the tag. If it's not a leaf tag it may
+                       also contain the data returned by the rules invoked for the child tags.
+               \@context = an array containing the names of the tags enclosing the current
+                       one. The parent tag name is the last element of the array. (READONLY!)
+               \@parent_data = an array containing the hashes with the attributes
+                       and content read&produced for the enclosing tags so far.
+                       You may need to access this for example to find out the version
+                       of the format specified as an attribute of the root tag. You may
+                       safely add, change or delete attributes in the hashes, but all bets
+                       are off if you change the number or type of elements of this array!
+               $parser = the parser object
+                       you may use $parser->{pad} or $parser->{parameters} to store any data
+                       you need. The first is never touched by XML::Rules, the second is set to
+                       the last argument of parse() or filter() methods and reset to undef
+                       before those methods exit.
+
+       The subroutine may decide to handle the data and return nothing or
+       tweak the data as necessary and return just the relevant bits. It may
+       also load more information from elsewhere based on the ids found in the
+       XML and provide it to the rules of the ancestor tags as if it was part
+       of the XML.
+
+       The possible return values of the subroutines are:
+
+       1) nothing or undef or "" - nothing gets added to the parent tag's hash
+
+       2) a single string - if the parent's _content is a string then the one
+       produced by this rule is appended to the parent's _content.  If the
+       parent's _content is an array, then the string is push()ed to the
+       array.
+
+       3) a single reference - if the parent's _content is a string then it's
+       changed to an array containing the original string and this reference.
+       If the parent's _content is an array, then the string is push()ed to
+       the array.
+
+       4) an even numbered list - it's a list of key & value pairs to be added
+       to the parent's hash.
+
+       The handling of the attributes may be changed by adding '@', '%', '+',
+       '*' or '.' before the attribute name.
+
+       Without any "sigil" the key & value is added to the hash overwriting
+       any previous values.
+
+       The values for the keys starting with '@' are push()ed to the arrays
+       referenced by the key name without the @. If there already is an
+       attribute of the same name then the value will be preserved and will
+       become the first element in the array.
+
+       The values for the keys starting with '%' have to be either hash or
+       array references. The key&value pairs in the referenced hash or array
+       will be added to the hash referenced by the key. This is nice for rows
+       of tags like this:
+
+         <field name="foo" value="12"/>
+         <field name="bar" value="24"/>
+
+       if you specify the rule as
+
+         field => sub { '%fields' => [$_[1]->{name} => $_[1]->{value}]}
+
+       then the parent tag's has will contain
+
+         fields => {
+           foo => 12,
+               bar => 24,
+         }
+
+       The values for the keys starting with '+' are added to the current
+       value, the ones starting with '.' are appended to the current value and
+       the ones starting with '*' multiply the current value.
+
+       5) an odd numbered list - the last element is appended or push()ed to
+       the parent's _content, the rest is handled as in the previous case.
+
+       Builtin rules
+
+               'content' = only the content of the tag is preserved and added to
+                       the parent tag's hash as an attribute named after the tag. Equivalent to:
+                       sub { $_[0] => $_[1]->{_content}}
+               'content trim' = only the content of the tag is preserved, trimmed and added to
+                       the parent tag's hash as an attribute named after the tag
+                       sub { s/^\s+//,s/\s+$// for ($_[1]->{_content}); $_[0] => $_[1]->{_content}}
+               'content array' = only the content of the tag is preserved and pushed
+                       to the array pointed to by the attribute
+                       sub { '@' . $_[0] => $_[1]->{_content}}
+               'as is' = the tag's hash is added to the parent tag's hash
+                       as an attribute named after the tag
+                       sub { $_[0] => $_[1]}
+               'as is trim' = the tag's hash is added to the parent tag's hash
+                       as an attribute named after the tag, the content is trimmed
+                       sub { $_[0] => $_[1]}
+               'as array' = the tag's hash is pushed to the attribute named after the tag
+                       in the parent tag's hash
+                       sub { '@'.$_[0] => $_[1]}
+               'as array trim' = the tag's hash is pushed to the attribute named after the tag
+                       in the parent tag's hash, the content is trimmed
+                       sub { '@'.$_[0] => $_[1]}
+               'no content' = the _content is removed from the tag's hash and the hash
+                       is added to the parent's hash into the attribute named after the tag
+                       sub { delete $_[1]->{_content}; $_[0] => $_[1]}
+               'no content array' = similar to 'no content' except the hash is pushed
+                       into the array referenced by the attribute
+               'as array no content' = same as 'no content array'
+               'pass' = the tag's hash is dissolved into the parent's hash,
+                       that is all tag's attributes become the parent's attributes.
+                       The _content is appended to the parent's _content.
+                       sub { %{$_[1]}}
+               'pass no content' = the _content is removed and the hash is dissolved
+                       into the parent's hash.
+                       sub { delete $_[1]->{_content}; %{$_[1]}}
+               'pass without content' = same as 'pass no content'
+               'raw' = the [tagname => attrs] is pushed to the parent tag's _content.
+                       You would use this style if you wanted to be able to print
+                       the parent tag as XML preserving the whitespace or other textual content
+                       sub { [$_[0] => $_[1]]}
+               'raw extended' = the [tagname => attrs] is pushed to the parent tag's _content
+                       and the attrs are added to the parent's attribute hash with ":$tagname" as the key
+                       sub { (':'.$_[0] => $_[1], [$_[0] => $_[1]])};
+               'raw extended array' = the [tagname => attrs] is pushed to the parent tag's _content
+                       and the attrs are pushed to the parent's attribute hash with ":$tagname" as the key
+                       sub { ('@:'.$_[0] => $_[1], [$_[0] => $_[1]])};
+               'by <attrname>' = uses the value of the specified attribute as the key when adding the
+                       attribute hash into the parent tag's hash. You can specify more names, in that case
+                       the first found is used.
+                       sub {delete($_[1]->{name}) => $_[1]}
+               'content by <attrname>' = uses the value of the specified attribute as the key when adding the
+                       tags content into the parent tag's hash. You can specify more names, in that case
+                       the first found is used.
+                       sub {$_[1]->{name} => $_[1]->{_content}}
+               'no content by <attrname>' = uses the value of the specified attribute as the key when adding the
+                       attribute hash into the parent tag's hash. The content is dropped. You can specify more names,
+                       in that case the first found is used.
+                       sub {delete($_[1]->{_content}); delete($_[1]->{name}) => $_[1]}
+               '==...' = replace the tag by the specified string. That is the string will be added to
+                       the parent tag's _content
+                       sub { return '...' }
+               '=...' = replace the tag contents by the specified string and forget the attributes.
+                       sub { return $_[0] => '...' }
+               '' = forget the tag's contents (after processing the rules for subtags)
+                       sub { return };
+
+       I include the unnamed subroutines that would be equivalent to the
+       builtin rule in case you need to add some tests and then behave as if
+       one of the builtins was used.
+
+       Builtin rule modifiers
+
+       You can add these modifiers to most rules, just add them to the string
+       literal, at the end, separated from the base rule by a space.
+
+               no xmlns        = strip the namespace alias from the $_[0] (tag name)
+               remove(list,of,attributes) = remove all specified attributes (or keys produced by child tag rules) from the tag data
+               only(list,of,attributes) = filter the hash of attributes and keys+values produced by child tag rules in the tag data
+                       to only include those specified here. In case you need to include the tag content do not forget to include
+                       _content in the list!
+
+       Not all modifiers make sense for all rules. For example if the  rule is
+       'content', it's pointless to filter the attributes, because the only
+       one used will be the content anyway.
+
+       The behaviour of the combination of the 'raw...' rules and the rule
+       modifiers is UNDEFINED!
+
+       Different rules for different paths to tags
+
+       Since 0.19 it's possible to specify several actions for a tag if you
+       need to do something different based on the path to the tag like this:
+
+               tagname => [
+                       'tag/path' => action,
+                       '/root/tag/path' => action,
+                       '/root/*/path' => action,
+                       qr{^root/ns:[^/]+/par$} => action,
+                       default_action
+               ],
+
+       The path is matched against the list of parent tags joined by slashes.
+
+       If you need to use more complex conditions to select the actions you
+       have to use a single subroutine rule and implement the conditions
+       within that subroutine. You have access both to the list of enclosing
+       tags and their attribute hashes (including the data obtained from the
+       rules of the already closed subtags of the enclosing tags.
+
+   The Start Rules
+       Apart from the normal rules that get invoked once the tag is fully
+       parsed, including the contents and child tags, you may want to attach
+       some code to the start tag to (optionaly) skip whole branches of XML or
+       set up attributes and variables. You may set up the start rules either
+       in a separate parameter to the constructor or in the rules=> by
+       prepending the tag name(s) by ^.
+
+       These rules are in form
+
+               tagspecification => undef / '' / 'skip' --> skip the element, including child tags
+               tagspecification => 1 / 'handle'        --> handle the element, may be needed
+                       if you specify the _default rule.
+               tagspecification => \&subroutine
+
+       The subroutines receive the same parameters as for the "end tag" rules
+       except of course the _content, but their return value is treated
+       differently.  If the subroutine returns a false value then the whole
+       branch enclosed by the current tag is skipped, no data are stored and
+       no rules are executed. You may modify the hash referenced by $attr.
+
+       You may even tie() the hash referenced by $attr, for example in case
+       you want to store the parsed data in a DBM::Deep.  In such case all the
+       data returned by the immediate subtags of this tag will be stored in
+       the DBM::Deep.  Make sure you do not overwrite the data by data from
+       another occurance of the same tag if you return $_[1]/$attr from the
+       rule!
+
+               YourHugeTag => sub {
+                       my %temp = %{$_[1]};
+                       tie %{$_[1]}, 'DBM::Deep', $filename;
+                       %{$_[1]} = %temp;
+                       1;
+               }
+
+       Both types of rules are free to store any data they want in
+       $parser->{pad}. This property is NOT emptied after the parsing!
+
+   Whitespace handling
+       There are two options that affect the whitespace handling: stripspaces
+       and normalisespaces. The normalisespaces is a simple flag that controls
+       whether multiple spaces/tabs/newlines are collapsed into a single space
+       or not. The stripspaces is more complex, it's a bit-mask, an ORed
+       combination of the following options:
+
+               0 - don't remove whitespace around tags
+                   (around tags means before the opening tag and after the closing tag, not in the tag's content!)
+               1 - remove whitespace before tags whose rules did not return any text content
+                   (the rule specified for the tag caused the data of the tag to be ignored,
+                       processed them already or added them as attributes to parent's \%attr)
+               2 - remove whitespace around tags whose rules did not return any text content
+               3 - remove whitespace around all tags
+
+               0 - remove only whitespace-only content
+                   (that is remove the whitespace around <foo/> in this case "<bar>   <foo/>   </bar>"
+                       but not this one "<bar>blah   <foo/>  blah</bar>")
+               4 - remove trailing/leading whitespace
+                   (remove the whitespace in both cases above)
+
+               0 - don't trim content
+               8 - do trim content
+                       (That is for "<foo>  blah   </foo>" only pass to the rule {_content => 'blah'})
+
+       That is if you have a data oriented XML in which each tag contains
+       either text content or subtags, but not both, you want to use
+       stripspaces => 3 or stripspaces => 3|4. This will not only make sure
+       you don't need to bother with the whitespace-only _content of the tags
+       with subtags, but will also make sure you do not keep on wasting memory
+       while parsing a huge XML and processing the "twigs". Without that
+       option the parent tag of the repeated tag would keep on accumulating
+       unneeded whitespace in its _content.
+
+INSTANCE METHODS
+   parse
+               $parser->parse( $string [, $parameters]);
+               $parser->parse( $IOhandle [, $parameters]);
+
+       Parses the XML in the string or reads and parses the XML from the
+       opened IO handle, executes the rules as it encounters the closing tags
+       and returns the resulting structure.
+
+       The scalar or reference passed as the second parameter to the parse()
+       method is assigned to $parser->{parameters} for the parsing of the file
+       or string. Once the XML is parsed the key is deleted. This means that
+       the $parser does not retain a reference to the $parameters after the
+       parsing.
+
+   parsestring
+               $parser->parsestring( $string [, $parameters]);
+
+       Just an alias to ->parse().
+
+   parse_string
+               $parser->parse_string( $string [, $parameters]);
+
+       Just an alias to ->parse().
+
+   parsefile
+               $parser->parsefile( $filename [, $parameters]);
+
+       Opens the specified file and parses the XML and executes the rules as
+       it encounters the closing tags and returns the resulting structure.
+
+   parse_file
+               $parser->parse_file( $filename [, $parameters]);
+
+       Just an alias to ->parsefile().
+
+   parse_chunk
+               while (my $chunk = read_chunk_of_data()) {
+                       $parser->parse_chunk($chunk);
+               }
+               my $data = $parser->last_chunk();
+
+       This method allows you to process the XML in chunks as you receive
+       them. The chunks do not need to be in any way valid ... it's fine if
+       the chunk ends in the middle of a tag or attribute.
+
+       If you need to set the $parser->{parameters}, pass it to the first call
+       to parse_chunk() the same way you would to parse().  The first chunk
+       may be empty so if you need to set up the parameters, but read the
+       chunks in a loop or in a callback, you can do this:
+
+               $parser->parse_chunk('', {foo => 15, bar => "Hello World!"});
+               while (my $chunk = read_chunk_of_data()) {
+                       $parser->parse_chunk($chunk);
+               }
+               my $data = $parser->last_chunk();
+
+       or
+
+               $parser->parse_chunk('', {foo => 15, bar => "Hello World!"});
+               $ua->get($url, ':content_cb' => sub { my($data, $response, $protocol) = @_; $parser->parse_chunk($data); return 1 });
+               my $data = $parser->last_chunk();
+
+       The parse_chunk() returns 1 or dies, to get the accumulated data, you
+       need to call last_chunk(). You will want to either agressively trim the
+       data remembered or handle parts of the file using custom rules as the
+       XML is being parsed.
+
+   filter
+               $parser->filter( $string);
+               $parser->filter( $string, $LexicalOutputIOhandle [, $parameters]);
+               $parser->filter( $LexicalInputIOhandle, $LexicalOutputIOhandle [, $parameters]);
+               $parser->filter( $string, \*OutputIOhandle [, $parameters]);
+               $parser->filter( $LexicalInputIOhandle, \*OutputIOhandle [, $parameters]);
+               $parser->filter( $string, $OutputFilename [, $parameters]);
+               $parser->filter( $LexicalInputIOhandle, $OutputFilename [, $parameters]);
+               $parser->filter( $string, $StringReference [, $parameters]);
+               $parser->filter( $LexicalInputIOhandle, $StringReference [, $parameters]);
+
+       Parses the XML in the string or reads and parses the XML from the
+       opened IO handle, copies the tags that do not have a subroutine rule
+       specified and do not occure under such a tag, executes the specified
+       rules and prints the results to select()ed filehandle, $OutputFilename
+       or $OutputIOhandle or stores them in the scalar referenced by
+       $StringReference using the ->ToXML() method.
+
+       The scalar or reference passed as the third parameter to the filter()
+       method is assigned to $parser->{parameters} for the parsing of the file
+       or string. Once the XML is parsed the key is deleted. This means that
+       the $parser does not retain a reference to the $parameters after the
+       parsing.
+
+   filterstring
+               $parser->filterstring( ...);
+
+       Just an alias to ->filter().
+
+   filter_string
+               $parser->filter_string( ...);
+
+       Just an alias to ->filter().
+
+   filterfile
+               $parser->filterfile( $filename);
+               $parser->filterfile( $filename, $LexicalOutputIOhandle [, $parameters]);
+               $parser->filterfile( $filename, \*OutputIOhandle [, $parameters]);
+               $parser->filterfile( $filename, $OutputFilename [, $parameters]);
+
+       Parses the XML in the specified file, copies the tags that do not have
+       a subroutine rule specified and do not occure under such a tag,
+       executes the specified rules and prints the results to select()ed
+       filehandle, $OutputFilename or $OutputIOhandle or stores them in the
+       scalar referenced by $StringReference.
+
+       The scalar or reference passed as the third parameter to the filter()
+       method is assigned to $parser->{parameters} for the parsing of the file
+       or string. Once the XML is parsed the key is deleted. This means that
+       the $parser does not retain a reference to the $parameters after the
+       parsing.
+
+   filter_file
+       Just an alias to ->filterfile().
+
+   filter_chunk
+               while (my $chunk = read_chunk_of_data()) {
+                       $parser->filter_chunk($chunk);
+               }
+               $parser->last_chunk();
+
+       This method allows you to process the XML in chunks as you receive
+       them. The chunks do not need to be in any way valid ... it's fine if
+       the chunk ends in the middle of a tag or attribute.
+
+       If you need to set the file to store the result to (default is the
+       select()ed filehandle) or set the $parser->{parameters}, pass it to the
+       first call to filter_chunk() the same way you would to filter().  The
+       first chunk may be empty so if you need to set up the parameters, but
+       read the chunks in a loop or in a callback, you can do this:
+
+               $parser->filter_chunk('', "the-filtered.xml", {foo => 15, bar => "Hello World!"});
+               while (my $chunk = read_chunk_of_data()) {
+                       $parser->filter_chunk($chunk);
+               }
+               $parser->last_chunk();
+
+       or
+
+               $parser->filter_chunk('', "the_filtered.xml", {foo => 15, bar => "Hello World!"});
+               $ua->get($url, ':content_cb' => sub { my($data, $response, $protocol) = @_; $parser->filter_chunk($data); return 1 });
+               filter_chunk$parser->last_chunk();
+
+       The filter_chunk() returns 1 or dies, you need to call last_chunk() to
+       sign the end of the data and close the filehandles and clean the parser
+       status.  Make sure you do not set a rule for the root tag or other tag
+       containing way too much data. Keep in mind that even if the parser
+       works as a filter, the data for a custom rule must be kept in memory
+       for the rule to execute!
+
+   last_chunk
+               my $data = $parser->last_chunk();
+               my $data = $parser->last_chunk($the_last_chunk_contents);
+
+       Finishes the processing of a XML fed to the parser in chunks. In case
+       of the parser style, returns the accumulated data. In case of the
+       filter style, flushes and closes the output file. You can pass the last
+       piece of the XML to this method or call it without parameters if all
+       the data was passed to parse_chunk()/filter_chunk().
+
+       You HAVE to execute this method after call(s) to parse_chunk() or
+       filter_chunk()! Until you do, the parser will refuse to process full
+       documents and expect another call to parse_chunk()/filter_chunk()!
+
+   escape_value
+               $parser->escape_value( $data [, $numericescape])
+
+       This method escapes the $data for inclusion in XML, the $numericescape
+       may be 0, 1 or 2 and controls whether to convert 'high' (non ASCII)
+       characters to XML entities.
+
+       0 - default: no numeric escaping (OK if you're writing out UTF8)
+
+       1 - only characters above 0xFF are escaped (ie: characters in the
+       0x80-FF range are not escaped), possibly useful with ISO8859-1 output
+
+       2 - all characters above 0x7F are escaped (good for plain ASCII output)
+
+       You can also specify the default value in the constructor
+
+               my $parser = XML::Rules->new(
+                       ...
+                       NumericEscape => 2,
+               );
+
+   toXML / ToXML
+               $xml = $parser->toXML( $tagname, \%attrs[, $do_not_close, $ident, $base])
+
+       You may use this method to convert the datastructures created by
+       parsing the XML into the XML format.  Not all data structures may be
+       printed! I'll add more docs later, for now please do experiment.
+
+       The $ident and $base, if defined, turn on and control the pretty-
+       printing. The $ident specifies the character(s) used for one level of
+       identation, the base contains the identation of the current tag. That
+       is if you want to include the data inside of
+
+               <data>
+                       <some>
+                               <subtag>$here</subtag>
+                       </some>
+               </data>
+
+       you will call
+
+               $parser->toXML( $tagname, \%attrs, 0, "\t", "\t\t\t");
+
+       The method does NOT validate that the $ident and $base are whitespace
+       only, but of course if it's not you end up with invalid XML. Newlines
+       are added only before the start tag and (if the tag has only child tags
+       and no content) before the closing tag, but not after the closing tag!
+       Newlines are added even if the $ident is an empty string.
+
+   parentsToXML
+               $xml = $parser->parentsToXML( [$level])
+
+       Prints all or only the topmost $level ancestor tags, including the
+       attributes and content (parsed so far), but without the closing tags.
+       You may use this to print the header of the file you are parsing,
+       followed by calling toXML() on a structure you build and then by
+       closeParentsToXML() to close the tags left opened by parentsToXML().
+       You most likely want to use the style => 'filter' option for the
+       constructor instead.
+
+   closeParentsToXML
+               $xml = $parser->closeParentsToXML( [$level])
+
+       Prints the closing tags for all or the topmost $level ancestor tags of
+       the one currently processed.
+
+   paths2rules
+               my $parser = XML::Rules->new(
+                       rules => paths2rules {
+                               '/root/subtag/tag' => sub { ...},
+                               '/root/othertag/tag' => sub {...},
+                               'tag' => sub{ ... the default code for this tag ...},
+                               ...
+                       }
+               );
+
+       This helper function converts a hash of "somewhat xpath-like" paths and
+       subs/rules into the format required by the module.  Due to backwards
+       compatibility and efficiency I can't directly support paths in the
+       rules and the direct syntax for their specification is a bit awkward.
+       So if you need the paths and not the regexps, you may use this helper
+       instead of:
+
+               my $parser = XML::Rules->new(
+                       rules => {
+                               'tag' => [
+                                       '/root/subtag' => sub { ...},
+                                       '/root/othertag' => sub {...},
+                                       sub{ ... the default code for this tag ...},
+                               ],
+                               ...
+                       }
+               );
+
+   return_nothing
+       Stop parsing the XML, forget any data we already have and return from
+       the $parser->parse().  This is only supposed to be used within rules
+       and may be called both as a method and as an ordinary function (it's
+       not exported).
+
+   return_this
+       Stop parsing the XML, forget any data we already have and return the
+       attributes passed to this subroutine from the $parser->parse(). This is
+       only supposed to be used within rules and may be called both as a
+       method and as an ordinary function (it's not exported).
+
+   skip_rest
+       Stop parsing the XML and return whatever data we already have from the
+       $parser->parse().  The rules for the currently opened tags are
+       evaluated as if the XML contained all the closing tags in the right
+       order.
+
+       These three work via raising an exception, the exception is caught
+       within the $parser->parse() and does not propagate outside.  It's also
+       safe to raise any other exception within the rules, the exception will
+       be caught as well, the internal state of the $parser object will be
+       cleaned and the exception rethrown.
+
+CLASS METHODS
+   parse
+       When called as a class method, parse() accepts the same parameters as
+       new(), instantiates a new parser object and returns a subroutine
+       reference that calls the parse() method on that instance.
+
+         my $parser = XML::Rules->new(rules => \%rules);
+         my $data = $parser->parse($xml);
+
+       becomes
+
+         my $read_data = XML::Rules->parse(rules => \%rules);
+         my $data = $read_data->($xml);
+
+       or
+
+         sub read_data;
+         *read_data = XML::Rules->parse(rules => \%rules);
+         my $data = read_data($xml);
+
+   parsestring, parsefile, parse_file, filter, filterstring, filter_string,
+       filterfile, filter_file
+       All these methods work the same way as parse() when used as a class
+       method. They accept the same parameters as new(), instantiate a new
+       object and return a subroutine reference that calls the respective
+       method.
+
+   inferRulesFromExample
+               Dumper(XML::Rules::inferRulesFromExample( $fileOrXML, $fileOrXML, $fileOrXML, ...)
+               Dumper(XML::Rules->inferRulesFromExample( $fileOrXML, $fileOrXML, $fileOrXML, ...)
+               Dumper($parser->inferRulesFromExample( $fileOrXML, $fileOrXML, $fileOrXML, ...)
+
+       The subroutine parses the listed files and infers the rules that would
+       produce the minimal, but complete datastructure.  It finds out what
+       tags may be repeated, whether they contain text content, attributes
+       etc. You may want to give the subroutine several examples to make sure
+       it knows about all possibilities. You should use this once and store
+       the generated rules in your script or even take this as the basis of a
+       more specific set of rules.
+
+   inferRulesFromDTD
+               Dumper(XML::Rules::inferRulesFromDTD( $DTDorDTDfile, [$enableExtended]))
+               Dumper(XML::Rules->inferRulesFromDTD( $DTDorDTDfile, [$enableExtended]))
+               Dumper($parser->inferRulesFromDTD( $DTDorDTDfile, [$enableExtended]))
+
+       The subroutine parses the DTD and infers the rules that would produce
+       the minimal, but complete datastructure.  It finds out what tags may be
+       repeated, whether they contain text content, attributes etc. You may
+       use this each time you are about to parse the XML or once and store the
+       generated rules in your script or even take this as the basis of a more
+       specific set of rules.
+
+       With the second parameter set to a true value, the tags included in a
+       mixed content will use the "raw extended" or "raw extended array" types
+       instead of just "raw". This makes sure the tag data both stay at the
+       right place in the content and are accessible easily from the parent
+       tag's atrribute hash.
+
+       This subroutine requires the XML::DTDParser module!
+
+   toXML / ToXML
+       The ToXML() method may be called as a class/static method as well. In
+       that case the default identation is two spaces and the output encoding
+       is utf8.
+
+PROPERTIES
+   parameters
+       You can pass a parameter (scalar or reference) to the parse...() or
+       filter...() methods, this parameter is later available to the rules as
+       $parser->{parameters}. The module will never use this parameter for any
+       other purpose so you are free to use it for any purposes provided that
+       you expect it to be reset by each call to parse...() or filter...()
+       first to the passed value and then, after the parsing is complete, to
+       undef.
+
+   pad
+       The $parser->{pad} key is specificaly reserved by the module as a place
+       where the module users can store their data. The module doesn't and
+       will not use this key in any way, doesn't set or reset it under any
+       circumstances. If you need to share some data between the rules and do
+       not want to use the structure built by applying the rules you are free
+       to use this key.
+
+       You should refrain from modifying or accessing other properties of the
+       XML::Rules object!
+
+IMPORTS
+       When used without parameters, the module does not export anything into
+       the caller's namespace. When used with parameters it either infers and
+       prints a set of rules from a DTD or example(s) or instantiates a parser
+       and exports a subroutine calling the specified method similar to the
+       parse() and other methods when called as class methods:
+
+         use XML::Rules inferRules => 'c:\temp\example.xml';
+         use XML::Rules inferRules => 'c:\temp\ourOwn.dtd';
+         use XML::Rules inferRules => ['c:\temp\example.xml', c:\temp\other.xml'];
+         use XML::Rules
+           read_data => {
+                 method => 'parse',
+                 rules => { ... },
+                 ...
+               };
+         use XML::Rules ToXML => {
+           method => 'ToXML',
+           rules => {}, # the option is required, but may be empty
+           ident => '   '
+         };
+         ...
+         my $data => read_data($xml);
+         print ToXML(
+           rootTag => {
+             thing => [
+               {Name => "english", child => [7480], otherChild => ['Hello world']},
+               {Name => "espanol", child => [7440], otherChild => ['Hola mundo']},
+           ]
+         });
+
+       Please keep in mind that the use statement is executed at "compile
+       time", which means that the variables declared and assigned above the
+       statement do not have the value yet! This is wrong!
+
+         my %rules = ( _default => 'content', foo => 'as is', ...};
+         use XML::Rules
+           read_data => {
+             method => 'parse',
+             rules => \%rules,
+             ...
+           };
+
+       If you do not specify the method, then the method named the same as the
+       import is assumed. You also do not have to specify the rules option for
+       the ToXML method as it is not used anyway:
+
+         use XML::Rules ToXML => { ident => '  ' };
+         use XML::Rules parse => {stripspaces => 7, rules => { ... }};
+
+       You can use the inferRules form the command line like this:
+
+         perl -e "use XML::Rules inferRules => 'c:\temp\example.xml'"
+
+       or this:
+
+         perl -MXML::Rules=inferRules,c:\temp\example.xml -e 1
+
+       or use the included xml2XMLRules.pl and dtd2XMLRules.pl scripts.
+
+Namespace support
+       By default the module doesn't handle namespaces in any way, it doesn't
+       do anything special with xmlns or xmlns:alias attributes and it doesn't
+       strip or mangle the namespace aliases in tag or attribute names. This
+       means that if you know for sure what namespace aliases will be used you
+       can set up rules for tags including the aliases and unless someone
+       decides to use a different alias or makes use of the default namespace
+       your script will work without turning the namespace support on.
+
+       If you do specify any namespace to alias mapping in the constructor it
+       does start processing the namespace stuff. The xmlns and xmlns:alias
+       attributes for the known namespaces are stripped from the
+       datastructures and the aliases are transformed from whatever the XML
+       author decided to use to whatever your namespace mapping specifies.
+       Aliases are also added to all tags that belong to a default namespace.
+
+       Assuming the constructor parameters contain
+
+               namespaces => {
+                       'http://my.namespaces.com/foo' => 'foo',
+                       'http://my.namespaces.com/bar' => 'bar',
+               }
+
+       and the XML looks like this:
+
+               <root>
+                       <Foo xmlns="http://my.namespaces.com/foo">
+                               <subFoo>Hello world</subfoo>
+                       </Foo>
+                       <other xmlns:b="http://my.namespaces.com/bar">
+                               <b:pub>
+                                       <b:name>NaRuzku</b:name>
+                                       <b:address>at any crossroads</b:address>
+                                       <b:desc>Fakt <b>desnej</b> pajzl.</b:desc>
+                               </b:pub>
+                       </other>
+               </root>
+
+       then the rules wil be called as if the XML looked like this while the
+       namespace support is turned off:
+
+               <root>
+                       <foo:Foo>
+                               <foo:subFoo>Hello world</foo:subfoo>
+                       </foo:Foo>
+                       <other>
+                               <bar:pub>
+                                       <bar:name>NaRuzku</bar:name>
+                                       <bar:address>at any crossroads</bar:address>
+                                       <bar:desc>Fakt <b>desnej</b> pajzl.</bar:desc>
+                               </bar:pub>
+                       </other>
+               </root>
+
+       This means that the namespace handling will normalize the aliases used
+       so that you can use them in the rules.
+
+       It is possible to specify an empty alias, so eg. in case you are
+       processing a SOAP XML and know the tags defined by SOAP do not colide
+       with the tags in the enclosed XML you may simplify the parsing by
+       removing all namespace aliases.
+
+       You can control the behaviour with respect to the namespaces that you
+       did not include in your mapping by setting the "alias" for the special
+       pseudonamespace '*'. The possible values of the "alias"are: "warn"
+       (default), "keep", "strip", "" and "die".
+
+       warn: whenever an unknown namespace is encountered, XML::Rules prints a
+       warning.  The xmlns:XX attributes and the XX: aliases are retained for
+       these namespaces.  If the alias clashes with one specified by your
+       mapping it will be changed in all places, the xmlns="..." referencing
+       an unexpected namespace are changed to xmlns:nsN and the alias is added
+       to the tag names included.
+
+       keep: this works just like the "warn" except for the warning.
+
+       strip: all attributes and tags in the unknown namespaces are stripped.
+       If a tag in such a namespace contains a tag from a known namespace,
+       then the child tag is retained.
+
+       "": all the xmlns attributes and the aliases for the unexected
+       namespaces are removed, the tags and normal attributes are retained
+       without any alias.
+
+       die: as soon as any unexpected namespace is encountered, XML::Rules
+       croak()s.
+
+HOW TO USE
+       You may view the module either as a XML::Simple on steriods and use it
+       to build a data structure similar to the one produced by XML::Simple
+       with the added benefit of being able to specify what tags or attributes
+       to ignore, when to take just the content, what to store as an array
+       etc.
+
+       You could also view it as yet another event based XML parser that
+       differs from all the others only in one thing.  It stores the data for
+       you so that you do not have to use globals or closures and wonder where
+       to attach the snippet of data you just received onto the structure you
+       are building.
+
+       You can use it in a way similar to XML::Twig with simplify(): specify
+       the rules to transform the lower level tags into a XML::Simple like
+       (simplify()ed) structure and then handle the structure in the rule for
+       the tag(s) you'd specify in XML::Twig's twig_roots.
+
+Unrelated tricks
+       If you need to parse a XML file without the root tag (something that
+       each and any sane person would allow, but the XML comitee did not), you
+       can parse
+
+         <!DOCTYPE doc [<!ENTITY real_doc SYSTEM "$the_file_name">]><doc>&real_doc;</doc>
+
+       instead.
+
+AUTHOR
+       Jan Krynicky, "<Jenda at CPAN.org>"
+
+BUGS
+       Please report any bugs or feature requests to "bug-xml-rules at
+       rt.cpan.org", or through the web interface at
+       <http://rt.cpan.org/NoAuth/ReportBug.html?Queue=XML-Rules>.  I will be
+       notified, and then you'll automatically be notified of progress on your
+       bug as I make changes.
+
+SUPPORT
+       You can find documentation for this module with the perldoc command.
+
+           perldoc XML::Rules
+
+       You can also look for information at:
+
+       •   AnnoCPAN: Annotated CPAN documentation
+
+           <http://annocpan.org/dist/XML-Rules>
+
+       •   CPAN Ratings
+
+           <http://cpanratings.perl.org/d/XML-Rules>
+
+       •   RT: CPAN's request tracker
+
+           <http://rt.cpan.org/NoAuth/Bugs.html?Dist=XML-Rules>
+
+       •   Search CPAN
+
+           <http://search.cpan.org/dist/XML-Rules>
+
+       •   PerlMonks
+
+           Please see <http://www.perlmonks.org/?node_id=581313> or
+           <http://www.perlmonks.org/?node=XML::Rules> for discussion.
+
+SEE ALSO
+       XML::Twig, XML::LibXML, XML::Pastor
+
+ACKNOWLEDGEMENTS
+       The escape_value() method is taken with minor changes from XML::Simple.
+
+COPYRIGHT & LICENSE
+       Copyright 2006-2012 Jan Krynicky, all rights reserved.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2025-08-11                     XML::Rules(3)

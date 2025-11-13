@@ -1,0 +1,146 @@
+DHCPOPTINJ(8)                                                                              System Manager's Manual                                                                            DHCPOPTINJ(8)
+
+NAME
+       dhcpoptinj — DHCP option injector, a tool to manipulate DHCP packet options
+
+SYNOPSIS
+       dhcpoptinj [-c [conf_file]] [-df] [--forward-on-fail] [-i|-r] [-p [pid_file]] -q queue_num -o dhcp_option [(-o dhcp_option) ...]
+       dhcpoptinj -h|-v
+
+DESCRIPTION
+       dhcpoptinj  is  a  fairly  simple tool for manipulating DHCP options in a BOOTP/DHCP packet.  It relies on netfilter queue and nftables/iptables rules, in which you specify what packets to send to
+       dhcpoptinj.  dhcpoptinj waits for packets to arrive in a netfilter queue.  It will ensure that a packet is in fact a BOOTP/DHCP packet, and if so proceed to inject or replace options.  It will re‐
+       calculate the IPv4 header checksum, disable the UDP checksum (for a simpler implementation) and then give the packet back to netfilter.
+
+       Based on the options --ignore-existing-opt and --remove-existing-opt dhcpoptinj may be configured to replace matching options or leave them in place.  --forward-on-fail can be used to  accept  the
+       packet (leaving it unaltered) if the package mangling should fail for any reason.
+
+   Invocation
+       dhcpoptinj (incorrectly) requires flags to run.  The netfilter queue number (--queue) is necessary, and also at least one DHCP option (--option).  See “EXAMPLES”.
+
+       Note that dhcpoptinj must be run by a user with the CAP_NET_ADMIN capability.  The recommended way is not to run dhcpoptinj as root.  Instead, you can for instance grant the CAP_NET_ADMIN capabil‐
+       ity to the binary (using setcap) and limit execution rights to only a specific user or group.
+
+   Argument list processing
+       dhcpoptinj is invoked only with options and no arguments:
+
+             -c, --conf-file [conf_file]         Specify a different configuration file than /etc/dhcpoptinj.conf.  If empty no file will be loaded.
+
+             -d, --debug                         Make dhcpoptinj tell you as much as possible about what it does and tries to do.
+
+             -f, --foreground                    Prevent dhcpoptinj from running in the background.
+
+                 --forward-on-fail               If the process of injecting options should fail, let the unaltered DHCP packet pass through.  The default behaviour is to drop the packet if options could
+                                                 not be injected.
+
+             -h, --help                          Print a help text.
+
+             -i, --ignore-existing-opt           Proceed  if  an  injected  option  already  exists in the original packet.  Unless --remove-existing-opt is provided, the default behaviour is to drop the
+                                                 packet.
+
+             -o, --option dhcp_option            DHCP option to inject as a hex string, where the first byte indicates the option code.  The option length field is automatically calculated  and  must  be
+                                                 omitted.  Several options may be injected.
+
+                                                 The  hex  string  may  be  delimited  by  non-hexadecimal  characters for readability.  The following hex strings all produce the same result: '01 02 03',
+                                                 '01:02:03', '010203', '01 <-> 02 <-> 03'.  Remember to quote these arguments if they contains spaces or other characters that have special meaning to your
+                                                 shell.
+
+             -p, --pid-file [pid_file]           Write PID to file (/var/run/dhcpoptinj.pid) or to a specified location.
+
+             -q, --queue queue_num               The netfilter queue number to use
+
+             -r, --remove-existing-opt           Remove existing DHCP options of the same kind as those to be injected.
+
+             -v, --version                       Display version.
+
+   DHCP options
+       All the DHCP options passed with the -o/--option flag will be added before the terminating option (end option, 255).  The packet is padded if necessary and sent back to  netfilter.   None  of  the
+       added options are checked for whether they are valid, or whether the option codes are valid.  Options are not (automatically) padded individually, but they can be manually padded by adding options
+       with  code  0  (one  pad  byte  per  option).   This special option is the only option that does not have any payload (the end option, 255, is inserted automatically and cannot be manually added).
+       Padding individual options should not be necessary.
+
+       The option hex string is written as a series of two-digit pairs, optionally delimited by one or more non-hexadecimal characters: '466A6173','46 6A 61 73', '46:6A:61:73' etc.  There is a  limit  of
+       maximum 256 bytes per option, excluding the option code (the first byte) and the automatically inserted length byte.  At least one option must be provided.
+
+       If the packet already contains a DHCP option that is to be injected (matched by code), the behaviour depends on the command line options --ignore-existing-opt and --remove-existing-opt:
+
+             (none)  The packet will be dropped.
+
+             -i      The existing options are ignored and the injected options are added.
+
+             -r      Any existing options are removed and the injected options are added.
+
+       Note that injected options will not be injected in the same place as those that may have been removed if using -r.  However, this should not matter.
+
+FILES
+       At  startup  dhcpoptinj  reads /etc/dhcpoptinj.conf.  If the file does not exist no error will be produced.  Another file may be specified with -c/--conf-file.  The syntax of the file is a list of
+       key–value pairs separated by newlines. Keys must match long option names and if the option takes an argument it must follow the symbol '='. Whitespace is accepted anywhere on the line. Values  may
+       optionally be enclosed in single or double quotes.
+
+       DHCP  options  must be listed one-by-one, as on the command line, and not as a list. The keywords conf-file, help and version are not accepted. Anything after and including the character # is con‐
+       sidered a comment and is ignored.
+
+       The following shows an example configuration file:
+
+             # Run in foreground:
+             foreground
+             # Enable debug output:
+             debug
+             # Override hostname to "fjasehost":
+             option = '0C 66 6A 61 73 65 68 6F 73 74'
+             # Send agent ID "Fjas":
+             option = "52:01:04:46:6A:61:73"
+             # Override address request to ask for 10.20.30.40:
+             option=320A141E28
+             # Use queue 12:
+             queue = 12
+
+             remove-existing-opt # Remove options before inserting
+
+       Any option on the command line will override a setting in the configuration file. However, note that options with arguments, like --foreground cannot be removed/negated if it has been set  in  the
+       configuration file.  If any DHCP option is passed on the command line all DHCP options listed in the configuration file is ignored.
+
+EXIT STATUS
+       The dhcpoptinj utility exits 0 on success, and >0 if an error occurs.
+
+EXAMPLES
+       Let  us  say you have two interfaces bridged together, eth0 and eth1.  Let us say you want to intercept all BOOTP requests coming from eth0 and inject the relay agent information option (82/0x52).
+       Let us make up a payload consisting of just a string that we can match in a DHCP server like dnsmasq to send different routes to the client: An agent circuit ID sub-option with the value "Fjas".
+
+       Add a rule to the iptables mangle table:
+
+             sudo iptables -t mangle -A PREROUTING -m physdev --physdev-in eth0 -p udp --dport 67 -j NFQUEUE --queue-num 42
+
+       Then run dhcpoptinj (let us run it in the foreground with extra debug output):
+
+             sudo dhcpoptinj -d -f -q 42 -o'52 01 04 46 6A 61 73'
+
+       Now send a DHCP packet to the eth0 interface and watch it (using a tool like Wireshark (https://www.wireshark.org/) having been modified when it reaches the bridged interface.  It should have  the
+       injected option at the end of the option list.  If you capture the incoming DHCP packet with Wireshark, it will appear unmodified although it will in fact be mangled.
+
+       Note  the  format  of the argument to the -o option: It should be a hexadecimal string starting with the DHCP option code followed by the option payload.  The option length (the byte that normally
+       follows the option code) is automatically calculated and must not be specified.  The hex string can be delimited by non-hexadecimal characters for readability.  All options must  have  a  payload,
+       except for the special pad option (https://tools.ietf.org/html/rfc2132#section-2) (code 0).
+
+       The layout of the nonsensical option used in this example, 52 01 04 46 6A 61 73, (first the DHCP option layout (https://tools.ietf.org/html/rfc2132#section-2), then the specific relay agent infor‐
+       mation option sub-option layout (https://tools.ietf.org/html/rfc3046#section-2.0)) is as follows:
+
+       ┌──────┬────────┬────────────────────────────┐
+       │ Code │ Length │            Data            │
+       ├──────┼────────┼────────────────────────────┤
+       │  52  │ (auto) │ 01 04 46 6A 61 73 ("Fjas") │
+       └──────┴────────┴────────────────────────────┘
+
+       ┌──────────┬───────┬──────────────────────┐
+       │ Sub-opt. │ Lenth │         Data         │
+       ├──────────┼───────┼──────────────────────┤
+       │    01    │   4   │ 46 6A 61 73 ("Fjas") │
+       └──────────┴───────┴──────────────────────┘
+
+SEE ALSO
+       iptables(8), nftables(8), dhcp-options(5)
+
+AUTHORS
+       Andreas Misje <amisje@gmail.com>
+
+Debian                                                                                          May 9, 2019                                                                                   DHCPOPTINJ(8)

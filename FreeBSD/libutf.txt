@@ -1,0 +1,229 @@
+UTF(3)                 FreeBSD Library Functions Manual                 UTF(3)
+
+NAME
+       urecomp, ureexec, ureerror, urefree - UTF Regular Expression
+       functionality
+
+SYNOPSIS
+       #include <ure.h>
+
+       int urecomp(ure_t *up, char *exp, int cflags);
+
+       int ureexec(ure_t *up, char *string, int matchc, urematch_t *matchv, int eflags, char *collseq);
+
+       int ureerror(int errcode, ure_t *up, char *buf, int size);
+
+       int urefree(ure_t *up);
+
+
+DESCRIPTION
+       The URE routines are utf(3)-aware regular expression routines.  urecomp
+       is used to compile an expression and ureexec is used to match the
+       compiled expression against a character string.  Matching can be done
+       using a collation sequence other than English, which is the default. To
+       do this, use the collseq argument to the ureexec function to point to a
+       UTF string which is the key to the desired collation sequence.  This
+       collation sequence must correspond to the utf representation of that
+       language in the langcoll.utf file.  If this argument is NULL, then the
+       environment variable UTFCOLLSEQ will be used to determine the collation
+       sequence.  If this too is NULL, then the default collation sequence
+       (English) is used.  It is also possible, but not recommended, to call
+       the urecollseq function directly.
+
+       ureerror is used to format an error code which can be returned by
+       urecomp or ureexec.  urefree is used to free any space that was
+       allocated by urecomp.
+
+       Character ranges are defined at execution time, not compile time.  Case
+       insensitivity is defined at execution time, rather than compile-time,
+       which obviates the need to recompile expressions when case
+       (in)sensitivity is the only difference.
+
+       These routines are by no means quick - the need to handle characters
+       which may be more than 8 bits wide, plus the overhead of calculating
+       ranges of characters at execution time make this unavoidable. However,
+       functionality was the goal with these routines, not sheer blinding
+       speed.
+
+FLAGS
+       The cflags flag to urecomp is there simply to provide a POSIX-interface
+       to the URE functions.  It can take the URE_ICASE value, meaning ignore
+       case sensitivity when matching expressions every time this expression
+       is used.  This is not advised - it would be better to ignore this flag,
+       and then use the URE_ICASE flag to ureexec, giving more control over
+       case-sensitivity.  Note that extended regular expressions are always
+       used (there does not seem to be any point in providing extended
+       functionality, only to provide a way of ignoring it).  In addition,
+       new-line matching is always done, and case-sensitivity is best decided
+       at ureexec time.
+
+       The eflags flag to ureexec can take the following values: URE_ICASE,
+       URE_NOTBOL.  URE_ICASE means perform the matching of the expression in
+       a case-insensitive manner, and uses the current language collation
+       sequence (see below). If none is specified, English is the default.
+
+       URE_NOTBOL is used when the string passed to ureexec should not match a
+       '^' metacharacter.
+
+
+RETURN VALUES
+       A successful compilation will result in URE_SUCCESS being returned by
+       urecomp.  urecomp returns URE_ERR_NULL_ARG if it's passed a null
+       expression to compile.  urecomp returns URE_ERR_TOO_BIG if the given
+       expression turns out to be too big when compiled (although this should
+       not happen).  If urecomp is unable to allocate enough storage on the
+       heap to store the compiled expression, URE_ERR_OUT_OF_SPACE will be
+       returned. Other error codes are possible, depending on the error
+       encountered, usually as part of a badly-formed regular expression.
+
+       ureexec returns URE_SUCCESS if a match was found, and URE_NOMATCH if no
+       match was found. Other error codes are possibly returned, for self-
+       explanatory reasons: URE_ERR_NULL_PARAM, URE_ERR_BAD_MAGIC.
+
+       ureerror can be used to get a textual representation of the error
+       message.
+
+
+EXAMPLE
+       /* get the file into memory */
+       static char *
+       fgetfile(FILE *fp, int *size)
+       {
+            struct stat    s;
+            char      *cp;
+            int       cc;
+
+            (void) fstat(fileno(fp), &s);
+            *size = s.st_size;
+            cp = (char *) malloc(*size + 1);
+            if (cp == (char *) NULL) {
+                 (void) fprintf(stderr, "Memory problems.0);
+                 exit(1);
+            }
+            cc = fread(cp, sizeof(char), *size, fp);
+            if (cc != *size) {
+                 free(cp);
+                 return (char *) NULL;
+            }
+            cp[cc] = 0;
+            return cp;
+       }
+
+       /* do a utf regexp search for each file */
+       int
+       dofile(ure_t *sp, char *f, int eflags, int pname, int plineno, int pline, char *collseq)
+       {
+            urematch_t     matchv[10];
+            char *buf;
+            char *cp;
+            Rune r;
+            char ebuf[BUFSIZ];
+            char done;
+            FILE *fp;
+            int  ucc;
+            int  err;
+            int  i;
+
+            if ((fp = fopen(f, "r")) == (FILE *) NULL) {
+                 return 0;
+            }
+            if ((buf = fgetfile(fp, &ucc)) == (char *) NULL) {
+                 return 0;
+            }
+            cp = buf;
+            for (done = 0 ; !done ; ) {
+                 switch (err = ureexec(sp, cp, 10, matchv, eflags, collseq)) {
+                 case URE_SUCCESS:
+                      if (pname) {
+                           printf("%s:", f);
+                      }
+                      if (plineno) {
+                           printf("%d:", LineNum(buf, &cp[matchv[0].rm_so]));
+                      }
+                      if (!pline) {
+                           (void) fclose(fp);
+                           return 1;
+                      }
+                      PrintLine(cp, sp, &cp[matchv[0].rm_so], &cp[matchv[0].rm_eo]);
+                      cp = utfrune(&cp[matchv[0].rm_eo], '0);
+                      if (cp == (char *) NULL) {
+                           done = 1;
+                      }
+                      i = chartorune(&r, cp);
+                      cp += i;
+                      if (r == 0) {
+                           done = 1;
+                      }
+                      break;
+                 case URE_NOMATCH:
+                      done = 1;
+                      break;
+                 default:
+                      ureerror(err, sp, ebuf, sizeof(ebuf));
+                      (void) fprintf(stderr, "Bad execution: %s0, ebuf);
+                      done = 1;
+                 }
+            }
+            (void) fclose(fp);
+            free(buf);
+            return 1;
+       }
+
+       extern int     optind;
+       extern char    *optarg;
+
+       int
+       main(int argc, char **argv)
+       {
+            ure_t     u;
+            char errmsg[BUFSIZ];
+            char *collseq;
+            int  plineno;
+            int  pline;
+            int  eflags;
+            int  err;
+            int  i;
+
+            eflags = 0;
+            plineno = 0;
+            pline = 1;
+            while ((i = getopt(argc, argv, "a:iln")) != -1) {
+                 switch(i) {
+                 case 'a':
+                      collseq = optarg;
+                      break;
+                 case 'i':
+                      eflags |= URE_ICASE;
+                      break;
+                 case 'l':
+                      pline = 0;
+                      break;
+                 case 'n':
+                      plineno = 1;
+                      break;
+                 }
+            }
+            if ((err = urecomp(&u, argv[optind], 0)) != URE_SUCCESS) {
+                 (void) ureerror(err, &u, errmsg, sizeof(errmsg));
+                 (void) fprintf(stderr, "can't compile ure `%s', %s0,
+                                argv[optind], errmsg);
+                 exit(1);
+            }
+            for (i = optind + 1 ; i < argc ; i++) {
+                 dofile(&u, argv[i], eflags, (optind < argc - 1), plineno, pline, collseq);
+            }
+            urefree(&u);
+            exit(0);
+       }
+
+
+BUGS
+       What software would be complete without bugs?
+
+AUTHOR
+       Written by Alistair Crooks (agc@amdahl.com, or
+       agc@westley.demon.co.uk), and based on Henry Spencer's original regular
+       expression code. I very much doubt that he would recognise his code
+       now, or that he would want to.
+
+                                                                        UTF(3)

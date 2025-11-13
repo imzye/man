@@ -1,0 +1,259 @@
+Inline::Files(3)      User Contributed Perl Documentation     Inline::Files(3)
+
+
+NAME
+       Inline::Files - Multiple virtual files at the end of your code
+
+VERSION
+       This document describes version 0.69 of Inline::Files, released June
+       24, 2015.
+
+SYNOPSIS
+           use Inline::Files;
+
+           my Code $here;
+
+           # etc.
+           # etc.
+           # etc.
+
+           __FOO__
+           This is a virtual file at the end
+           of the data
+
+           __BAR__
+           This is another
+           virtual
+
+           file
+           __FOO__
+           This is yet another
+           such file
+
+WARNING
+       It is possible that this module may overwrite the source code in files
+       that use it. To protect yourself against this possibility, you are
+       strongly advised to use the "-backup" option described in "Safety
+       first".
+
+       This module is still experimental. Regardless of whether you use
+       "-backup" or not, by using this module you agree that the authors will
+       b<under no circumstances> be responsible for any loss of data, code,
+       time, money, or limbs, or for any other disadvantage incurred as a
+       result of using Inline::Files.
+
+DESCRIPTION
+       Inline::Files generalizes the notion of the "__DATA__" marker and the
+       associated "<DATA>" filehandle, to an arbitrary number of markers and
+       associated filehandles.
+
+       When you add the line:
+
+           use Inline::Files;
+
+       to a source file you can then specify an arbitrary number of distinct
+       virtual files at the end of the code. Each such virtual file is marked
+       by a line of the form:
+
+           __SOME_SYMBOL_NAME_IN_UPPER_CASE__
+
+       The following text -- up to the next such marker -- is treated as a
+       file, whose (pseudo-)name is available as an element of the package
+       array @SOME_SYMBOL_NAME_IN_UPPER_CASE. The name of the first virtual
+       file with this marker is also available as the package scalar
+       $SOME_SYMBOL_NAME_IN_UPPER_CASE.
+
+       The filehandle of the same name is magical -- just like "ARGV" -- in
+       that it automatically opens itself when first read. Furthermore -- just
+       like "ARGV" -- the filehandle re-opens itself to the next appropriate
+       virtual file (by "shift"-ing the first element of
+       @SOME_SYMBOL_NAME_IN_UPPER_CASE into $SOME_SYMBOL_NAME_IN_UPPER_CASE)
+       whenever it reaches EOF.
+
+       So, just as with "ARGV", you can treat all the virtual files associated
+       with a single symbol either as a single, multi-part file:
+
+           use Inline::Files;
+
+           while (<FILE>) {
+               print "$FILE: $_";
+           }
+
+           __FILE__
+           File 1
+           here
+
+           __FILE__
+           File 2
+           here
+
+           __OTHER_FILE__
+           Other file 1
+
+           __FILE__
+           File 3
+           here
+
+       or as a series of individual files:
+
+           use Inline::Files;
+
+           foreach $filename (@FILE) {
+               open HANDLE, $filename;
+               print "<<$filename>>\n";
+               while (<HANDLE>) {
+                   print;
+               }
+           }
+
+           __FILE__
+           File 1
+           here
+
+           __FILE__
+           File 2
+           here
+
+           __OTHER_FILE__
+           Other file 1
+
+           __FILE__
+           File 3
+           here
+
+       Note that these two examples completely ignore the lines:
+
+           __OTHER_FILE__
+           Other file 1
+
+       which would be accessed via the "OTHER_FILE" filehandle.
+
+       Unlike "<ARGV>"/@ARGV/$ARGV, Inline::Files also makes use of the hash
+       associated with an inline file's symbol. That is, when you create an
+       inline file with a marker "__WHATEVER__", the hash %WHATEVER will
+       contain information about that file. That information is:
+
+       $WHATEVER{file}
+           The name of the disk file in which the inlined "__WHATEVER__" files
+           were defined;
+
+       $WHATEVER{line}
+           The line (starting from 1) at which the current inline
+           "__WHATEVER__" file being accessed by "<WHATEVER>" started.
+
+       $WHATEVER{offset}
+           The byte offset (starting from 0) at which the current inline
+           "__WHATEVER__" file being accessed by "<WHATEVER>" started.
+
+       $WHATEVER{writable}
+           Whether the the current inline file being accessed by "<WHATEVER>"
+           is opened for output.
+
+       The hash and its elements are read-only and the entry values are only
+       meaningful when the corresponding filehandle is open.
+
+   Writable virtual files
+       If the source file that uses Inline::Files is itself writable, then the
+       virtual files it contains may also be opened for write access. For
+       example, here is a very simple persistence mechanism:
+
+           use Inline::Files;
+           use Data::Dumper;
+
+           open CACHE or die $!;   # read access (uses $CACHE to locate file)
+           eval join "", <CACHE>;
+           close CACHE or die $!;
+
+           print "\$var was '$var'\n";
+           while (<>) {
+               chomp;
+               $var = $_;
+               print "\$var now '$var'\n";
+           }
+
+           open CACHE, ">$CACHE" or die $!;    # write access
+           print CACHE Data::Dumper->Dump([$var],['var']);
+           close CACHE or die $!;
+
+           __CACHE__
+           $var = 'Original value';
+
+       Unlike "ARGV", if a virtual file is part of a writable file and is
+       automagically opened, it is opened for full read/write access. So the
+       above example, could be even simpler:
+
+           use Inline::Files;
+           use Data::Dumper;
+
+           eval join "", <CACHE>;      # Automagically opened
+
+           print "\$var was '$var'\n";
+           while (<>) {
+               chomp;
+               $var = $_;
+               print "\$var now '$var'\n";
+           }
+
+           seek CACHE, 0, 0;
+           print CACHE Data::Dumper->Dump([$var],['var']);
+
+           __CACHE__
+           $var = 'Original value';
+
+       In either case, the original file is updated only at the end of
+       execution, on an explicit "close" of the virtual file's handle, or when
+       "Inline::Files::Virtual::vf_save" is explicitly called.
+
+   Creating new Inline files on the fly.
+       You can also open up new Inline output files at run time. Simply use
+       the open function with a valid new Inline file handle name and no file
+       name. Like this:
+
+           use Inline::Files;
+
+           open IFILE, '>';
+
+           print IFILE "This line will be placed into a new Inline file\n";
+           print IFILE "which is marked by '__IFILE__'\n";
+
+   Safety first
+       Because Inline::Files handles are often read-write, it's possible to
+       accidentally nuke your hard-won data. But Inline::Files can save you
+       from yourself.
+
+       If Inline::Files is loaded with the "-backup" option:
+
+           use Inline::Files -backup;
+
+       then the source file that uses it is backed up before the inline files
+       are extracted. The backup file is the name of the source file with the
+       suffix ".bak" appended.
+
+       You can also specify a different name for the backup file, by
+       associating that name with the "-backup" flag:
+
+           use Inline::Files -backup => '/tmp/sauve_qui_peut';
+
+SEE ALSO
+       The Inline::Files::Virtual module
+
+       The Filter::Util::Call module
+
+   BUGS ADDED BY
+       Alberto Simoes  (ambs@cpan.org)
+
+UNWITTING PAWN OF AN AUTHOR
+       Damian Conway  (damian@conway.org)
+
+EVIL MASTERMIND BEHIND IT ALL
+       Brian Ingerson (INGY@cpan.org)
+
+COPYRIGHT
+       Copyright (c) 2001-2009. Damian Conway. All rights reserved.
+
+       This module is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+       See http://www.perl.com/perl/misc/Artistic.html
+
+perl v5.40.2                      2019-03-31                  Inline::Files(3)

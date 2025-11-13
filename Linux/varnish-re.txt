@@ -1,0 +1,415 @@
+vmod_re(3)                                                                                Library Functions Manual                                                                               vmod_re(3)
+
+Name
+       vmod_re - Varnish Module for Regular Expression Matching with Subexpression Capture
+
+SYNOPSIS
+          import re;
+
+          # object interface
+          new <obj> = re.regex(STRING [, INT limit] [, INT limit_recursion]
+                               [, BOOL forbody])
+          BOOL <obj>.match(STRING [, INT limit] [, INT limit_recursion])
+          STRING <obj>.backref(INT [, STRING fallback])
+          BOOL <obj>.match_body(req_body | bereq_body | resp_body
+                                [, INT limit] [, INT limit_recursion])
+
+          # Iterators
+          BOOL <obj>.foreach(STRING, SUB, [, INT limit] [, INT limit_recursion])
+          BOOL <obj>.foreach_body(req_body | bereq_body | resp_body, SUB,
+                                  [, INT limit] [, INT limit_recursion])
+
+          # filter interface (includes all of the above)
+          new <obj> = re.regex(STRING [, INT limit] [, INT limit_recursion]
+                               , forbody=true)
+          <obj>.substitute_match(INT, STRING)
+          set [be]resp.filters = "<obj>"
+
+          # function interface
+          BOOL re.match_dyn(STRING [, INT limit] [, INT limit_recursion])
+          STRING re.backref_dyn(INT [, STRING fallback])
+
+          STRING re.version()
+
+DESCRIPTION
+       Varnish Module (VMOD) for matching strings against regular expressions, and for extracting captured substrings after matches.
+
+       Regular  expression  matching  as implemented by the VMOD is equivalent to VCL's infix operator ~. The VMOD is motivated by the fact that backreference capture in standard VCL requires verbose and
+       suboptimal  use  of   the   regsub()   <https://varnish-cache.org/docs/trunk/reference/vcl.html#regsub-str-regex-sub>   or   regsuball()   <https://varnish-cache.org/docs/trunk/reference/vcl.html#
+       regsuball-str-regex-sub> functions. For example, this common idiom in VCL captures a string of digits following the substring "bar" from one request header into another:
+
+          sub vcl_recv {
+                  if (req.http.Foo ~ "bar\d+")) {
+                     set req.http.Baz = regsub(req.http.Foo,
+                                               "^.*bar(\d+).*$", "\1");
+
+                  }
+          }
+
+       It requires two regex executions when a match is found, the second one less efficient than the first (since it must match the entire string to be replaced while capturing a substring), and is just
+       cumbersome.
+
+       The equivalent solution with the VMOD looks like this:
+
+          import re;
+
+          sub vcl_init {
+                  new myregex = re.regex("bar(\d+)");
+          }
+
+          sub vcl_recv {
+                  if (myregex.match(req.http.Foo)) {
+                     set req.http.Baz = myregex.backref(1);
+                  }
+          }
+
+       For an example on body matching, see xregex.match_body().
+
+       The  object  is  created  at VCL initialization with the regex containing the capture expression, only describing the substring to be matched. When a match with the match or match_body method suc‐
+       ceeds, then a captured string can be obtained from the backref method.
+
+       Calls to the backref method refer back to the most recent call to match or match_body for the same object in the same task scope; that is, in the same client or backend  context.  For  example  if
+       match  is  called  for an object in one of the vcl_backend_* subroutines and returns true, then subsequent calls to backref in the same backend scope extract substrings from the matched substring.
+       For an unsuccessful match, all back references are cleared.
+
+       By setting the asfilter parameter to true, a regex object can also be configured to add a filter for performing substitutions on bodies. See xregex.substitute_match() for details and examples.
+
+       The VMOD also supports dynamic regex matching with the match_dyn and backref_dyn functions:
+
+          import re;
+
+          sub vcl_backend_response {
+                  if (re.match_dyn(beresp.http.Bar + "(\d+)",
+                                        req.http.Foo)) {
+                     set beresp.http.Baz = re.backref_dyn(1);
+                  }
+          }
+
+       In match_dyn, the regex in the first argument is compiled when it is called, and matched against the string in the second argument. Subsequent calls to  backref_dyn  extract  substrings  from  the
+       matched string for the most recent successful call to match_dyn in the same task scope.
+
+       As with the constructor, the regex argument to match_dyn should contain any capturing expressions needed for calls to backref_dyn.
+
+       match_dyn makes it possible to construct regexen whose contents are not fully known until runtime, but match is more efficient, since it re-uses the compiled expression obtained at VCL initializa‐
+       tion. So if you are matching against a fixed pattern that never changes during the lifetime of VCL, use match.
+
+   new xregex = re.regex(STRING, INT limit, INT limit_recursion, BOOL forbody, BOOL asfilter)
+          new xregex = re.regex(
+             STRING,
+             INT limit=1000,
+             INT limit_recursion=1000,
+             BOOL forbody=0,
+             BOOL asfilter=0
+          )
+
+       Description
+              Create  a  regex object with the given regular expression. The expression is compiled when the constructor is called. It should include any capturing parentheses that will be needed for ex‐
+              tracting backreferences.
+
+              If the regular expression fails to compile, then the VCL load fails with an error message describing the problem.
+
+              The optional parameters limit and limit_recursion are per-object defaults for the respective parameters of the xregex.match() method.
+
+              The optional parameter forbody is required if the xregex.match_body() method is to be called on the object.
+
+              If the optional asfilter parameter is true, the vmod registers itself as a Varnish Fetch Processor (VFP) for use  in  beresp.filters  <https://varnish-cache.org/docs/trunk/reference/vcl-var
+              .html#beresp-filters>  and  as  a  Varnish  Delivery  Processor  (VDP) for use in resp.filters <https://varnish-cache.org/docs/trunk/reference/vcl-var.html#resp-filters>. In this setup, the
+              xregex.substitute_match() and xregex.substitute_all() methods can be used to define replacements for matches on the body.
+
+       Example
+              new myregex = re.regex("\bmax-age\s*=\s*(\d+)");
+
+   BOOL xregex.match(STRING, INT limit, INT limit_recursion)
+          BOOL xregex.match(STRING, INT limit=0, INT limit_recursion=0)
+
+       Description
+              Determines whether the given string matches the regex compiled by the constructor; functionally equivalent to VCL's infix operator ~.
+
+              The optional parameter limit restricts the number of internal matching function calls in a pcre_exec() execution, analogous to the varnishd pcre_match_limit parameter. For the default value
+              0, the limit given to the constructor re.regex() is used.
+
+              The optional parameter limit_recursion restricts the number of internal matching function recursions in a pcre_exec() execution, analogous to the varnishd pcre_match_limit_recursion parame‐
+              ter.  For the default value 0, the limit_recursion given to the constructor re.regex() is used.
+
+       Example
+              if (myregex.match(beresp.http.Surrogate-Control)) { # ...
+
+   BOOL xregex.foreach(STRING, SUB sub, INT limit, INT limit_recursion)
+          BOOL xregex.foreach(
+                STRING,
+                SUB sub,
+                INT limit=0,
+                INT limit_recursion=0
+          )
+
+       Description
+              Calls subroutine sub as if xregex.match() was run for all matches on the given string. If there are no matches, the subroutine is not called. xregex.backref() can be used  to  retrieve  the
+              match constituents.
+
+       Example:
+
+          sub vcl_init {
+                  new myregex = re.regex("bar(\d+)");
+          }
+
+          sub myregex_collect {
+                  set resp.http.all += myregex.backref(0);
+          }
+
+          sub vcl_synth {
+                  unset resp.http.all;
+                  myregex.foreach(req.http.input, myregex_collect);
+          }
+
+          sub vcl_recv {
+                  return (synth(200));
+          }
+
+       Note  This  is  a  toy example, and if the purpose really is to collect all matches, regsuball() <https://varnish-cache.org/docs/trunk/reference/vcl.html#regsuball-str-regex-sub> is way more effi‐
+       cient.
+
+   BOOL xregex.match_body(ENUM which, INT limit, INT limit_recursion)
+          BOOL xregex.match_body(
+                ENUM {req_body, bereq_body, resp_body} which,
+                INT limit=0,
+                INT limit_recursion=0
+          )
+
+       Description
+              Like xregex.match(), except that it operates on the named body.
+
+              For a regular expression to be used with this method, it needs to be constructed with the forbody flag set in the re.regex() constructor. Calling this method when the flag was unset results
+              in a VCL failure.
+
+              PCRE2 multi segment matching <https://pcre.org/current/doc/html/pcre2partial.html#SEC4> is used to implement this method to reduce memory requirements. In particular, unlike implementations
+              in other vmods, this implementation does _not_ read the full body object into a contiguous memory region. It might, however, require as much temporary heap space as all body segments  which
+              the match found by the pattern spans.
+
+              Under ideal conditions, when the pattern spans only a single segment of a cached object, the xregex.match_body() method does not create copies of the body data.
+
+              When used with a req_body or bereq_body which argument, this method consumes the request body. If it is to be used again (for example, to send it to a backend), it should first be cached by
+              calling std.cache_req_body(<size>).
+
+              Lookarounds are not supported.
+
+       Example:
+
+          sub vcl_init {
+                  new pattern = re.regex("(a|b)=([^&]*).*&(a|b)=([^&]*)",
+                      forbody=true);
+          }
+
+          sub vcl_recv {
+                  if (pattern.match_body(req_body)) {
+                          return (synth(42200));
+                  }
+          }
+
+          sub vcl_synth {
+                  if (resp.status == 42200) {
+                          set resp.http.n1 = pattern.backref(1, "");
+                          set resp.http.v1 = pattern.backref(2, "");
+                          set resp.http.n2 = pattern.backref(3, "");
+                          set resp.http.v2 = pattern.backref(4, "");
+                          set resp.body = "";
+                          return (deliver);
+                  }
+          }
+
+          # response contains first parameter named a or b from the body as n1,
+          # first value as v1, and the second parameter and value as n2
+          # and v2
+
+   BOOL xregex.foreach_body(ENUM which, SUB sub, INT limit, INT limit_recursion)
+          BOOL xregex.foreach_body(
+                ENUM {req_body, bereq_body, resp_body} which,
+                SUB sub,
+                INT limit=0,
+                INT limit_recursion=0
+          )
+
+       Description
+              Calls  subroutine  sub  as  if  xregex.match() was run for all matches on the given body. If there are no matches, the subroutine is not called. xregex.backref() can be used to retrieve the
+              match constituents.
+
+              See also xregex.match_body().
+
+       Example:
+
+          # for key=value separated by &, collect two a and/or b key pairs
+          #
+          # sample output: a=1,b=22;b=333,a=4444;
+          #
+
+          sub vcl_init {
+                  new pattern = re.regex("(?:^|&)(a|b)=([^&]*).*?&(a|b)=([^&]*)",
+                      forbody=true);
+          }
+
+          sub collect {
+                  set resp.http.all +=
+                      pattern.backref(1) + "=" + pattern.backref(2) + "," +
+                      pattern.backref(3) + "=" + pattern.backref(4) + ";";
+          }
+
+          sub vcl_synth {
+                  unset resp.http.all;
+                  if (pattern.foreach_body(req_body, collect)) {
+                          set resp.status = 200;
+                  }
+                  return (deliver);
+          }
+
+          sub vcl_recv {
+                  return (synth(400));
+          }
+
+   STRING xregex.backref(INT, STRING fallback)
+          STRING xregex.backref(
+                INT,
+                STRING fallback="**BACKREF METHOD FAILED**"
+          )
+
+       Description
+              Extracts the nth subexpression of the most recent successful call of the match method for this object in the same task scope (client or backend context), or a fallback string  in  case  the
+              extraction  fails.   Backref  0  indicates  the  entire  matched string. Thus this function behaves like the \n symbols in regsub() <https://varnish-cache.org/docs/trunk/reference/vcl.html#
+              regsub-str-regex-sub> and regsuball() <https://varnish-cache.org/docs/trunk/reference/vcl.html#regsuball-str-regex-sub>, and the $1, $2 ...  variables in Perl.
+
+              After unsuccessful matches, the fallback string is returned for any call to backref. The default value of fallback is "**BACKREF METHOD FAILED**".
+
+              The VCL infix operators ~ and !~ do not affect this method, nor do  the  functions  regsub()  <https://varnish-cache.org/docs/trunk/reference/vcl.html#regsub-str-regex-sub>  or  regsuball()
+              <https://varnish-cache.org/docs/trunk/reference/vcl.html#regsuball-str-regex-sub>.
+
+              If  backref  is  called without any prior call to match for this object in the same task scope, then an error message is emitted to the Varnish log using the VCL_Error tag, and the fallback
+              string is returned.
+
+              Lookarounds are not supported.
+
+       Example
+              set beresp.ttl = std.duration(myregex.backref(1, "120"), 120s);
+
+   VOID xregex.substitute_match(INT, STRING)
+       Description
+              This method defines substitutions for regular expression replacement ("regsub") operations on HTTP bodies.
+
+              It can only be used on re.regex() objects initiated with the asfilter argument set to true, or a VCL failure will be triggered.
+
+              The INT argument defines to which match the substitution is to be applied: For 1, it applies to the first match, for 2 to the second etc. A value of 0 defines the default substitution which
+              is applied if a specific substitution is not defined. Negative values trigger a VCL failure.
+
+              If no substitution is defined for a match (and there is no default), the matched sub-string is left unchanged.
+
+              The STRING argument defines the substitution to apply, exactly like the sub (third) argument of the  regsub()  <https://varnish-cache.org/docs/trunk/reference/vcl.html#regsub-str-regex-sub>
+              built-in VCL function: \0 (which can also be spelled \&) is replaced with the entire matched string, and \n is replaced with the contents of subgroup n in the matched string.
+
+              To have any effect, the regex object must be used as a fetch or delivery filter.
+
+       Example
+              For  occurrences of the string "reiher" in the response body, replace the first with "czapla", the second with "eier" and all others with "heron". The response is returned uncompressed even
+              if the client supported compression because there currently is no gzip VDP in Varnish-Cache:
+
+                 sub vcl_init {
+                     new reiher = re.regex("r(ei)h(er)", asfilter = true);
+                 }
+                 sub vcl_deliver {
+                     unset req.http.Accept-Encoding;
+                     set resp.filters += " reiher";
+                     reiher.substitute_match(1, "czapla");
+                     reiher.substitute_match(2, "\1\2");
+                     reiher.substitute_match(0, "heron");
+                 }
+
+   VOID xregex.substitute_all(STRING)
+       Description
+              This method instructs the named filter object to replace all matches with the STRING argument.
+
+              It is a shorthand for calling:
+
+                 xregex.clear_substitutions();
+                 xregex.substitute_match(0, STRING);
+
+              See xregex.substitute_match() for when to use this method.
+
+   VOID xregex.clear_substitutions()
+       Description
+              This method clears all previous substitution definions through xregex.substitute_match() and xregex.substitute_all().
+
+              It is not required because VCL code could always be written sucht hat only one code patch ever calls xregex.substitute_match() and xregex.substitute_all(), but it is provided to  allow  for
+              simpler VCL for handling exceptional cases.
+
+              See xregex.substitute_match() for when to use this method.
+
+   BOOL match_dyn(STRING, STRING, INT limit, INT limit_recursion)
+          BOOL match_dyn(
+             STRING,
+             STRING,
+             INT limit=1000,
+             INT limit_recursion=1000
+          )
+
+       Description
+              Compiles the regular expression given in the first argument, and determines whether it matches the string in the second argument.
+
+              If the regular expression fails to compile, then an error message describing the problem is emitted to the Varnish log with the tag VCL_Error, and match_dyn returns false.
+
+              For parameters limit and limit_recursion see xregex.match(), except that there is no object to inherit defaults from.
+
+       Example
+              if (re.match_dyn(req.http.Foo + "(\d+)", beresp.http.Bar)) { # ...
+
+   STRING backref_dyn(INT, STRING fallback)
+          STRING backref_dyn(
+             INT,
+             STRING fallback="**BACKREF FUNCTION FAILED**"
+          )
+
+       Description
+              Similar to the backref method, this function extracts the nth subexpression of the most recent successful call of the match_dyn function in the same task scope, or a fallback string in case
+              the extraction fails.
+
+              After unsuccessful matches, the fallback string is returned for any call to backref_dyn. The default value of fallback is "**BACKREF FUNCTION FAILED**".
+
+              If backref_dyn is called without any prior call to match_dyn in the same task scope, then a VCL_Error message is logged, and the fallback string is returned.
+
+   STRING version()
+       Description
+              Returns the version string for this vmod.
+
+       Example
+              set resp.http.X-re-version = re.version();
+
+REQUIREMENTS
+       The VMOD requires the Varnish since version 6.0.0 or the master branch. See the project repository for versions that are compatible with other versions of Varnish.
+
+LIMITATIONS
+       The  VMOD  allocates  memory for captured subexpressions from Varnish workspaces, whose sizes are determined by the runtime parameters workspace_backend, for calls within the vcl_backend_* subrou‐
+       tines, and workspace_client, for the other VCL subs. The VMOD copies the string to be matched into the workspace, if it's not already in the workspace, and also uses workspace to save  data  about
+       backreferences.
+
+       For typical usage, the default workspace sizes are probably enough; but if you are matching against many, long strings in each client or backend context, you might need to increase the Varnish pa‐
+       rameters  for  workspace  sizes.  If  the  VMOD cannot allocate enough workspace, then a VCL_error message is emitted, and the match methods as well as backref will fail. (If you're just using the
+       regexen for matching and not to capture backrefs, then you might as well just use the standard VCL operators ~ and !~, and save the workspace.)
+
+       backref can extract up to 10 subexpressions, in addition to the full expression indicated by backref 0. If a match or match_dyn operation would have resulted in more  than  11  captures  (10  sub‐
+       strings and the full string), then a VCL_Error message is emitted to the Varnish log, and the captures are limited to 11.
+
+SEE ALSO
+       • varnishd(1)
+
+       • vcl(7)
+
+       • pcre(3)
+
+       • source repository: <https://code.uplex.de/uplex-varnish/libvmod-re>
+
+COPYRIGHT
+          Copyright 2014-2023 UPLEX Nils Goroll Systemoptimierung
+          All rights reserved
+
+          This document is licensed under the same conditions as the libvmod-re
+          project. See LICENSE for details.
+
+          Authors: Geoffrey Simmons <geoffrey.simmons@uplex.de>
+                   Nils Goroll <nils.goroll@uplex.de>
+
+                                                                                                                                                                                                 vmod_re(3)

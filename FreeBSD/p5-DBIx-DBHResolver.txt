@@ -1,0 +1,226 @@
+DBIx::DBHResolver(3)  User Contributed Perl Documentation DBIx::DBHResolver(3)
+
+
+NAME
+       DBIx::DBHResolver - Resolve database connection on the environment has
+       many database servers.
+
+SYNOPSIS
+         use DBIx::DBHResolver;
+
+         my $r = DBIx::DBHResolver->new;
+         $r->config(+{
+           connect_info => +{
+             main_master => +{
+               dsn => 'dbi:mysql:dbname=main;host=localhost',
+               user => 'master_user', password => '',
+               attrs => +{ RaiseError => 1, AutoCommit => 0, },
+             },
+             main_slave => +{
+               dsn => 'dbi:mysql:dbname=main;host=localhost',
+               user => 'slave_user', password => '',
+               attrs => +{ RaiseError => 1, AutoCommit => 1, },
+             }
+           },
+         });
+
+         my $dbh_master = $r->connect('main_master');
+         $dbh_master->do( 'UPDATE people SET ...', undef, ... );
+
+         my $dbh_slave = $r->connect('main_slave');
+         my $people = $dbh_slave->selectrow_hashref( 'SELECT * FROM people WHERE id = ?', undef, 20 );
+
+DESCRIPTION
+       DBIx::DBHResolver resolves database connection on the environment has
+       many database servers.  The resolution algorithm is extensible and
+       pluggable, because of this you can make custom strategy module easily.
+
+       This module can retrieve DBI's database handle object or connection
+       information (data source, user, credential...) by labeled name and
+       treat same cluster consists many nodes as one labeled name, choose
+       fetching strategy.
+
+       DBIx::DBHResolver is able to use as instance or static class.
+
+   USING STRATEGY, MAKING CUSTOM STRATEGY
+       See DBIx::DBHResolver::Strategy::Key.
+
+   connect_info format
+       connect_info is node information to connect it. Following fields are
+       recognized.
+
+         my $connect_info = +{
+           dsn => 'dbi:mysql:db=test',
+           user => 'root',
+           password => '',
+           attrs => +{ RaiseError => 1, AutoCommit => 0 },
+           opts => +{},
+         };
+
+       dsn string value. dsn is connection information used by DBI's connect()
+           method.
+
+       user
+           string value. user is database access user used by DBI's connect()
+           method.
+
+       password
+           string value. user is database access password used by DBI's
+           connect() method.
+
+       attrs
+           hash reference value. attrs is optional parameter used by DBI's
+           connect() method.
+
+       opts
+           hash reference value. opts is optional parameter used by this
+           module.
+
+METHODS
+   new()
+       Create DBIx::DBHResolver instance.
+
+   load( $yaml_file_path )
+       Load config file formatted yaml.
+
+   config( \%config )
+       Load config. Example config (perl hash reference format):
+
+         +{
+           clusters => +{
+             diary_master => [qw/diary001_master diary002_master/],
+             people_master => [qw/people001_master people002_master people003_master people004_master/]
+           },
+           connect_info => +{
+             diary001_master => +{
+               dsn => 'dbi:driverName:...',
+               user => 'root', password => '', attrs => +{},
+             },
+             diary002_master => +{ ... },
+             ...
+           },
+         }
+
+   connect( $cluster_or_node, $args )
+       Retrieve database handle. If $args is scalar or array reference, then
+       $args is treated sharding key.  If $args is hash reference, then see
+       below.
+
+       strategy
+           Optional parameter. Specify suffix of strategy module name. Default
+           strategy module is prefixed 'DBIx::DBHResolver::Strategy::'.  If
+           you want to make custom strategy that is not started of
+           'DBIx::DBHResolver::Strategy::', then add prefix '+' at the
+           beginning of the module name, such as '+MyApp::Strategy::Custom'.
+
+       key Optional parameter. Strategy module uses hint choosing node.
+
+   connect_cached($cluster_or_node, $args)
+       Retrieve database handle from own cache, if not exists cache then using
+       DBI::connect(). $args is same as connect().
+
+   connect_info($cluster_or_node, $args)
+       Retrieve connection info as HASHREF. $args is same as connect().
+
+   resolve($cluster_or_node, $args)
+       Return resolved node name. $args is same as connect.
+
+   resolve_node_keys($cluster_or_node, $keys, $args)
+       Return hash resolved node and keys. $args is same as connect
+
+         use DBIx::DBHResolver;
+
+         my $resolver = DBIx::DBHResolver->new;
+         $resolver->config(+{
+           clusters => +{
+             MASTER => +{
+               nodes => [qw/MASTER001 MASTER002 MASTER003/],
+               strategy => 'Key',
+             }
+           },
+           connect_info => +{
+             MASTER001 => +{ ... },
+             MASTER002 => +{ ... },
+             MASTER003 => +{ ... },
+           },
+         });
+
+         my @keys = ( 3 .. 8 );
+         my %node_keys = $resolver->resolve_node_keys( 'MASTER', \@keys );
+         ### %node_keys = ( MASTER001 => [ 3, 6 ], MASTER002 => [ 4, 7 ], MASTER003 => [ 5, 7 ] )
+         while ( my ( $node, $keys ) = each %node_keys ) {
+             process_node( $node, $keys );
+         }
+
+   disconnect_all()
+       Disconnect all cached database handles.
+
+   cluster_info($cluster)
+       Return cluster info hash ref.
+
+   clusters($cluster)
+       Retrieve cluster member node names as Array.
+
+         my $r = DBIx::DBHResolver->new;
+         $r->config(+{ ... });
+         my $cluster_or_node = 'activities_master';
+         if ( $r->is_cluster($cluster_or_node) ) {
+           for ($r->cluster( $cluster_or_node )) {
+             process_activities_node($_);
+           }
+         }
+         else {
+           process_activities_node($cluster_or_node);
+         }
+
+   is_cluster($cluster)
+       Return boolean value which cluster or not given name.
+
+   is_node($node)
+       Return boolean value which node or not given name.
+
+GLOBAL VARIABLES
+   $CONFIG
+       Stored config on using class module.
+
+   $DBI
+       DBI module name, default 'DBI'. If you want to use custom DBI sub
+       class, then you must override this variable.
+
+   $DBI_CONNECT_METHOD
+       DBI connect method name, default 'connect';
+
+       If you want to use DBIx::Connector instead of DBI, then:
+
+         use DBIx::Connector;
+         use DBIx::DBHResolver;
+
+         $DBIx::DBHResolver::DBI = 'DBIx::Connector';
+         $DBIx::DBHResolver::DBI_CONNECT_METHOD = 'new';
+         $DBIx::DBHResolver::DBI_CONNECT_CACHED_METHOD = 'new';
+
+         my $r = DBIx::DBHResolver->new;
+         $r->config(+{...});
+
+         $r->connect('main_master')->txn(
+           fixup => sub {
+             my $dbh = shift;
+             ...
+           }
+         );
+
+   $DBI_CONNECT_CACHED_METHOD
+       DBI connect method name, default 'connect_cached';
+
+AUTHOR
+       Kosuke Arisawa <arisawa@gmail.com>
+       Toru Yamaguchi <zigorou@cpan.org>
+
+SEE ALSO
+       DBI
+
+LICENSE
+       This library is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.40.2                      2012-10-21              DBIx::DBHResolver(3)

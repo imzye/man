@@ -1,0 +1,303 @@
+DBIx::HA(3)           User Contributed Perl Documentation          DBIx::HA(3)
+
+
+NAME
+       DBIx::HA - High Availability package for DBI
+
+SYNOPSIS
+        use DBIx::HA;
+
+        $connect_attributes = {
+                syb_flush_finish => 1,
+                AutoCommit => 1,
+                ChopBlanks => 1,
+                PrintError => 0,
+                RaiseError => 0,
+                RootClass  => 'DBIx::HA'
+                };
+
+        $DATABASE::conf{'test'} = {
+           max_retries => 2,
+           db_stack => [
+               [ 'dbi:Sybase:server=prod1;database=test', 'user1', 'password1', $connect_attributes ],
+               [ 'dbi:Sybase:server=prod2;database=test', 'user2', 'password2', $connect_attributes ],
+               [ 'dbi:Sybase:server=prod3;database=test', 'user3', 'password3', $connect_attributes ],
+               ],
+           connectoninit   => 0,
+           pingtimeout     => -1,
+           failoverlevel   => 'application',
+           connecttimeout  => 1,
+           executetimeout  => 8,
+           callback_function => \&MyCallbackFunction,
+               failtest_function   => \&DBIx::HA::FTF_SybaseASE,
+           };
+
+        DBIx::HA->initialize();
+        $dbh = DBIx::HA->connect('test');
+
+        $sth = $dbh->prepare($statement);
+        $rv = $sth->execute;
+
+DESCRIPTION
+       "DBIx::HA" is a High Availability module for "DBI". It is implemented
+       by overloading the DBI "connect", "prepare" and "execute" methods and
+       can be seamlessly used without code modification except for
+       initialization.
+
+       "DBIx::HA" also works seamlessly with "Apache::DBI" when available, and
+       ensures that cached database handles in the Apache::DBI module are
+       properly updated when failing over.
+
+       Features of "DBIx::HA" are:
+
+       multiple failovers
+           Should a datasource become unavailable, queries are automatically
+           sent to the next available datasource in a user-configured
+           datasource stack.  All subsequent queries continue to hit the
+           failover server until reinitialized. This ensures that a failed
+           datasource can be properly brought back online before it is put
+           back in service.
+
+       timeouts
+           Database calls are wrapped in user-configurable timeouts. Connect
+           and execute timeouts are handled independently. As of version 0.62,
+           timeouts are handled through Sys::SigAction for consistent signal
+           handling behavior across Perl versions.
+
+       configurable retries
+           Queries can be retried n times before a datasource is considered
+           failed.  Starting with version 0.95, the retry counter is reset
+           whenever a reconnect works.
+
+       callback function
+           A user-defined callback function can be called upon abnormal
+           failure and disconnection from a datasource in order to clean
+           locally cached handles and perform other housekeeping tasks.
+
+       inter-process automatic failover under mod_perl
+           Failover can be triggered for a single process or a set of
+           processes at the application level. Specifically designed for
+           Apache's multi-process model, if one mod_perl process triggers a
+           failover, it is propagated to all other mod_perl processes using
+           the same database handle.
+
+       "DBIx::HA" was designed primarily for reliability and speed.
+       Functionality that would compromise speed was not considered. This
+       module has been tested extensively at very high loads in the
+       Apache/mod_perl/Sybase environment.
+
+CONFIGURATION
+       The hash %DATABASE::conf is currently the configuration repository for
+       "DBIx::HA". It must be manually and directly populated by the user
+       prior to initialization and usage of "DBIx::HA".
+
+       Each key of %DATABASE::conf is the name of a virtual database handle.
+       The corresponding value is a hashref with the following keys:
+
+       db_stack REQUIRED
+           db_stack is an arrayref of arrayrefs. Each entry is of the format:
+
+           [ $dsn, $username, $password, \%connection_attributes ]
+
+           See the "DBI" documentation for more information.  The order of the
+           db_stack entries is very important. It determines the order by
+           which each dsn will be tried upon triggering a failover. The first
+           entry is the main dsn that will be used at start.
+
+       max_retries REQUIRED
+           max_retries takes an integer > 0 as value. It determines the number
+           of times a datasource will be consecutively retried upon failure.
+           It is reset upon success of a retry. This is a change in behavior
+           starting in version 0.95.  For example, if max_retries is 3, if
+           datasource #1 can't be reached three times in a row then
+           _reconnect() will reset the number of tries and go to datasource #2
+           if available.
+
+       connectoninit ( DEFAULT: 0 )
+           If set to 1 and Apache::DBI has already been loaded, then during
+           the initialize() phase database connections will be opened with the
+           currently active db_stack entry.  This is very useful under
+           mod_perl and replaces the purpose of the "Apache::DBI"
+           connect_on_init() method.
+
+       pingtimeout ( DEFAULT: -1 )
+           This configures the usage of the ping method, to validate a
+           connection.  The option is only checked if Apache::DBI has already
+           been loaded. The default of -1 disables pinging the datasource. It
+           is recommended not to modify it. See "Apache::DBI" for more
+           information on ping timeouts. Timeout is in seconds.
+
+       failoverlevel ( DEFAULT: process )
+           failoverlevel determines whether a process will notify its sisters
+           when fails over to another datasource.
+
+           process
+               no notification is made, and each process independently manages
+               its datasource availability. Within a mod_perl environment,
+               this means that each Apache process could be potentially
+               hitting a different physical database server.
+
+           application
+               A file-based interprocess communication is used to notify
+               Apache/mod_perl processes of the currently active datasource.
+               This allows all processes to fail over near-simultaneously. A
+               process in the middle of an execute will do it on the next call
+               to prepare or execute. This is only available under mod_perl.
+               It only has an effect if we detect that mod_perl is in effect,
+               by checking that $Apache::VERSION has a value.
+
+       connecttimeout ( DEFAULT: 30 )
+           Timeout for connecting to a datasource, in seconds. A value of 0
+           disables this timeout.
+
+       executetimeout ( DEFAULT: 30 )
+           Timeout for execution of a statement, in seconds. If the timeout is
+           triggered, the database handle is deleted and a new connect is
+           tried. If the connect succeeds, we assume that the problem is with
+           a runaway SQL statement or bad indexing. If the connect fails, then
+           we fail over. A value of 0 disables this timeout.
+
+       callback_function ( DEFAULT: none )
+           reference to a function to call whenever the datasource is changed
+           due to a failover. See the TIPS sections for a usage example.
+
+       failtest_function ( DEFAULT: sub{0} )
+           Reference to a function to call to test if a DBI error is a
+           candidate for failover or not. This is only triggered when a call
+           to execute() returns an undefined value.
+
+           Input is ($DBI::err, $DBI::errstr). These correspond to the native
+           driver error code and string values. See the docs for your database
+           driver and DBI for details.
+
+           Output is boolean: If true, then we'll consider the error a
+           critical condition, ok to failover. If false, then DBIx::HA will
+           not act on it and pass it straight through to the client.
+
+           This Fail Test Function (FTF) function is extremely important for
+           the proper functioning of DBIx::HA. You must be careful  in
+           defining it precisely, based on the database engine that you are
+           using. A sample function for Sybase is included:
+
+             failtest_function   => \&DBIx::HA::FTF_SybaseASE,
+
+           To consider any error a reason to failover, you could use the
+           following:
+
+             failtest_function   => sub {1},
+
+USER METHODS
+       These methods provide a user interface to "DBIx::HA".
+
+       initialize ()
+           This method is called as a static method after database
+           configuration is done.  At this point, database configuration
+           resides in the %DATABASE::conf hash that needs to be properly
+           populated. Later revisions of "DBIx::HA" will allow the passing of
+           a reference to any configuration hash to initialize.
+
+           See a sample %DATABASE::conf in the SYNOPSIS section. That section
+           creates an entry for the 'test' HA database handle, which is
+           comprised of 3 physical database handles (prod1, prod2, prod3).
+           'prod1' is the main handle, while the other 2 are backup handles.
+
+           Add other HA database handles by creating more entries in
+           %DATABASE::conf.
+
+       connect ( $dbname )
+           Static method to connect to the HA handle 'dbname'. There must be a
+           valid entry for $DATABASE::conf{'dbname'}.  Returns a standard DBI
+           database handle.
+
+       prepare ( $dbh, $sql )
+           Overload of DBI::prepare(), with the same inputs and outputs.
+
+       execute ()
+           Overload of DBI::execute(), with the same inputs and outputs.
+
+CLASS METHODS
+       These private methods are not intended to be called by the user, but
+       are listed here for reference.
+
+       _init_child ()
+       _readsharedfile ( $dbname )
+       _writesharedfile ( $dbname, $dbstackindex )
+       _getdbname ( $dsn )
+       _isactivedb ( $dsn )
+       _getnextdb ( $dsn )
+       _getApacheDBIidx ()
+       _reconnect ( $dsn, [ $dbh ] )
+       _connect_with_timeout ( $dsn, $username, $auth, \%attrs )
+       _reprepare ( $dsn, $sql )
+       _prepare_with_timeout ( $dsn, $dbh, $sql )
+       _reexecute ( $dsn, $sql, [ $sth ] )
+       _execute_with_timeout ( $dsn, $sth )
+
+TIPS AND TECHNIQUES
+       load-balancing across read-only servers
+           It is very simple to load-balance across read-only database
+           servers.  Simply randomize or reorder the 'db_stack' entry in your
+           database configuration on a per-process basis. This will make each
+           process have its own set of primary and backup servers.  Obviously
+           you should never do that on a read-write environment with hot
+           spares as you will be writing to the hot spares without writing to
+           the primary server. Consider "DBD::Multiplex" for such an
+           application.
+
+       manually setting the active datasource without downtime
+           Under mod_perl you can flip all Apache processes to a specific
+           datasource by simply modifying the file DBIxHA_activedb_$dbname
+           located in the /log directory in your Apache installation. Assuming
+           that you are using failoverlevel 'application', all processes will
+           switch to the datasource you define in that file as soon as they
+           are ready to prepare or execute a statement.
+
+           Another trick is to set the value in the shared file to -1. This
+           will tell the module that we've reached the end of the stack and no
+           connection should be attempted, effectively blocking all database
+           calls.
+
+           Conversely, if the shared file does contain -1 because all DSNs in
+           the stack have failed, you can reset it to whatever DSN entry you
+           want without having to bounce Apache.
+
+DEPENDENCIES
+       This modules requires Perl >= 5.6.0, DBI >= 1.49  and Sys::SigAction.
+
+       Apache::DBI is recommended when using mod_perl.  If using Apache::DBI,
+       version 0.89 or above is required.  Always load Apache::DBI and Apache
+       before DBIx::HA if you want DBIx::HA to know of them.
+
+       If using PostgreSQL, use DBD::Pg 2.0 or newer. Older versions of
+       DBD::Pg contain a bug which make it incompatible with this module.
+
+BUGS
+       Currently %DATABASE::conf needs to be manually and directly populated.
+       A proper interface needs to be built for it.
+
+URLS
+       The DBIx::HA project is hosted in Google Code:
+         http://code.google.com/p/perl-dbix-ha/
+
+       Please submit bug reports or feature improvements requests to the site
+       above.
+
+       The svn repository is also at:
+         https://perl-dbix-ha.googlecode.com/svn/
+
+SEE ALSO
+       "DBD::Multiplex" for simultaneous writes to multiple data sources.
+
+       "Apache::DBI" for ping timeouts and caching of database handles.
+
+       "Sys::SigAction" for safe signal handling, particularly with DBI.
+
+AUTHOR
+       Henri Asseily <henri@asseily.com>
+
+COPYRIGHT
+       Copyright (c) 2003-2006 Henri Asseily <henri@asseily.com>.  All rights
+       reserved. This program is free software; you can redistribute it and/or
+       modify it under the same terms as Perl itself.
+
+perl v5.40.2                      2008-06-16                       DBIx::HA(3)

@@ -1,0 +1,636 @@
+PYXS(3)                                                                                             pyxs                                                                                            PYXS(3)
+
+NAME
+       pyxs - pyxs Documentation
+
+          .---. .-..-..-.,-. .--.
+          : .; `: :; :`.  .'`._-.'
+          : ._.'`._. ;:_,._;`.__.'
+          : :    .-. :
+          :_;    `._.'       0.4.2-dev
+
+          -- XenStore access the Python way!
+
+       It's a pure Python XenStore client implementation, which covers all of the libxs features and adds some nice Pythonic sugar on top. Here's a shortlist:
+
+       • pyxs supports both Python 2 and 3,
+
+       • works over a Unix socket or XenBus,
+
+       • has a clean and well-documented API,
+
+       • is written in easy to understand Python,
+
+       • can be used with gevent or eventlet.
+
+       If you have pip you can do the usual:
+
+          pip install --user pyxs
+
+       Otherwise, download the source from GitHub and run:
+
+          python setup.py install
+
+       Fedora users can install the package from the system repository:
+
+          dnf install python2-pyxs
+          dnf install python3-pyxs
+
+       RHEL/CentOS users can install the package from the EPEL repository:
+
+          yum install python2-pyxs
+          yum install python34-pyxs
+
+       Head over to our brief Tutorial or, if you're feeling brave, dive right into the API reference; pyxs also has a couple of examples in the examples directory.
+
+TUTORIAL
+   Basics
+       Using pyxs is easy! The only class you need to import is Client. It provides a simple straightforward API to XenStore content with a bit of Python's syntactic sugar here and there.
+
+       Generally, if you just need to fetch or update some XenStore items you can do:
+
+          >>> from pyxs import Client
+          >>> with Client() as c:
+          ...     c[b"/local/domain/0/name"] = b"Ziggy"
+          ...     c[b"/local/domain/0/name"]
+          b'Ziggy'
+
+       Using Client without the with statement is possible, albeit, not recommended:
+
+       >>> c = Client()
+       >>> c.connect()
+       >>> c[b"/local/domain/0/name"] = b"It works!"
+       >>> c.close()
+
+       The reason for preferring a context manager is simple: you don't have to DIY. The context manager will make sure that a started transaction was either rolled back or committed and close the under‐
+       lying XenStore connection afterwards.
+
+   Connections
+       pyxs supports two ways of communicating with XenStore:
+
+       • over a Unix socket with UnixSocketConnection;
+
+       • over XenBus with XenBusConnection.
+
+       Connection type is determined from the arguments passed to Client constructor. For example, the following code creates a Client instance, operating over a Unix socket:
+
+          >>> Client(unix_socket_path="/var/run/xenstored/socket_ro")
+          Client(UnixSocketConnection('/var/run/xenstored/socket_ro'))
+          >>> Client()
+          Client(UnixSocketConnection('/var/run/xenstored/socket'))
+
+       Use xen_bus_path argument to initialize a Client with XenBusConnection:
+
+          >>> Client(xen_bus_path="/dev/xen/xenbus")
+          Client(XenBusConnection('/dev/xen/xenbus'))
+
+   Transactions
+       Transactions allow you to operate on an isolated copy of XenStore tree and merge your changes back atomically on commit. Keep in mind, however, that changes made within a transaction become avail‐
+       able to other XenStore clients only if and when committed.  Here's an example:
+
+          >>> with Client() as c:
+          ...     c.transaction()
+          ...     c[b"/foo/bar"] = b"baz"
+          ...     c.commit()  # !
+          ...     print(c[b"/foo/bar"])
+          b'baz'
+
+       The line with an exclamation mark is a bit careless, because it ignores the fact that committing a transaction might fail. A more robust way to commit a transaction is by using a loop:
+
+          >>> with Client() as c:
+          ...     success = False
+          ...     while not success:
+          ...         c.transaction()
+          ...         c[b"/foo/bar"] = b"baz"
+          ...         success = c.commit()
+
+       You can also abort the current transaction by calling rollback().
+
+   Events
+       When a new path is created or an existing path is modified, XenStore fires an event, notifying all watching clients that a change has been made.  pyxs implements watching via the Monitor class. To
+       watch  a  path create a monitor monitor() and call watch() with a path you want to watch and a unique token. Right after that the monitor will start to accumulate incoming events.  You can iterate
+       over them via wait():
+
+          >>> with Client() as c:
+          ...    m = c.monitor()
+          ...    m.watch(b"/foo/bar", b"a unique token")
+          ...    next(m.wait())
+          Event(b"/foo/bar", b"a unique token")
+
+       XenStore has a notion of special paths, which start with @ and are reserved for special occasions:
+                                                           ┌──────────────────┬──────────────────────────────────────────────────────────────────────┐
+                                                           │ Path             │ Description                                                          │
+                                                           ├──────────────────┼──────────────────────────────────────────────────────────────────────┤
+                                                           │ @introduceDomain │ Fired when a new domain is introduced to XenStore --  you  can  also │
+                                                           │                  │ introduce  domains  yourself  with a introduce_domain() call, but in │
+                                                           │                  │ most of the cases, xenstored will do that for you.                   │
+                                                           ├──────────────────┼──────────────────────────────────────────────────────────────────────┤
+                                                           │ @releaseDomain   │ Fired when XenStore is no longer communicating with  a  domain,  see │
+                                                           │                  │ release_domain().                                                    │
+                                                           └──────────────────┴──────────────────────────────────────────────────────────────────────┘
+
+       Events  for  both  special  and  ordinary  paths  are  simple two element tuples, where the first element is always event target -- a path which triggered the event and second is a token passed to
+       watch(). A rather unfortunate consequence of this is that you can't get domid of the domain, which triggered @introduceDomain or @releaseDomain from the received event.
+
+   Compatibility API
+       pyxs also provides a compatibility interface, which mimics that of xen.lowlevel.xs --- so you don't have to change anything in the code to switch to pyxs:
+
+          >>> from pyxs import xs
+          >>> handle = xs()
+          >>> handle.read("0", b"/local/domain/0/name")
+          b'Domain-0'
+          >>> handle.close()
+
+API REFERENCE
+   Client and Monitor
+       class pyxs.client.Client(unix_socket_path=None, xen_bus_path=None, router=None)
+              XenStore client.
+
+              Parameters
+
+                     • unix_socket_path (str) -- path to XenStore Unix domain socket.
+
+                     • xen_bus_path (str) -- path to XenBus device.
+
+              If unix_socket_path is given or Client was created with no arguments, XenStore is accessed via UnixSocketConnection; otherwise, XenBusConnection is used.
+
+              Each client has a Router thread running in the background. The goal of the router is to multiplex requests from different transaction through a single XenStore connection.
+
+              Changed in version 0.4.0: The constructor no longer accepts connection argument. If you wan't to force the use of a specific connection class, wrap it in a Router:
+
+                 from pyxs import Router, Client
+                 from pyxs.connection import XenBusConnection
+
+                 router = Router(XenBusConnection())
+                 with Client(router=router) as c:
+                     do_something(c)
+
+              WARNING:
+                 Always finalize the client either explicitly by calling close() or implicitly via a context manager to prevent data loss.
+
+              SEE ALSO:
+                 Xenstore protocol specification for a description of the protocol, implemented by Client.
+
+              connect()
+                     Connects to the XenStore daemon.
+
+                     Raises pyxs.exceptions.ConnectionError -- if the connection could not be opened. This could happen either because XenStore is not running on the machine or due to the lack of permis‐
+                            sions.
+
+                     WARNING:
+                        This method is unsafe. Please use client as a context manager to ensure it is properly finalized.
+
+              close()
+                     Finalizes the client.
+
+                     WARNING:
+                        This method is unsafe. Please use client as a context manager to ensure it is properly finalized.
+
+              read(path, default=None)
+                     Reads data from a given path.
+
+                     Parameters
+
+                            • path (bytes) -- a path to read from.
+
+                            • default (bytes) -- default value, to be used if path doesn't exist.
+
+              write(path, value)
+                     Writes data to a given path.
+
+                     Parameters
+
+                            • value (bytes) -- data to write.
+
+                            • path (bytes) -- a path to write to.
+
+              mkdir(path)
+                     Ensures that a given path exists, by creating it and any missing parents with empty values. If path or any parent already exist, its value is left unchanged.
+
+                     Parameters
+                            path (bytes) -- path to directory to create.
+
+              delete(path)
+                     Ensures that a given does not exist, by deleting it and all of its children. It is not an error if path doesn't exist, but it is an error if path's immediate parent  does  not  exist
+                     either.
+
+                     Parameters
+                            path (bytes) -- path to directory to remove.
+
+              list(path)
+                     Returns a list of names of the immediate children of path.
+
+                     Parameters
+                            path (bytes) -- path to list.
+
+              exists(path)
+                     Checks if a given path exists.
+
+                     Parameters
+                            path (bytes) -- path to check.
+
+              get_perms(path)
+                     Returns a list of permissions for a given path, see InvalidPermission for details on permission format.
+
+                     Parameters
+                            path (bytes) -- path to get permissions for.
+
+              set_perms(path, perms)
+                     Sets a access permissions for a given path, see InvalidPermission for details on permission format.
+
+                     Parameters
+
+                            • path (bytes) -- path to set permissions for.
+
+                            • perms (list) -- a list of permissions to set.
+
+              walk(top, topdown=True)
+                     Walk XenStore, yielding 3-tuples (path, value, children) for each node in the tree, rooted at node top.
+
+                     Parameters
+
+                            • top (bytes) -- node to start from.
+
+                            • topdown (bool) -- see os.walk() for details.
+
+              get_domain_path(domid)
+                     Returns the domain's base path, as used for relative requests: e.g. b"/local/domain/<domid>". If a given domid doesn't exists the answer is undefined.
+
+                     Parameters
+                            domid (int) -- domain to get base path for.
+
+              is_domain_introduced(domid)
+                     Returns  True  if  xenstored is in communication with the domain; that is when INTRODUCE for the domain has not yet been followed by domain destruction or explicit RELEASE; and False
+                     otherwise.
+
+                     Parameters
+                            domid (int) -- domain to check status for.
+
+              introduce_domain(domid, mfn, eventchn)
+                     Tells xenstored to communicate with this domain.
+
+                     Parameters
+
+                            • domid (int) -- a real domain id, (0 is forbidden).
+
+                            • mfn (int) -- address of xenstore page in domid.
+
+                            • eventchn (int) -- an unbound event chanel in domid.
+
+              release_domain(domid)
+                     Manually requests xenstored to disconnect from the domain.
+
+                     Parameters
+                            domid (int) -- domain to disconnect.
+
+                     NOTE:
+                        xenstored will in any case detect domain destruction and disconnect by itself.
+
+              resume_domain(domid)
+                     Tells xenstored to clear its shutdown flag for a domain. This ensures that a subsequent shutdown will fire the appropriate watches.
+
+                     Parameters
+                            domid (int) -- domain to resume.
+
+              set_target(domid, target)
+                     Tells xenstored that a domain is targetting another one, so it should let it tinker with it. This grants domain domid full access to paths owned by target. Domain domid also inherits
+                     all permissions granted to target on all other paths.
+
+                     Parameters
+
+                            • domid (int) -- domain to set target for.
+
+                            • target (int) -- target domain (yours truly, Captain).
+
+              transaction()
+                     Starts a new transaction.
+
+                     Returns int
+                            transaction handle.
+
+                     Raises pyxs.exceptions.PyXSError -- with errno.EALREADY if this client is already in a transaction.
+
+                     WARNING:
+                        Currently xenstored has a bug that after 2**32 transactions it will allocate id 0 for an actual transaction.
+
+              rollback()
+                     Rolls back a transaction currently in progress.
+
+              commit()
+                     Commits a transaction currently in progress.
+
+                     Returns bool
+                            False if commit failed because of the intervening writes and True otherwise. In any case transaction is invalidated. The caller is responsible for starting a new  transaction,
+                            repeating all of the operations a re-committing.
+
+              monitor()
+                     Returns a new Monitor instance, which is currently the only way of doing PUBSUB.
+
+                     The monitor shares the router with its parent client. Thus closing the client invalidates the monitor. Closing the monitor, on the other hand, had no effect on the router state.
+
+                     NOTE:
+                        Using monitor() over XenBusConnection is currently unsupported, because XenBus does not obey XenStore protocol specification. See xen-devel discussion for details.
+
+       class pyxs.client.Monitor(client)
+              Monitor implements minimal PUBSUB functionality on top of XenStore.
+
+              >>> with Client() as c:
+              ...    m = c.monitor():
+              ...    m.watch("foo/bar")
+              ...    print(next(c.wait()))
+              Event(...)
+
+              Parameters
+                     client (Client) -- a reference to the parent client.
+
+              NOTE:
+                 When used as a context manager the monitor will try to unwatch all watched paths.
+
+              property watched
+                     A set of paths currently watched by the monitor.
+
+              close()
+                     Finalizes the monitor by unwatching all watched paths.
+
+              watch(wpath, token)
+                     Adds a watch.
+
+                     Any alteration to the watched path generates an event. This includes path creation, removal, contents change or permission change. An event can also be triggered spuriously.
+
+                     Changes made in transactions cause an event only if and when committed.
+
+                     Parameters
+
+                            • wpath (bytes) -- path to watch.
+
+                            • token (bytes) -- watch token, returned in watch notification.
+
+              unwatch(wpath, token)
+                     Removes a previously added watch.
+
+                     Parameters
+
+                            • wpath (bytes) -- path to unwatch.
+
+                            • token (bytes) -- watch token, passed to watch().
+
+              wait(unwatched=False)
+                     Yields events for all of the watched paths.
+
+                     An event is a (path, token) pair, where the first element is event path, i.e. the actual path that was modified, and the second -- a token, passed to watch().
+
+                     Parameters
+                            unwatched (bool) -- if True wait() might yield spurious unwatched packets, otherwise these are dropped. Defaults to False.
+
+       pyxs.monitor(*args, **kwargs)
+              A simple shortcut for creating Monitor instances. All arguments are forwared to Client constructor.
+
+   Exceptions
+       class pyxs.exceptions.PyXSError
+              Base class for all pyxs exceptions.
+
+       class pyxs.exceptions.InvalidOperation
+              Exception raised when Packet is passed an operation, which isn't listed in Op.
+
+              Parameters
+                     operation (int) -- invalid operation value.
+
+       class pyxs.exceptions.InvalidPayload
+              Exception raised when Packet is initialized with payload, which exceeds 4096 bytes restriction or contains a trailing NULL.
+
+              Parameters
+                     operation (bytes) -- invalid payload value.
+
+       class pyxs.exceptions.InvalidPath
+              Exception raised when a path proccessed by a command doesn't match the following constraints:
+
+              • its length should not exceed 3072 or 2048 for absolute and relative path respectively.
+
+              • it should only consist of ASCII alphanumerics and the four punctuation characters -/_@ -- hyphen, slash, underscore and atsign.
+
+              • it shouldn't have a trailing /, except for the root path.
+
+              Parameters
+                     path (bytes) -- invalid path value.
+
+       class pyxs.exceptions.InvalidPermission
+              Exception raised for permission which don't match the following format:
+
+                 w<domid>        write only
+                 r<domid>        read only
+                 b<domid>        both read and write
+                 n<domid>        no access
+
+              Parameters
+                     perm (bytes) -- invalid permission value.
+
+       class pyxs.exceptions.ConnectionError
+              Exception raised for failures during socket operations.
+
+       class pyxs.exceptions.UnexpectedPacket
+              Exception  raised  when  received  packet  header  doesn't  match the header of the packet sent, for example if outgoing packet has op = Op.READ the incoming packet is expected to have op =
+              Op.READ as well.
+
+   Internals
+       class pyxs.client.Router(connection)
+              Router.
+
+              The goal of the router is to multiplex XenStore connection between multiple clients and monitors.
+
+              Parameters
+                     FileDescriptorConnection (connection) -- owned by the router. The connection is open when the router is started and remains open until the router is terminated.
+
+              NOTE:
+                 Python lacks API for interrupting a thread from another thread.  This means that when a router cannot be stopped when it is blocked in select.select() or wait().
+
+                 The following two "hacks" are used to ensure prompt termination.
+
+                 1. A router is equipped with a socket.socketpair(). The reader-end of the pair is selected in the mainloop alongside the XenStore connection, while the writer-end is used in  terminate()
+                    to force-stop the mainloop.
+
+                 2. All  operations with threading.Condition variables user a 1 second timeout. This "hack" is only relevant for Python prior to 3.2 which didn't allow one to interrupt lock acquisitions.
+                    See issue8844 on CPython issue tracker for details. On Python 3.2 and later no timeout is used.
+
+              property is_connected
+                     Checks if the underlying connection is active.
+
+              subscribe(token, monitor)
+                     Subscribes a monitor from events with a given token.
+
+              unsubscribe(token, monitor)
+                     Unsubscribes a monitor to events with a given token.
+
+              send(packet)
+                     Sends a packet to XenStore.
+
+                     Returns RVar
+                            a reference to the XenStore response.
+
+              start()
+                     Starts the router thread.
+
+                     Does nothing if the router is already started.
+
+              terminate()
+                     Terminates the router.
+
+                     After termination the router can no longer send or receive packets.  Does nothing if the router was already terminated.
+
+       class pyxs.connection.XenBusConnection(path=None)
+              XenStore connection through XenBus.
+
+              Parameters
+                     path (str) -- path to XenBus. A predefined OS-specific constant is used, if a value isn't provided explicitly.
+
+       class pyxs.connection.UnixSocketConnection(path=None)
+              XenStore connection through Unix domain socket.
+
+              Parameters
+                     path (str) -- path to XenStore unix domain socket, if not provided explicitly is restored from process environment -- similar to what libxs does.
+
+       class pyxs._internal.Packet(op, payload, rq_id, tx_id=None)
+              A message to or from XenStore.
+
+              Parameters
+
+                     • op (int) -- an item from Op, representing operation, performed by this packet.
+
+                     • payload (bytes) -- packet payload, should be a valid ASCII-string with characters between [0x20; 0x7f].
+
+                     • rq_id (int) -- request id -- hopefully a unique identifier for this packet, XenStore simply echoes this value back in response.
+
+                     • tx_id (int) -- transaction id, defaults to 0 , which means no transaction is running.
+
+              Changed in version 0.4.0: rq_id no longer defaults to 0 and should be provided explicitly.
+
+       pyxs._internal.Op = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 128)
+              Operations supported by XenStore.
+
+CONTRIBUTING
+   Submitting a bug report
+       In case you experience issues using pyxs, do not hesitate to report it to the Bug Tracker on GitHub.
+
+   Setting up development environment
+       Writing a XenStore client library without having access to a running XenStore instance can be troublesome. Luckily, there is a way to setup a development using VirtualBox.
+
+       1. Create a VM running Ubuntu 14.04 or later.
+
+       2. Install Xen hypervisor: sudo apt-get install xen-hypervisor-4.4-amd64.
+
+       3. Configure VM for SSH access.
+
+       4. Done! You can now rsync your changes to the VM and run the tests.
+
+   Running the tests
+       Only root is allowed to access XenStore, so the tests require sudo:
+
+          $ sudo python setup.py test
+
+       pyxs strives to work across a range of Python versions. Use tox to run the tests on all supported versions:
+
+          $ cat tox.ini
+          [tox]
+          envlist = py26,py27,py34,py35,pypy
+
+          [testenv]
+          commands = python setup.py test
+          $ sudo tox
+
+   Style guide
+       pyxs follows Pocoo style guide. Please read it before you start implementing your changes.
+
+PYXS CHANGELOG
+       Here you can see the full list of changes between each pyxs release.
+
+   Version 0.4.2-dev
+       • Allowed values to be empty b"". Thanks to Stephen Czetty. See PR #13 on GitHub.
+
+   Version 0.4.1
+       Bugfix release, released on May 11th, 2016
+
+       • Fixed a bug in XenBusConnection.create_transport which failed on attribute lookup. See PR #7 on GitHub.
+
+   Version 0.4.0
+       Released on March 6th, 2016
+
+       • Fixed a bug in Client.set_permissions which coerced permission lists (e.g. ["b0"]) to repr-strings prior to validation.
+
+       • The API is now based around bytes, which means that all methods which used to accept str (or text) now require bytes. XenStore paths and values are specified to be 7-bit  ASCII,  thus  it  makes
+         little sense to allow any Unicode string as input and then validate if it matches the spec.
+
+       • Removed transaction argument from Client constructor. The user is advised to use the corresponding methods explicitly.
+
+       • Removed connection argument from Client constructor. The user should now wrap it in a Router.
+
+       • Renamed some of the Client methods to more human-readable names:
+                                                                                    ┌───────────────────┬─────────────────────┐
+                                                                                    │ Old name          │ New name            │
+                                                                                    ├───────────────────┼─────────────────────┤
+                                                                                    │ ls                │ list                │
+                                                                                    ├───────────────────┼─────────────────────┤
+                                                                                    │ rm                │ delete              │
+                                                                                    ├───────────────────┼─────────────────────┤
+                                                                                    │ get_permissions   │ get_perms           │
+                                                                                    ├───────────────────┼─────────────────────┤
+                                                                                    │ set_permissions   │ set_perms           │
+                                                                                    ├───────────────────┼─────────────────────┤
+                                                                                    │ transaction_start │ transaction         │
+                                                                                    ├───────────────────┼─────────────────────┤
+                                                                                    │ transaction_end   │ commit and rollback │
+                                                                                    └───────────────────┴─────────────────────┘
+
+       • Removed Client.transaction context manager, because it didn't provide a way to handle possible commit failure.
+
+       • Added Client.exists for one-line path existence checks. See PR #6 on GitHub. Thanks to Sandeep Murthy.
+
+       • Removed implicit reconnection logic from FileDescriptorConnection.  The user is now expected to connect manually.
+
+       • Changed XenBusConnection to prefer /dev/xen/xenbus on Linux due to a possible deadlock in XenBus backend.
+
+       • Changed UnixSocketConnection to use socket.socket instead of the corresponding file descriptor.
+
+       • Disallowed calling Client.monitor over XenBusConnection. See http://lists.xen.org/archives/html/xen-devel/2016-02/msg03816 for details.
+
+   Version 0.3.1
+       Released on November 29th 2012
+
+       • Added default argument to Client.read(), which acts similar to dict.get().
+
+       • Fixed a lot of minor quirks so pyxs can be Debianized.
+
+   Version 0.3
+       Released on September 12th 2011
+
+       • Moved all PUBSUB functionality into a separate Monitor class, which uses a separate connection. That way, we'll never have to worry about mixing incoming XenStore events and command replies.
+
+       • Fixed a couple of nasty bugs in concurrent use of Client.wait() with other commands (see above).
+
+   Version 0.2
+       Released on August 18th 2011
+
+       • Completely refactored validation -- no more @spec magic, everything is checked explicitly inside Client.execute_command().
+
+       • Added a compatibility interface, which mimics xen.lowlevel.xs behaviour, using pyxs as a backend, see pyxs/_compat.py.
+
+       • Restricted SET_TARGET, INTRODUCE and RELEASE operations to Dom0 only -- /proc/xen/capabilities is used to check domain role.
+
+       • Fixed a bug in Client.wait() -- queued watch events weren't wrapped in pyxs._internal.Event class, unlike the received ones.
+
+       • Added Client.walk() method for walking XenStore tree -- similar to os.walk()
+
+   Version 0.1
+       Initial release, released on July 16th 2011
+
+       • Added a complete implementation of XenStore protocol, including transactions and path watching, see pyxs.Client for details.
+
+       • Added generic validation helper -- @spec, which forces arguments to match the scheme from the wire protocol specification.
+
+       • Added two connection backends -- XenBusConnection for connecting from DomU through a block device and UnixSocketConnection, communicating with XenStore via a Unix domain socket.
+
+AUTHOR
+       Sergei Lebedev, Fedor Gogolev
+
+COPYRIGHT
+       2011-2012, Selectel
+
+0.4.2                                                                                           Dec 19, 2024                                                                                        PYXS(3)

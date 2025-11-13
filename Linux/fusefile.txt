@@ -1,0 +1,140 @@
+fusefile(8)                                                                               System Manager's Manual                                                                               fusefile(8)
+
+NAME
+       fusefile, fusedisk - FUSE file mount for combining file fragments
+
+SYNOPSIS
+       fusefile [fuse-opts] mountpoint [overlay] filename/from-to ...
+       fusefile -dump [fuse-opts] mountpoint [overlay] filename/from-to ...
+       fusefile -push [fuse-opts] mountpoint [overlay] filename/from-to ...
+       fusedisk [fuse-opts] mountpoint [overlay] filename/from-to ...
+
+DESCRIPTION
+       fusefile is a FUSE file mount that presents a series of fragments of other files as a contiguous concatenation. Technically it bind mounts a driver on top of the filename mountpoint to provide ac‐
+       cess to the given file fragments as if in a single, contiguous file.
+
+       fusefile accepts over-writing on the fused file (i.e. the mountpoint) which gets distributed accordingly to the fragments. But neither the fused file nor the fragments can change size; any writing
+       thus merely over-writes content without truncating fragments. All fragment files are held open while fusefile is active.
+
+       By  using  the  optional -overlay:filename argument between the mount point and the fragments, an overlay file may be set up. The overlay file will then be used by fusefile for capturing writes to
+       the fused file (i.e. the mountpoint). The overlay file will contain any new written fused file regions followed by meta data to distinguish between new, written content and old content that  comes
+       from the fragments.
+
+       By instead using the -overlay:list argument where list is a colon-separated list of filenames, fusefile will use those as an ordered stack of overlays and "inject" them as fragments on top of each
+       other.
+
+       The  option -dump as first argument together with a fusefile setup will print the setup to standard output rather than establishing a fusefile mount. This is of most use with a prior overlay setup
+       where then the printout includes the portions of updates that have been captured in the overlay. The printout is the series of fusefile fragment argments to give in order to intersperse  the  cap‐
+       tured overlay portions according to the overlay table.
+
+       The  option  -push  as  first  argument together with a fusefile setup will push the overlay into the sources (except for write-protected fragments). This is only of use with a prior overlay setup
+       where then the updates that have been captured in the overlay get pushed into the fragments.
+
+       fusedisk is a helper script to set up a fusefile as a block device (via fuseblk) by using the device mapper (dmsetup) to manage an empty block device mapping where content is handled at the mount‐
+       point via fusefile. (Note that the same thing may be done with the device manager directly, but then all fragments need to be in sectors of N*512 bytes whereas with fusedisk, only the  fused  file
+       as a whole is "clipped" at nearest N*512 bytes below actual size)
+
+FRAGMENT ARGUMENTS
+       The fragment arguments include the filename of a source file, and optionally start and end byte positions. All in all there five variations:
+
+       filename or filename/
+              include all of the file. A pathname that includes "/" must be ended with an extra "/" since that last "/" separates the filename from the range detail.
+
+       filename/start:end
+              include  the  range  from the given start to end. Either "start" or "end" or both may be omitted, to mean the beginning and end of the file respectively. If "start" or "end" are less than 0
+              then it means relative to the end of the file.
+
+       filename/start+length
+              include "length" bytes from the given start. A negative "start" means relative to the end of the file. If "length" is negative or omitted it means that position relative to the end.
+
+       filename/start include bytes from the given start. This is the
+              same as "/start+"
+
+       Note that a negative start position is clipped to 0 and a too large end position is clipped to the end of the file.
+
+       Character devices are treated as being of any given finite size, but have size 0 by default. For example, "/dev/zero/:100" means a fragment of 100 NUL bytes.
+
+OPTIONS
+       This section enumerates the most interesting options to use with fuesfile. See "man fuse" and "man mount" for more options.
+
+       -dump
+
+              The -dump "option" tells fusefile to print out the applicable fragment sequence for the current setup, including the overlay table, if any. The printout is done  instead  of  setting  up  a
+              mount point.
+
+       -oallow_other
+
+              The fuse option -oallow_other is needed for sharing the fused file with other users who otherwise will not have access to it (including "root"). Note however that this must first be enabled
+              in /etc/fuse.conf.
+
+       -ononempty
+
+              The fuse option -ononempty may need to be used when reusing an existing file as mountpoint.
+
+       -ouid=... and -ogid=...,
+
+              These  mount  options,  where ... is a user or group id respectively, are useful for root when using fusedisk and thereby give user or group ownership for the mount to the nominated user or
+              group.
+
+EXAMPLES
+       This section illustrates uses of fusefile.
+
+   Exanple 1.
+       Insert a file "y" into a file "x" at position 1200.
+              $ fusefile -ononempty x x/:1200 y x/1200:
+       This also shadows the original file "x" and presents the fused file instead.
+
+   Example 2.
+       Make fused file y be a swap of the beginning and end of file "x", at position 2442.
+              $ fusefile y x/2442: x/:2442
+
+   Example 3.
+       Replace partition 2 of an image file, A, with a different file, X. For this example the partition table looks as follows.
+              $ partx -oNR,START,SECTORS A
+                  NR   START  SECTORS
+                   1    2048  2097152
+                   2 2099200   409600
+                   3 2508800 14268383
+       As each sector is 512 bytes the clipping points around partition 2 are 1074790400 and 1284505600 and the insertion size is 209715200 bytes.  The fusefile comman will therefore be as follows.
+              $ fusefile -ononempty A A/:1074790400 X/:209715200 A/1284505600
+       Note that the fused file shadows the original file A.
+
+   Example 4.
+       Protect raw disk image file with an overlay:
+              $ fusefile -ononempty disk.raw -overlay:today disk.raw
+       By that set up, the overlay file, "today", will protect the disk image file, "disk.raw" from changes, and also override the pathname "disk.raw" to be the fused file.
+
+   Example 5.
+       A fusefile mount with an overlay file is writable regardless of the fused fragments, but all updates are written to the overlay file instead of to the fragments.
+
+              $ fusefile -ononempty A -overlay:B A
+
+       The overlay file, B in the example, contains all changes to the shadowed original file, A. The overlay file contains only the newly written regions and content is otherwise obtained from the orig‐
+       inal file.
+
+       To that end, the overlay file also contains a "marker table" at the end as if appended to the fused file. That part of the file is outside of the fused file; and it's simply an element count  fol‐
+       lowed  by  pairs  of byte addresses that tell which regions of the fused file have been captured into the overlay file. (The marker table is of course maintained so that adjoining regions are col‐
+       lapsed)
+
+       Thus, an overlay file may be reused to later re-establish the same fused file with overlay as previously, to continue capturing more changes.
+
+   Example 6.
+       As final example, we set up a fused block device y as a swap of the beginning and end of file "x", at position 2442:
+              $ sudo fusedisk -ouid=1000 y x/2442: x/:2442
+       Note the use of sudo for becoming root, which is required for block device handling, and also the -ouid=1000 option so as to make the block device y be owned by the user with id 1000.
+
+NOTES
+       fusefile opens the nominated source files before any bind mounting. With the fuse option -ononempty it will bind over an non-empty file, which may be useful. The source files remain open, but  the
+       source fragments are not recomputed. If a source file changes the fused file will present the new content. If a source is reduced in size, access will be inconsistent.
+
+       If the mountpoint file doesn't exist, then fusefile creates it.
+
+       Unmounting is done with "fusermount -u mountpoint" as usual. A fusedisk mount is unmounted by root using umount.
+
+SEE ALSO
+       fuse, fusermount, mount, dmsetup
+
+AUTHOR
+       Ralph Rönnquist <ralph.ronnquist@gmail.com>.
+
+                                                                                                                                                                                                fusefile(8)

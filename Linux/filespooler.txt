@@ -1,0 +1,508 @@
+fspl(1)                                                                                         fspl Manual                                                                                         fspl(1)
+
+NAME
+       fspl - sequential, distributed job queue processing
+
+SYNOPSIS
+       fspl [ OPTIONS ] COMMAND [ command_options ]
+
+OVERVIEW
+       fspl is the CLI part of the Filespooler (https://www.complete.org/filespooler) package.
+
+       fspl is a Unix-style tool that facilitates local or remote command execution, complete with stdin capture, with easy integration with various tools.  Here's a brief Filespooler feature list:
+
+       • It can easily use tools such as S3, Dropbox, Syncthing, NNCP, ssh, UUCP, USB drives, CDs, etc.  as transport.
+
+         • Translation: you can use basically anything that is a filesystem as a transport
+
+       • It can use arbitrary decoder command pipelines (eg, zcat, stdcat, gpg, age, etc) to pre-process stored packets.
+
+       • It can send and receive packets by pipes.
+
+       • Its storage format is simple on-disk files with locking.
+
+       • It supports one-to-one and one-to-many configurations.
+
+       • Locking is unnecessary when writing new jobs to the queue, and many arbitrary tools (eg, Syncthing, Dropbox, etc) can safely write directly to the queue without any assistance.
+
+       • Queue processing is strictly ordered based on the order on the creation machine, even if job files are delivered out of order to the destination.
+
+       • stdin can be piped into the job creation tool, and piped to a later executor at process time on a remote machine.
+
+       • The file format is lightweight; less than 100 bytes overhead unless large extra parameters are given.
+
+       • The queue format is lightweight; having 1000 different queues on a Raspberry Pi would be easy.
+
+       • Processing is stream-based throughout; arbitrarily-large packets are fine and sizes in the TB range are no problem.
+
+       • The Filespooler command, fspl, is extremely lightweight, consuming less than 10MB of RAM on x86_64.
+
+       • Filespooler has extensive documentation.
+
+       Filespooler consists of a command-line tool (fspl) for interacting with queues.  It also consists of a Rust library that is used by fspl.  main.rs for fspl is just a few lines long.
+
+A WORD ABOUT DOCUMENTATION
+       This manual is the reference for fspl.  The filespooler homepage, <https://www.complete.org/filespooler/> contains many examples, instructions on how to integrate with everything from file syncers
+       to encryption tools, and so forth.  Please refer to it for further information.
+
+BASIC OPERATION
+       The basic idea is this:
+
+       • Before starting, on the receiving end, you run fspl queue-init to prepare a queue directory.
+
+       • On  the  sending  end,  you use fspl prepare to prepare a job file (packet).  This packet is written to stdout.  From there, you can pipe it to fspl write to inject it into a local queue, or use
+         various kinds of transport to get it to a remote machine.
+
+       • You use fspl queue-process to execute packets.
+
+         • Alternatively, the fspl stdin- series of commands let you have more manual control over queue processing, accepting job packets in stdin.  They can let you completely ignore the built-in queue
+           mechanism if you so desire.
+
+ON-DISK FORMATS
+       The key way to ensure the ordered processing of the job queue is with a sequence number.  This is a 64-bit unsigned integer.  It is stored in a seqfile on both the sending and the receiving  side.
+       On the sending side, the seqfile is standalone; there is only an accompanying .lock file for it.  On the receiving side, the seqfile and its accompanying lock file live within the queue directory.
+
+       When  the  seqfile is referenced on the sending side, it will be created and initialized with the value 1 if it does not already exist.  On the receiving side, it is created as part of fspl queue-
+       init.
+
+       In either case, the seqfile consists of one newline-terminated line, containing the next number to process.  On the sending side, this is used by fspl prepare as the sequence number for  the  next
+       generated packet.  On the receiving side, it is used by fspl queue-process to determine which job to process next (unless changed by --order-by).
+
+   THE QUEUE
+       The queue has this general layout:
+
+              queuedir/           Top-level queue directory
+                nextseq           Sequence file
+                nextseq.lock      Lock file
+                jobs/             Job files stored here
+
+       When passing the --queuedir to one of the fspl queue- commands, you give it the path to the top-level queuedir as shown here.
+
+       You are free to create additional directories within the queuedir so long as they don't use one of the names listed above.  This can be helpful for receiving queue contents in certain situations.
+
+   Append-Only Queues
+       You can specify --append-only to fspl queue-init, which will cause the nextseq and nextseq.lock files to be omitted.  This has the effect of making the queue write-only.  This can be useful if you
+       are  synchronizing  the jobs subdirectory between machines, but still want to be able to use fspl queue-write to add jobs to that folder.  It will prevent fspl queue-process from running.  You can
+       still inspect an append-only queue with commands like fspl queue-ls and fspl queue-info.
+
+   JOB FILES
+       Job files live within queuedir/jobs.  They all must follow this naming pattern:
+
+              fspl-*.fspl
+
+       This pattern is specifically designed to facilitate safe injection of job files into the queue by other tools.  Many other tools prepend or append a temporary string to a filename to signify  that
+       it  has  not yet been fully transferred.  The Filespooler assumption is that once a file appears in jobs/ with a name matching this pattern, than it has been fully transferred and can be processed
+       at any time.
+
+       So long as the filename begins with fspl- and ends with .fspl, you are free to put whatever string you like in the middle.  The only other requirement, of course, is that  each  job  must  have  a
+       unique  filename  within  the  directory.   To simplify things, you can pipe a job file to fspl queue-write and let that command take care of naming.  Or, you can generate a random (or non-random)
+       string yourself in a shell script.
+
+       The job file itself consists of a small binary header, which is CRC32-checked.  This header is normally less than 100 bytes and the length of it is encoded within the file.  Following the  header,
+       if  --input was given to fspl prepare, whatever was piped to prepare is included as the "payload".  This will be piped to the executor command when run by fspl queue-process or fspl stdin-process.
+       The payload is not validated by CRC or length by Filespooler, since this is assumed to be the role of the transport layer.  The website contains examples of using GPG or other tools to ensure  in‐
+       tegrity.
+
+       There are three types of job files:
+
+       • Command, created by fspl prepare.  This is the typical kind of job file, and is used to request the execution of a command by the processor.
+
+       • NOP, created by fspl prepare-nop.  This is a "no-op" job file, which does not run a command but is considered to always succeed.
+
+       • Fail, created by fspl prepare-fail.  This is a "fail" job file, which does not run a command but is considered to always fail.  This could be usedful, for instance, to create a "barrier" to pre‐
+         vent a queue processor from continuing to execute commands past there without human intervention.
+
+   ADDING FILES TO THE QUEUE
+       To expand slightly on the discussion above about adding files to the queue:
+
+       A  common  way  to do this if your transport tool doesn't use a nice temporary name is to transport the file to an adjacent directory, and then use mv(1) or, better, make a hard link with ln(1) to
+       get the file into the jobs/ directory.  Note that in both cases, you must take care that you are not crossing a filesystem boundary; on some platforms such as Linux, mv will revert to copy instead
+       of rename if you cross the boundary and then the assumptions about completeness are violated.
+
+   JOB FILE ENCODING AND DECODING
+       Job files are, by default, stored exactly as laid out above.  However, in many cases, it may be desirable to store them "encoded" - compressed or encrypted.  In this case,  the  output  from  fspl
+       prepare can be piped through, say, gzip and the resulting packet can still be stored in jobs/ by fspl queue-write or any related tool.
+
+       Now, however, we arrive at the question: how can Filespooler process a queue containing files that have been compressed, encrypted, or so forth?
+
+       Every  fspl  queue  command takes an optional --decoder (or -d) parameter, which is a command string that will be executed by the shell.  This decoder command will receive the entire job file (not
+       just the payload) piped to it on stdin, and is expected to write the decoded file to stdout.
+
+       The fspl stdin pairs to the queue commands do not accept a decoder parameter, since it is assumed you would do that in the pipeline on the way to the stdin command.
+
+       For instance:
+
+              date | fspl prepare -s ~/state -i - | gzip | fspl queue-write -q ~/queue
+
+              fspl queue-ls -q ~/queue -d zcat
+              ID                   creation timestamp          filename
+              48                   2022-05-07T21:07:02-05:00   fspl-48aa52ad-c65c-478a-9d37-123d4bebcb30.fspl
+
+       Normally, fspl ignores files that fail to decode the header.  If you omit the --decoder, it may just look like your queue is empty.  (Using --log-level=debug will illuminate what is happening.)
+
+DISTRIBUTED NATURE OF FILESPOOLER
+       As mentioned, Filespooler is designed to be used as a distributed, asynchronous, ordered command queue.  The homepage contains many more examples.  Here is one simple example of  using  ssh  as  a
+       transport to get commands to a remote queue:
+
+              tar -cpf - /usr/local | fspl prepare -s ~/state -i - | ssh remote queue-write -q ~/queue
+
+INSTALLATION
+       fspl is a Rust program.  If you don't already have Rust installed, it can be easily installed from <https://www.rust-lang.org/>.
+
+       Once Rust is installed, Filespooler can be installed with this command:
+
+              cargo install filespooler
+
+       From a checked-out source tree, it can be built by running cargo build --release.  The executable will then be placed in target/release/xbnet.
+
+       You can also obtain pre-built binaries for x86_64 Linux from <https://salsa.debian.org/jgoerzen/filespooler/-/releases> .
+
+ENVIRONMENT
+       fspl  prepare  will  save certain environment variables to the packet, which will be set later at process time.  fspl {queue,stdin}-process will set a number of useful environment variables in the
+       execution environment.  fspl {queue,stdin}-info will show the environment that will be passed to the commands.  See each of these for further discussion.
+
+EXIT CODE
+       In general, the commands exit with 0 on success and nonzero on failure.  The concept of success and failure can be complicated in some situations; see the discussion of the process command.
+
+       These situations explicitly cause a nonzero (error) exit code:
+
+       • Failure to obtain a lock (see "locking and concurrency" below), but only if a lock is required; for many commands, no lock is needed.
+
+       • An I/O error
+
+       • For commands that require a specific job ID (eg, fspl queue-info), no job with that ID can be located
+
+       • While processing, the executed command returns a nonzero exit status and --on-error is set to Retry (the default)
+
+       • In some cases, the presence of multiple files in the queuedir with the same sequence number.  The presence of this condition with commands that take a -j ID option, or with queue-process in  its
+         standard configuration, will cause an error.
+
+         • However, this condition is acceptable for queue-ls and queue-process --order-by=Timestamp.
+
+       These situations explicitly terminate with success (0):
+
+       • While processing, the --maxjobs limit is reached before some other error causes an abnormal exit
+
+       • An error while running a command while --on-error is set to Delete or Leave
+
+       • Files  are  encountered  in the queuedir/jobs directory with unparsable headers.  fspl detects and logs (subject to --log-level) this condition, but does not consider it an error, on the grounds
+         that the presence of extra data should not prevent the proper functioning of the queue.  This may manifest itself in the queue appearing to have nothing to do, queue-ls showing fewer  jobs  than
+         there are files, etc.  A common cause of this may be an incorrect --decoder.
+
+       • Zero jobs in the queue, or zero jobs available to process.
+
+LOCKING AND CONCURRENCY
+       Next to every seqfile on both the sender and within the queue on the recipient is a file named seqfile.lock.  An exclusive lock is held on this file during the following conditions:
+
+       • On  the sender with fspl prepare and related functions, briefly while obtaining the next sequence number.  Once this is done, the lock is released, even if the process of consuming stdin takes a
+         long time.
+
+       • On the recipient, when processing the queue with fspl queue-process or other commands that access the seqfile (eg, fspl queue-set-next).
+
+       fspl will exit with an error code if it cannot obtain the lock when it needs it.
+
+       These are situations that explicitly do NOT obtain a lock:
+
+       • fspl queue-write or other non-fspl method of injecting packets into the queue
+
+       • The fspl stdin- series of commands
+
+       • Commands that scan the queue without accessing the state of the seqfile.  Examples include queue-ls, queue-info, and queue-payload.
+
+       Note that if the queue is being actively processed while a queue-ls is in process, a race condition is possible if a file disappears between the readdir() call and the time the file is opened  for
+       reading,  which  could potentially cause queue-ls to fail.  queue-ls intentionally does not attempt to acquire the lock, however, because it would always fail while the queue is being processed in
+       that case, preventing one from being able to list the queue at all while long-running jobs are in process.
+
+       Note that fspl queue-write does not need to obtain a lock.  The fspl stdin- series of commands also do not obtain a lock.
+
+       Taken together, this means that any given queue is intended to be processed sequentially, not in parallel.  However, if parallel processing is desired, it is trivial to iterate over the  jobs  and
+       use fspl stdin-process in whatever custom manner you would like.  Also, since queues are so lightweight, there is no problem with creating thousands of them.
+
+INVOCATION: GLOBAL OPTIONS
+       These options may be specified for any command, and must be given before the command on the command line.
+
+       -l, --log-level LEVEL
+              Information  about the progress of fspl is written to stderr.  This parameter controls how much information is written.  In order from most to least information, the options are: trace, de‐
+              bug, info, warn, error.  The default is info.
+
+       -V, --version
+              Print version information and exit
+
+       -h, --help
+              Print help information and exit.  Can also be given after a subcommand, in which case it displays more detailed information about that subcommand.
+
+       COMMAND
+              The subcommand which will be executed.  Required unless using --version or --help.
+
+INVOCATION: SUBCOMMANDS
+       Every subcomand accepts --help to display a brief summary of options, invoked as: fspl SUBCOMMAND --help .
+
+   fspl ... prepare
+       Generates a packet (job file data) and writes it to stdout.  This file can be piped to other programs (particularly fspl queue-write) or saved directly to disk.
+
+       Usage:
+
+       fspl prepare [ OPTIONS ] -s FILE [ -- PARAMS... ]
+
+       -s, --seqfile FILE
+              Path to the local seqfile.  If it does not already exist, it will be created.  If set to "-", then no sequence file is used and the sequence emitted will always be 1.
+
+       -i, --input INPUT
+              By default, prepare will not read anything as payload.  If INPUT is set to "-", then prepare will read standard input (stdin) and use it as input.  Otherwise, if  INPUT  is  anything  other
+              than "-", it is assumed to be a filename, which is opened and read for input.
+
+       -- PARAMS...
+              If  a  "--" is present on the command line, everything after it is taken as parameters to be added to the generated job packet.  When the packet is later processed, if --allow-job-params is
+              given to queue-process or stdin-process, then these parameters will be appended to the command line of the executed command.
+
+       In addition to these options, any environment variable beginning with FSPL_SET_ will be saved in the packet and will be set in the execution environment at processing time.
+
+   fspl ... prepare-fail, prepare-nop
+       These commands create a non-command packet, one which is either considered to always fail or to always succeed (nop).  These two commands take only one option, which is required:
+
+       -s, --seqfile FILE
+              Path to the local seqfile.  Required.  If set to "-", then no sequence file is used and the sequence emitted will always be 1.
+
+   fspl ... prepare-get-next
+       Prints the sequence number that will be used by the next prepare command.
+
+       Usage:
+
+       fspl prepare-get-next -s FILE
+
+       -s, --seqfile FILE
+              Path to the local seqfile.  Required.  If set to "-", then no sequence file is used and the sequence emitted will always be 1.
+
+   fspl ... prepare-set-next
+       Changes the sequence number that will be used by the next prepare command.
+
+       Usage:
+
+       fspl prepare-set-next -s FILE ID
+
+       -s, --seqfile FILE
+              Path to the local seqfile.  Required.  ID The numeric ID to set the seqfile to.
+
+   fspl ... stdin-info, queue-info
+       These two commands display information about a given packet.  This information is printed to stdout in a style that is similar to how the shell sets environment variables.  In fact, it shows  pre‐
+       cisely the environment variables that will be set by a corresponding process command.
+
+       stdin-info expects the packet to be piped in to stdin; queue-info will find it in the given queue.
+
+       This command will not attempt to read the payload of the file; it will only read the header.  (Note that this is not a guarantee that some layer of the system may not try to read a few KB past the
+       header, merely a note that running this command will not try to read all of a 1TB packet.)
+
+       Usage:
+
+       fspl queue-info [ OPTIONS ] -q DIR -j ID
+
+       fspl stdin-info
+
+       Options (valid for queue-info only):
+
+       -q, --queuedir DIR
+              Path to the local queue directory.  Required.
+
+       -j, --job ID
+              Numeric job ID to process.  See fspl queue-ls to determine this.  Required.
+
+       -d, --decoder DECODECMD
+              Decoder command to run.  This string is passed to $SHELL -c.  See the above conversation about decoders.  Optional.
+
+       Example:
+
+              fspl queue-info -q /tmp/queue -j 45 -d zcat
+              FSPL_SEQ=45
+              FSPL_CTIME_SECS=1651970311
+              FSPL_CTIME_NANOS=425412511
+              FSPL_CTIME_RFC3339_UTC=2022-05-08T00:38:31Z
+              FSPL_CTIME_RFC3339_LOCAL=2022-05-07T19:38:31-05:00
+              FSPL_JOB_FILENAME=fspl-29342606-02a0-438c-81f2-efdfb80afbe9.fspl
+              FSPL_JOB_QUEUEDIR=/tmp/bar
+              FSPL_JOB_FULLPATH=/tmp/bar/jobs/fspl-29342606-02a0-438c-81f2-efdfb80afbe9.fspl
+              FSPL_PARAM_1=hithere
+              FSPL_SET_FOO=bar
+
+       Some notes on these variables:
+
+       • The FSPL_JOB_FILENAME is relative to the jobs subdirectory of the queue directory.
+
+       • The FSPL_JOB_FULLPATH is relative to the current working directory; that is, it is what was given by -q plus the path within that directory to the filename.  It is not guaranteed to be absolute.
+
+       • FSPL_PARAM_n will be set to the optional parameters passed to fspl prepare, with n starting at 1.
+
+       • FSPL_SET_x will reflect any FSPL_SET_x parameters that were in the environment when fspl prepare was run.
+
+       • Filespooler does not enforce limits to environment variable content.  If you want to do something like embed newlines in variable content, Filespooler will happily accept this (since it is valid
+         POSIX)  and  handle  it  properly  - but your shell scripts may not be so lucky.  It is advisable that you avoid this and other weird constructions for your sanity in working with things outside
+         Filespooler - though Filespooler won't prevent you from doing it.
+
+   fspl ... stdin-payload, queue-payload
+       These two commands extract the payload (if any) from the given packet.  This is written to stdout.  No header or other information is written to stdout.
+
+       stdin-payload expect the packet to be piped in to stdin; queue-stdout will find it in the given queue.
+
+       The payload will be piped to the command started by the process commands.  The payload will be 0-bytes if -i was not passed to fspl prepare, or if an empty payload was given to it.
+
+       Usage:
+
+       fspl queue-payload [ OPTIONS ] -q DIR -j ID
+
+       fspl stdin-payload
+
+       Options (valid for queue-payload only):
+
+       -q, --queuedir DIR
+              Path to the local queue directory.  Required.
+
+       -j, --job ID
+              Numeric job ID to process.  See fspl queue-ls to determine this.  Required.
+
+       -d, --decoder DECODECMD
+              Decoder command to run.  This string is passed to $SHELL -c.  See the above conversation about decoders.  Optional.
+
+   fspl ... stdin-process, queue-process
+       Process packet(s).  stdin-process will process exactly one packet on stdin.  queue-process will process zero or more packets, depending on the content of the queue and options given.
+
+       Usage:
+
+       fspl queue-process [ OPTIONS ] -q DIR COMMAND [ -- PARAMS... ]
+
+       fspl stdin-process [ OPTIONS ] COMMAND [ -- PARAMS... ]
+
+       Common options:
+
+       --allow-job-params
+              Specifies that optional parameters given to fspl prepare will be passed on the command line to this command
+
+       --ignore-payload
+              Ignores the payload; does not pipe it to the command.
+
+       --timeout SECONDS
+              Specifies a timeout, in seconds, for the command.  If the command has not exited within that timeframe, SIGKILL is sent to the process.  Failing to exit within the timeout is considered  an
+              error for Filespooler's purposes.
+
+       COMMAND
+              The command to run.  This is not passed to the shell, so it must point to an executable.  This command will not be run for NOP or Fail packets.
+
+       -- PARAMS...
+              If a "--" is present on the command line, everything after it is taken as parameters to be sent to the given command.  If --allow-job-params is given, then those parameters will be sent af‐
+              ter these.
+
+       Options valid only for queue-process:
+
+       -q, --queuedir DIR
+              Path to the local queue directory.  Required.
+
+       -d, --decoder DECODECMD
+              Decoder command to run.  This string is passed to $SHELL -c.  See the above conversation about decoders.  Optional.
+
+       -n, --maxjobs JOBS
+              The maximum number of jobs to process.  There is no limit by default.
+
+       --never-delete
+              Never delete the job file after processing in any circumstance, regardless of other options.
+
+       --order-by ORDERING
+              In  what  order to process the queue.  When Sequence, which is the default, process the queue in order of sequence number.  When set to Timestamp, process the queue in order of the creation
+              timestamp as it appears in the job header.  Note that when set to Timestamp, the seqfile within the queue is neither used nor changed.  Timestamp implies that you do not care about a strict
+              sequential ordering of items in cases where items arrive out of order.
+
+       --on-error ONERROR
+              What to do when the supplied command fails (is a fail packet or a command exits with a nonzero status).  If set to Retry, abort processing with a nonzero error code and leave the packet  in
+              the queue to be tried again by a later invocation of queue-process.  If set to Delete, delete the packet from the queue (unless --never-delete is given), increment the next job counter, and
+              continue  processing  the  queue normally.  If set to Leave, then leave the packet on disk, increment the next job counter, and continue processing the rest of the queue normally.  Retry is
+              the only option that will cause a failure to not increment the next job counter.  Retry is the default.
+
+       --output-to DEST
+              What to do with the stdout and stderr of the invoked command.  If set to PassBoth, then they are simply written to the stdout/stderr of fspl queue-process.  If set to  SaveBoth,  then  both
+              are added to a file in the queue's jobs directory named filename.out.  This file is up to you to process whenever you wish.  The default is PassBoth.
+
+       The environment is set as described above.  Note that since no queue directory or filename is relevant with the stdin-process flavor, those variables are unset under stdin-process.
+
+       To  skip  a failing job at the head of the queue, you can use fspl queue-set-next, or alternatively, fspl queue-process --on-error Delete --maxjobs 1 to cause it to be deleted.  You would probably
+       not wish to combine this with timestamp ordering.
+
+   fspl ... queue-set-next
+       Changes the sequence number that will be used by the next fspl queue-process command.
+
+       Usage:
+
+       fspl queue-set-next -q DIR ID
+
+       -q, --queuedir DIR
+              Path to the local queue directory.  Required.
+
+       --append-only
+              Creates an append-only queue.  ID The numeric ID to set the seqfile to.
+
+   fspl ... queue-write
+       Receives a packet on stdin and writes it to the queue.  This command does not bother to decode, process, or validate the packet in any way.  It simply writes it to the queue safely, using a tempo‐
+       rary filename until completely written, at which point it is renamed to a **fspl-*.fspl** file with a random middle part.
+
+       Usage:
+
+       fspl queue-write -q DIR
+
+       -q, --queuedir DIR
+              Path to the local queue directory.  Required.
+
+   fspl ... queue-init
+       Creates the queue directory and the needed files and subdirectories within it.
+
+       Usage:
+
+       fspl queue-init -q DIR
+
+       -q, --queuedir DIR
+              Path to the local queue directory.  Required.
+
+   fspl ... gen-filename
+       Generates a filename matching the fspl-*.fspl pattern, which will be valid for a job file in a Filespooler queue.  This is often useful when generating a filename that will be used by a tool other
+       than fspl queue-write.
+
+       Usage:
+
+       fspl gen-filename
+
+       Example:
+
+              fspl gen-filename
+              fspl-b3bd6e63-f62c-49ee-8c46-6677069d2c58.fspl
+
+   fspl ... gen-uuid
+       Generates a random UUID and prints it to stdout.  This is generated using the same algorithm as fspl queue-write uses.  It can be used in scripts for making your own unique filenames.
+
+       Usage:
+
+       fspl gen-uuid
+
+       Example:
+
+              fspl gen-uuid
+              2896c849-37c5-4a6d-8b90-0cf63e3e9daa
+
+   fspl show-license
+       Displays the copyright and license information for fspl.
+
+AUTHOR
+       John Goerzen <jgoerzen@complete.org>
+
+HOMEPAGE
+       <https://www.complete.org/filespooler/>
+
+COPYRIGHT AND LICENSE
+       Copyright (C) 2022 John Goerzen <jgoerzen@complete.org>
+
+       This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the  Li‐
+       cense, or (at your option) any later version.
+
+       This  program  is  distributed  in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+       General Public License for more details.
+
+       You should have received a copy of the GNU General Public License along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+AUTHORS
+       John Goerzen.
+
+John Goerzen                                                                                      May 2022                                                                                          fspl(1)

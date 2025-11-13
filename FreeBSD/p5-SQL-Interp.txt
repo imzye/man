@@ -1,0 +1,265 @@
+DBIx::Interp(3)       User Contributed Perl Documentation      DBIx::Interp(3)
+
+
+NAME
+       DBIx::Interp - Interpolate Perl variables into SQL with DBI
+
+SYNOPSIS
+         use DBI;
+         use DBIx::Interp ':all';
+
+         my $dbx = DBIx::Interp->new($dbh);
+
+         my $rv = $dbx->do_i('INSERT INTO table', \%item);
+         my $rv = $dbx->do_i('UPDATE table SET',  \%item, 'WHERE item_id <> ', \2);
+         my $rv = $dbx->do_i('DELETE FROM table WHERE item_id = ', \2);
+
+         my $LoH = $dbx->selectall_arrayref_i('
+               SELECT * FROM table WHERE x = ', \$s, 'AND y IN', \@v
+               ,attr(Slice=>{}));
+
+DESCRIPTION
+       DBIx::Interp brings SQL::Interp and DBI together in a natural way.
+       Please read the documentation of those two modules if you are
+       unfamiliar with them.  The DBIx::Interp interface adds methods to the
+       DBI interface with an "_i" suffix, indicating that SQL::Interp
+       interpolatation is performed in these cases.
+
+        Note that this module is no longer used by the maintainer.
+       DBIx::Simple now features SQL::Interp integration and is the
+       recommended alternative.
+
+Helper Functions you may need
+   "attr"
+         dbi_interp("SELECT * from my_table", attr( Slice => {} ) );
+
+       Creates and returns an DBIx::Interp::Attr object. When processed by
+       dbi_interp(), it will add the provided key/value pairs to the "%attrs"
+       hash that is accepted by many DBI methods.
+
+   "key_field"
+         $keyobj = key_field($key_field);
+
+       Creates and returns an DBIx::Interp::Key object. When processed by
+       dbi_interp(), an extra $key_field value will be returned in the result
+       so that the result is suitable for passing into $dbh->fetchrow_hashref
+       and related methods.
+
+         my ($sql, $key, $attr, @bind) =
+         my @params = dbi_interp "SELECT * FROM mytable", key_field('itemid');
+         $dbh->selectall_hashref(@params);
+
+Database object (DBX) methods
+       An object of type DBIx::Interp represents (and wraps) a database
+       handle.  Most of its methods are wrappers around corresponding DBI
+       methods.
+
+       "new" (static method)
+            my $dbx = DBIx::Interp->new($db, %params);
+
+           Creates a new object, creating or attaching a DBI handle.
+
+           $db is either a DBI database handle or an ARRAYREF containing
+           parameters that will be passed to DBI::connect, e.g.
+           [$data_source, $username, $auth, \%attr].  This parameter may be
+           omitted.
+
+           Any additional %params are passed onto SQL::Interp::new.
+
+       "connect" (static method)
+            $dbx = DBIx::Interp->connect($data_source, $username, $auth, \%attr);
+
+           Connects to a database.
+
+           This is identical to DBI::connect except that it returns at
+           DBIx::Interp object.  An alternate way to connect or attach an
+           existing DBI handle is via the "new" method.
+
+       "dbh"
+            $dbh = $dbx->dbh();
+
+           Returns the underlying DBI handle $dbh.  The is useful if you need
+           to pass the DBI handle to code that does not use SQL::Interp.
+
+            $dbx->dbh()->selectall_arrayref(
+                "SELECT * FROM mytable WHERE x = ?", undef, $x);
+
+       "stx"
+            $stx = $dbx->stx();
+
+           Returns the underlying statement handle set $stx. (These are
+           discussed later.)  Each DBIx::Interp object contains one statement
+           handle set for use on non-prepared database calls (e.g.
+           selectall_.*() methods).
+
+            $dbx->stx()->max_sths(10);
+
+   do_i
+   selectall_arrayref_i
+   selectall_hashref_i
+   selectcol_arrayref_i
+   selectrow_array_i
+   selectrow_arrayref_i
+   selectrow_hashref_i
+       These methods are identical to those in DBI except interpolation is
+       performed via SQL::Interp.
+
+   prepare
+        $stx = $dbx->prepare();
+
+       Creates a new statement handle set ($stx of type SQL::Interp::STX)
+       associated with $dbx.  There are no parameters.
+
+       A statement handle set (stx) is an abstraction of a statement handle
+       and represents an entire set of statement handles for a given class of
+       SQL queries.  This abstraction is used because a single interpolation
+       list may interpolate into any number of SQL queries (depending on
+       variable input), so multiple statement handles may need to be managed
+       and cached.  Typically, you do not need to call "prepare" directly
+       because DBIx::Interp can transparently mangage a statement handle set
+       (see $dbx->stx()->max_sths(10)).
+
+       Up to one statement handle in a set is considered active.  Other
+       operations performed on the statement handle set are passed to the
+       active statement handle so that the statement handle set often looks
+       and feels like a regular statement handle.
+
+   Statement handle set (STX) methods
+       These methods are for statement handle set objects.
+
+       "new"
+             $stx = SQL::Interp::STX->new($dbx);
+
+           Creates a new statement handle set.  Typically this is not called
+           directly but rather is invoked through prepare().
+
+       "max_sths"
+             $max_sths = $stx->max_sths(); # get
+             $stx->max_sths($max_sths);    # set
+
+           Gets or sets the maximum number of statement handles to cache in
+           the statement handle set.  The default and minimum value is 1.
+
+       "sth"
+             $sth = $stx->sth();
+
+           Gets the current active statement handle (e.g. the only that was
+           just executed).  Returns undef on none.
+
+       "sths"
+             $sths = $stx->sths();
+
+           Return a hashref of contained statement handles (map: $sql ->
+           $sth).
+
+       "execute"
+             $rv = $stx->execute(@list);
+
+           Executes the query in the given interpolation list against a
+           statement handle.  If no statement matching statement handle
+           exists, a new one is prepared.  The used statement handle is made
+           the active statement handle.  Return on error behavior is similar
+           to DBI's execute.
+
+           @list is an interpolation list (suitable for passing to
+           dbi_interp()).
+
+       "fetch..."
+             $ary_ref = $stx->fetchrow_arrayref();
+
+           Various fetch.* methods analogous to those in DBIx::Interp are
+           available.  The fetch will be performed against the active
+           statement handle in the set.
+
+       These are more advanced examples.
+
+   Binding variable types (DBI bind_param)
+       Compare this much simpler code to the example in SQL::Interp.
+
+         $dbx->selectall_arrayref(
+             "SELECT * FROM mytable WHERE",
+             "x=", \$x, "AND y=", sql_type(\$y, SQL_VARCHAR), "AND z IN",
+             sql_type([1, 2], SQL_INTEGER)
+         );
+
+DESIGN NOTES
+   Philosophy and requirements
+       DBIx::Interp is designed to look an feel like DBI even when the DBI
+       interface is not entirely user friendly (e.g. the
+       (fetch|select)(all|row)?_(array|hash)(ref)? and do methods).  Still,
+       the approach lowers the learning code and could simplify the process of
+       converting existing DBI code over to SQL::Interp.
+
+       The use of statement handle sets (STX) is not strictly necessary but is
+       rather designed to mimic DBI's statement handles more than anything
+       else.  The DBX object itself contains a statement handle set, which can
+       be used for non-prepared calls such as to selectall_.*() methods (i.e.
+       cache statement handles like in DBIx::Simple's keep_statements).
+
+         $dbx->stx()->max_sths(2);
+         $dbx->do(...) for 1..5;
+         $dbx->do(...) for 1..5;
+
+       An ideal solution would probably be to integrate SQL::Interp into
+       DBIx::Simple rather than directly into DBI.
+
+   Proposed enhancements
+       The following enhancements to SQL::Interp have been proposed.  The most
+       important suggestions are listed at top, and some suggestions could be
+       rejected.
+
+       DBI database handle and statement handle attributes are not currently
+       exposed from the wrapper except via $dbx->dbh()->{...}.  Maybe a Tie
+       can be used. e.g. $dbx->{mysql_insert_id}
+
+       Support might be added for something analogous to DBI's
+       bind_param_inout.
+
+       DBI's bind_param_array is not currently supported.  A syntax as follows
+       might be used:
+
+         "INSERT INTO mytable", [[...], [...], ...]
+
+       Passing identified variables:
+
+         my $x = {one => 'two'};
+         my $stx = $dbx->prepare("SELECT * FROM mytable WHERE", sql_type(\$x);
+         $stx->execute_vars();
+         ...
+         $x->{two} = 'three';
+         $stx->execute_vars();
+         ...
+
+         my $x = {one => 'two'};
+         my $y = {one => 'three', two => 'four'};
+         my $stx = $dbx->prepare("SELECT * FROM mytable WHERE", sql_type($x, 'x'));
+         $stx->execute_vars();
+         ...
+         $stx->execute_vars(sql_type($x, 'x'); # or?
+         $stx->execute_vars(x => $x); # or?
+         ...
+
+CONTRIBUTORS
+       David Manura (<http://math2.org/david>) (author).  The existence and
+       original design of this module as a wrapper around DBI was suggested by
+       Jim Cromie.
+
+FEEDBACK
+       Bug reports and comments on the design are most welcome.  See the main
+       SQL::Interp module for details.
+
+LEGAL
+       Copyright (c) 2004-2005, David Manura.  This module is free software.
+       It may be used, redistributed and/or modified under the same terms as
+       Perl itself.  See <http://www.perl.com/perl/misc/Artistic.html>.
+
+SEE ALSO
+   Other modules in this distribution
+       SQL::Interp,
+
+       DBI.
+
+       Related modules: DBIx::Simple, SQL::Abstract, DBIx::Abstract,
+       Class::DBI, DBIx::Class, Rose::DB.
+
+perl v5.40.2                      2025-04-25                   DBIx::Interp(3)

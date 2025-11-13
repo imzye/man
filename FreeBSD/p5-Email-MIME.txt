@@ -1,0 +1,475 @@
+Email::MIME(3)        User Contributed Perl Documentation       Email::MIME(3)
+
+
+NAME
+       Email::MIME - easy MIME message handling
+
+VERSION
+       version 1.954
+
+SYNOPSIS
+       Wait!  Before you read this, maybe you just need Email::Stuffer, which
+       is a much easier-to-use tool for building simple email messages that
+       might have attachments or both plain text and HTML.  If that doesn't do
+       it for you, then by all means keep reading.
+
+         use Email::MIME;
+         my $parsed = Email::MIME->new($message);
+
+         my @parts = $parsed->parts; # These will be Email::MIME objects, too.
+         my $decoded = $parsed->body;
+         my $non_decoded = $parsed->body_raw;
+
+         my $content_type = $parsed->content_type;
+
+       ...or...
+
+         use Email::MIME;
+         use IO::All;
+
+         # multipart message
+         my @parts = (
+             Email::MIME->create(
+                 attributes => {
+                     filename     => "report.pdf",
+                     content_type => "application/pdf",
+                     encoding     => "quoted-printable",
+                     name         => "2004-financials.pdf",
+                 },
+                 body => io( "2004-financials.pdf" )->binary->all,
+             ),
+             Email::MIME->create(
+                 attributes => {
+                     content_type => "text/plain",
+                     disposition  => "attachment",
+                     charset      => "US-ASCII",
+                 },
+                 body_str => "Hello there!",
+             ),
+         );
+
+         my $email = Email::MIME->create(
+             header_str => [
+                 From => 'casey@geeknest.com',
+                 To => [ 'user1@host.com', 'Name <user2@host.com>' ],
+                 Cc => Email::Address::XS->new("Display Name \N{U+1F600}", 'user@example.com'),
+             ],
+             parts      => [ @parts ],
+         );
+
+         # nesting parts
+         $email->parts_set(
+             [
+               $email->parts,
+               Email::MIME->create( parts => [ @parts ] ),
+             ],
+         );
+
+         # standard modifications
+         $email->header_str_set( 'X-PoweredBy' => 'RT v3.0'      );
+         $email->header_str_set( To            => rcpts()        );
+         $email->header_str_set( Cc            => aux_rcpts()    );
+         $email->header_str_set( Bcc           => sekrit_rcpts() );
+
+         # more advanced
+         $_->encoding_set( 'base64' ) for $email->parts;
+
+         # Quick multipart creation
+         my $email = Email::MIME->create(
+             header_str => [
+                 From => 'my@address',
+                 To   => 'your@address',
+             ],
+             parts => [
+                 q[This is part one],
+                 q[This is part two],
+                 q[These could be binary too],
+             ],
+         );
+
+         print $email->as_string;
+
+DESCRIPTION
+       This is an extension of the Email::Simple module, to handle MIME
+       encoded messages. It takes a message as a string, splits it up into its
+       constituent parts, and allows you access to various parts of the
+       message. Headers are decoded from MIME encoding.
+
+PERL VERSION
+       This library should run on perls released even a long time ago.  It
+       should work on any version of perl released in the last five years.
+
+       Although it may work on older versions of perl, no guarantee is made
+       that the minimum required version will not be increased.  The version
+       may be increased for any reason, and there is no promise that patches
+       will be accepted to lower the minimum required perl.
+
+METHODS
+       Please see Email::Simple for the base set of methods. It won't take
+       very long. Added to that, you have:
+
+   create
+         my $single = Email::MIME->create(
+           header_str => [ ... ],
+           body_str   => '...',
+           attributes => { ... },
+         );
+
+         my $multi = Email::MIME->create(
+           header_str => [ ... ],
+           parts      => [ ... ],
+           attributes => { ... },
+         );
+
+       This method creates a new MIME part. The "header_str" parameter is a
+       list of headers pairs to include in the message. The value for each
+       pair is expected to be a text string that will be MIME-encoded as
+       needed.  Alternatively it can be an object with "as_mime_string" method
+       which implements conversion of that object to MIME-encoded string.
+       That object method is called with two named input parameters: "charset"
+       and "header_name_length".  It should return MIME-encoded representation
+       of the object.  As of 2017-07-25, the header-value-as-object code is
+       very young, and may yet change.
+
+       In case header name is registered in
+       %Email::MIME::Header::header_to_class_map hash then registered class is
+       used for conversion from Unicode string to 8bit MIME encoding.  Value
+       can be either string or array reference to strings.  Object is
+       constructed via method "from_string" with string value (or values in
+       case of array reference) and converted to MIME-encoded string via
+       "as_mime_string" method.
+
+       A similar "header" parameter can be provided in addition to or instead
+       of "header_str".  Its values will be used verbatim.
+
+       "attributes" is a hash of MIME attributes to assign to the part, and
+       may override portions of the header set in the "header" parameter. The
+       hash keys correspond directly to methods for modifying a message. The
+       allowed keys are: content_type, charset, name, format, boundary,
+       encoding, disposition, and filename. They will be mapped to
+       "$attr\_set" for message modification.
+
+       The "parts" parameter is a list reference containing "Email::MIME"
+       objects. Elements of the "parts" list can also be a non-reference
+       string of data. In that case, an "Email::MIME" object will be created
+       for you. Simple checks will determine if the part is binary or not, and
+       all parts created in this fashion are encoded with "base64", just in
+       case.
+
+       If "body" is given instead of "parts", it specifies the body to be used
+       for a flat (subpart-less) MIME message.  It is assumed to be a sequence
+       of octets.
+
+       If "body_str" is given instead of "body" or "parts", it is assumed to
+       be a character string to be used as the body.  If you provide a
+       "body_str" parameter, you must provide "charset" and "encoding"
+       attributes.
+
+   content_type_set
+         $email->content_type_set( 'text/html' );
+
+       Change the content type. All "Content-Type" header attributes will
+       remain intact.
+
+   charset_set
+   name_set
+   format_set
+   boundary_set
+         $email->charset_set( 'UTF-8' );
+         $email->name_set( 'some_filename.txt' );
+         $email->format_set( 'flowed' );
+         $email->boundary_set( undef ); # remove the boundary
+
+       These four methods modify common "Content-Type" attributes. If set to
+       "undef", the attribute is removed. All other "Content-Type" header
+       information is preserved when modifying an attribute.
+
+   encode_check
+   encode_check_set
+         $email->encode_check;
+         $email->encode_check_set(0);
+         $email->encode_check_set(Encode::FB_DEFAULT);
+
+       Gets/sets the current "encode_check" setting (default: FB_CROAK).  This
+       is the parameter passed to "decode" in Encode and "encode" in Encode
+       when body_str(), body_str_set(), and create() are called.
+
+       With the default setting, Email::MIME may crash if the claimed charset
+       of a body does not match its contents (for example - utf8 data in a
+       text/plain; charset=us-ascii message).
+
+       With an "encode_check" of 0, the unrecognized bytes will instead be
+       replaced with the "REPLACEMENT CHARACTER" (U+0FFFD), and may end up as
+       either that or question marks (?).
+
+       See "Handling Malformed Data" in Encode for more information.
+
+   encoding_set
+         $email->encoding_set( 'base64' );
+         $email->encoding_set( 'quoted-printable' );
+         $email->encoding_set( '8bit' );
+
+       Convert the message body and alter the "Content-Transfer-Encoding"
+       header using this method. Your message body, the output of the body()
+       method, will remain the same. The raw body, output with the body_raw()
+       method, will be changed to reflect the new encoding.
+
+   body_set
+         $email->body_set( $unencoded_body_string );
+
+       This method will encode the new body you send using the encoding
+       specified in the "Content-Transfer-Encoding" header, then set the body
+       to the new encoded body.
+
+   body_str_set
+         $email->body_str_set($unicode_str);
+
+       This method behaves like "body_set", but assumes that the given value
+       is a Unicode string that should be encoded into the message's charset
+       before being set.
+
+       The charset must already be set, either manually (via the "attributes"
+       argument to "create" or "charset_set") or through the "Content-Type" of
+       a parsed message.  If the charset can't be determined, an exception is
+       thrown.
+
+   disposition_set
+         $email->disposition_set( 'attachment' );
+
+       Alter the "Content-Disposition" of a message. All header attributes
+       will remain intact.
+
+   filename_set
+         $email->filename_set( 'boo.pdf' );
+
+       Sets the filename attribute in the "Content-Disposition" header. All
+       other header information is preserved when setting this attribute.
+
+   parts_set
+         $email->parts_set( \@new_parts );
+
+       Replaces the parts for an object. Accepts a reference to a list of
+       "Email::MIME" objects, representing the new parts. If this message was
+       originally a single part, the "Content-Type" header will be changed to
+       "multipart/mixed", and given a new boundary attribute.
+
+   parts_add
+         $email->parts_add( \@more_parts );
+
+       Adds MIME parts onto the current MIME part. This is a simple extension
+       of "parts_set" to make our lives easier. It accepts an array reference
+       of additional parts.
+
+   walk_parts
+         $email->walk_parts(sub {
+             my ($part) = @_;
+             return if $part->subparts; # multipart
+
+             if ( $part->content_type =~ m[text/html]i ) {
+                 my $body = $part->body;
+                 $body =~ s/<link [^>]+>//; # simple filter example
+                 $part->body_set( $body );
+             }
+         });
+
+       Walks through all the MIME parts in a message and applies a callback to
+       each. Accepts a code reference as its only argument. The code reference
+       will be passed a single argument, the current MIME part within the top-
+       level MIME object. All changes will be applied in place.
+
+   header
+       Achtung!  Beware this method!  In Email::MIME, it means the same as
+       "header_str", but on an Email::Simple object, it means "header_raw".
+       Unless you always know what kind of object you have, you could get one
+       of two significantly different behaviors.
+
+       Try to use either "header_str" or "header_raw" as appropriate.
+
+   header_str_set
+         $email->header_str_set($header_name => @value_strings);
+
+       This behaves like "header_raw_set", but expects Unicode (character)
+       strings as the values to set, rather than pre-encoded byte strings.  It
+       will encode them as MIME encoded-words if they contain any control or
+       8-bit characters.
+
+       Alternatively, values can be objects with "as_mime_string" method.
+       Same as in method "create".
+
+   header_str_pairs
+         my @pairs = $email->header_str_pairs;
+
+       This method behaves like "header_raw_pairs", returning a list of field
+       name/value pairs, but the values have been decoded to character
+       strings, when possible.
+
+   header_as_obj
+         my $first_obj = $email->header_as_obj($field);
+         my $nth_obj   = $email->header_as_obj($field, $index);
+         my @all_objs  = $email->header_as_obj($field);
+
+         my $nth_obj_of_class  = $email->header_as_obj($field, $index, $class);
+         my @all_objs_of_class = $email->header_as_obj($field, undef, $class);
+
+       This method returns an object representation of the header value.  It
+       instances new object via method "from_mime_string" of specified class.
+       Input argument for that class method is list of the raw MIME-encoded
+       values.  If class argument is not specified then class name is taken
+       from the hash %Email::MIME::Header::header_to_class_map via key field.
+       Use class method "Email::MIME::Header->set_class_for_header($class,
+       $field)" for adding new mapping.
+
+   parts
+       This returns a list of "Email::MIME" objects reflecting the parts of
+       the message. If it's a single-part message, you get the original object
+       back.
+
+       In scalar context, this method returns the number of parts.
+
+       This is a stupid method.  Don't use it.
+
+   subparts
+       This returns a list of "Email::MIME" objects reflecting the parts of
+       the message.  If it's a single-part message, this method returns an
+       empty list.
+
+       In scalar context, this method returns the number of subparts.
+
+   body
+       This decodes and returns the body of the object as a byte string. For
+       top-level objects in multi-part messages, this is highly likely to be
+       something like "This is a multi-part message in MIME format."
+
+   body_str
+       This decodes both the Content-Transfer-Encoding layer of the body (like
+       the "body" method) as well as the charset encoding of the body (unlike
+       the "body" method), returning a Unicode string.
+
+       If the charset is known, it is used.  If there is no charset but the
+       content type is either "text/plain" or "text/html", us-ascii is
+       assumed.  Otherwise, an exception is thrown.
+
+   body_raw
+       This returns the body of the object, but doesn't decode the transfer
+       encoding.
+
+   decode_hook
+       This method is called before the Email::MIME::Encodings "decode"
+       method, to decode the body of non-binary messages (or binary messages,
+       if the "force_decode_hook" method returns true).  By default, this
+       method does nothing, but subclasses may define behavior.
+
+       This method could be used to implement the decryption of content in
+       secure email, for example.
+
+   content_type
+       This is a shortcut for access to the content type header.
+
+   filename
+       This provides the suggested filename for the attachment part. Normally
+       it will return the filename from the headers, but if "filename" is
+       passed a true parameter, it will generate an appropriate "stable"
+       filename if one is not found in the MIME headers.
+
+   invent_filename
+         my $filename = Email::MIME->invent_filename($content_type);
+
+       This routine is used by "filename" to generate filenames for attached
+       files.  It will attempt to choose a reasonable extension, falling back
+       to dat.
+
+   debug_structure
+         my $description = $email->debug_structure;
+
+       This method returns a string that describes the structure of the MIME
+       entity.  For example:
+
+         + multipart/alternative; boundary="=_NextPart_2"; charset="BIG-5"
+           + text/plain
+           + text/html
+
+CONFIGURATION
+       The variable $Email::MIME::MAX_DEPTH is the maximum depth of parts that
+       will be processed.  It defaults to 10, already higher than legitimate
+       mail is ever likely to be.  This value may go up over time as the
+       parser is improved.
+
+       The variable $Email::MIME::MAX_PARTS is the maximum number of parts
+       that will be processed.  It defaults to 100, already higher than
+       legitimate mail is ever likely to be.  This value may go up over time
+       as the parser is improved or as research suggests that our starting
+       position was wrong.
+
+       Increasing either of these variables risks significant consumption of
+       memory.  Test before changing things.
+
+SEE ALSO
+       Email::Simple
+
+THANKS
+       This module was generously sponsored by Best Practical
+       (http://www.bestpractical.com/), Pete Sergeant, and Pobox.com.
+
+AUTHORS
+       •   Ricardo SIGNES <cpan@semiotic.systems>
+
+       •   Casey West <casey@geeknest.com>
+
+       •   Simon Cozens <simon@cpan.org>
+
+CONTRIBUTORS
+       •   Alex Vandiver <alexmv@mit.edu>
+
+       •   Anirvan Chatterjee <anirvan@users.noreply.github.com>
+
+       •   Arthur Axel 'fREW' Schmidt <frioux@gmail.com>
+
+       •   Brian Cassidy <bricas@cpan.org>
+
+       •   Damian Lukowski <damian.lukowski@credativ.de>
+
+       •   Dan Book <grinnz@gmail.com>
+
+       •   David Steinbrunner <dsteinbrunner@pobox.com>
+
+       •   Dotan Dimet <dotan@corky.net>
+
+       •   dxdc <dan@element26.net>
+
+       •   Eric Wong <e@80x24.org>
+
+       •   Geraint Edwards <gedge-oss@yadn.org>
+
+       •   ivulfson <9122139+ivulfson@users.noreply.github.com>
+
+       •   Jesse Luehrs <doy@tozt.net>
+
+       •   Kurt Anderson <kboth@drkurt.com>
+
+       •   Lance A. Brown <lance@bearcircle.net>
+
+       •   Matthew Horsfall <wolfsage@gmail.com>
+
+       •   memememomo <memememomo@gmail.com>
+
+       •   Michael McClimon <michael@mcclimon.org>
+
+       •   Mishrakk <48946018+Mishrakk@users.noreply.github.com>
+
+       •   Pali <pali@cpan.org>
+
+       •   Ricardo Signes <rjbs@semiotic.systems>
+
+       •   Ricardo Signes <rjbs@users.noreply.github.com>
+
+       •   Shawn Sorichetti <ssoriche@coloredblocks.com>
+
+       •   Tomohiro Hosaka <bokutin@bokut.in>
+
+COPYRIGHT AND LICENSE
+       This software is copyright (c) 2004 by Simon Cozens and Casey West.
+
+       This is free software; you can redistribute it and/or modify it under
+       the same terms as the Perl 5 programming language system itself.
+
+perl v5.40.2                      2024-05-02                    Email::MIME(3)

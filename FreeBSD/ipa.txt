@@ -1,0 +1,1536 @@
+IPA_MOD(3)             FreeBSD Library Functions Manual             IPA_MOD(3)
+
+NAME
+       ipa_mod -- IPA modules APIs
+
+SYNOPSIS
+       #include <ipa_mod.h>
+
+DESCRIPTION
+       This manual page describes API of IPA modules.  Let's call any IPA
+       module simply ``a module''.  Information given in this manual page is
+       mainly for developers, but it can be interesting for anybody who wishes
+       to understand how IPA utilities work with IPA modules.
+
+       This manual page has descriptions of the following APIs:
+
+       ipa_memfunc API version 1 (IPA_MEMFUNC_API_VERSION);
+       ipa_ac_mod API version 2 (IPA_AC_MOD_API_VERSION);
+       ipa_db_mod API version 2 (IPA_DB_MOD_API_VERSION);
+       ipa_st_mod API version 2 (IPA_ST_MOD_API_VERSION).
+
+   Module's symbols naming
+       Any module is stored in a file with the name like foobar-x.y.z.so.
+       After loading a module using the dlopen(3) or similar function, any of
+       IPA utilities removes a suffix and a version number from the module's
+       file name and tries to find foobar_ac_mod, foobar_db_mod or
+       foobar_st_mod symbol in a module if a module is accounting, database or
+       statistics module.  If a module has a searched symbol, then a module is
+       considered as an IPA module.
+
+       Then found (void *) pointer to a symbol is converted to one of three
+       (struct_ipa_XX_mod_*) pointers.  Structures ipa_XX_mod determine APIs
+       between IPA utilities and modules.
+
+       Such method of naming symbols in modules allows to have several modules
+       of different types in one file.  You can create links to a module's
+       file with different names to follow above given naming scheme.
+
+   Single-threaded and multi-threaded modules
+       Any module can be single-threaded or multi-threaded.  If a module does
+       not block in its functions, then it can be built as single-threaded.
+       If a module can block in some of its functions or if a module needs to
+       continuously monitor some event, then it must be built as multi-
+       threaded.  Alternatively a module can fork(2) another process and use
+       some form of IPC to communicate with it from some of its functions, and
+       used IPC functions also must be nonblockable.
+
+       If a module is single-threaded, then it can use signals for own purpose
+       (for example SIGALRM to implement timeout), except signals used by an
+       IPA utility, which loaded this module.  If a module is multi-threaded,
+       then it is not allowed to use signals.
+
+       It is very important to return from a module's function as quickly as
+       possible, since IPA utilities expect, that module's functions will not
+       block.  If a module spends too much time in its functions, then
+       timestamps of statistics and reaction on some planned events will be
+       not very accurate in IPA utilities.
+
+       Even if a module is not designed as multi-threaded, other modules can
+       be multi-threaded.  All loaded modules must be all single-threaded or
+       must be all multi-threaded.  So any single-threaded module should be
+       able to be built as multi-threaded.  A module always should set correct
+       flag in its API structure to say if it is single- or multi-threaded.
+
+       IPA utilities are single-threaded by design, but if at least one multi-
+       threaded module is used, then they must be built as multi-threaded.  In
+       multi-threaded regime functions from ipa_memfunc, which is exported by
+       IPA utilities to modules, become thread-safe.
+
+       Modules are allowed to create threads only after the configuration
+       phase.
+
+   Exported memory allocation functions for a module
+       Modules APIs require some type of organization of data in modules.
+       ipa_memfunc functions are exported to a module and try to help a module
+       with memory manipulation.  A module is free to decide if it will use
+       these functions or if it will not.  In some functions modules are
+       required to use functions from ipa_memfunc.
+
+       There are four types of functions from ipa_memfunc: initialization and
+       deinitialization functions, functions for general purpose memory
+       allocation, functions for working with mzones and functions for working
+       with marrays.
+
+       Functions mem_* for general purpose memory allocation are wrappers for
+       standard library memory allocation functions malloc(3), calloc(3),
+       realloc(3), free(3), strdup(3) and for vasprintf(3) function, found on
+       some systems.  Any memory allocated with some of mem_* functions should
+       be freed with mem_free function.  These functions accept extra one
+       argument, called mem_type (memory type), which is used for collecting
+       statistics about memory usage.  This mem_type should be created by the
+       mem_type_new function.
+
+       Marrays (memory arrays) are used for creating arrays of items.  Mzones
+       (memory zones) are used for creating items of the same size.  All
+       marray_* and mzone_* functions internally use mem_* memory allocation
+       functions.
+
+       Functions from ipa_memfunc detect wrong pointers and incorrect
+       arguments in mem_*, marray_* and mzone_* functions.  If some critical
+       error is found in any of these functions, then this function terminates
+       execution of a program and a core dump is generated.
+
+       If IPA utilities were built with defined WITH_MEMFUNC_DEBUG macro
+       variable, then allocated and freed memory objects are filled with some
+       garbage bytes, so if some part of code uses already freed memory, then
+       it is likely, that it will get an error.  Also mem_realloc in this case
+       is equivalent to malloc(3) new memory area, memcpy(3) data to new
+       memory area, free(3) old memory area.
+
+       Any IPA utility during exit stage and during reconfiguration checks
+       size of allocated and not freed memory, if this size is not equal to
+       zero, then a debug message is sent to the log.  If some mzone of marray
+       was not deinitialized, then its name appears in a debug message.
+
+       The ipa_memfunc has following format:
+
+       typedef struct ipa_mem_type_struct ipa_mem_type;
+       typedef struct ipa_marray_struct ipa_marray;
+       typedef struct ipa_mzone_struct ipa_mzone;
+
+       typedef struct {
+           unsigned int    api_ver;
+           int             (*memfunc_init)(void);
+           void            (*memfunc_deinit)(int foreign);
+           ipa_mem_type    *m_parser;
+           ipa_mem_type    *(*mem_type_new)(const char *name,
+                               const char *desc, unsigned int flags);
+           void            *(*mem_malloc)(size_t size,
+                               ipa_mem_type *mem_type);
+           void            *(*mem_calloc)(size_t number, size_t size,
+                               ipa_mem_type *mem_type);
+           void            *(*mem_realloc)(void *ptr, size_t size,
+                               ipa_mem_type *mem_type);
+           char            *(*mem_strdup)(const char *str,
+                               ipa_mem_type *mem_type);
+           int             (*mem_vasprintf)(ipa_mem_type *mem_type,
+                               char **buf_ptr, const char *format, va_list ap);
+           void            (*mem_free)(void *ptr, ipa_mem_type *mem_type);
+           ipa_marray      *(*marray_init)(const char *name, const char *desc,
+                               unsigned int flags, void **arr, size_t isize,
+                               unsigned int nitems, unsigned int nalloc);
+           void            (*marray_deinit)(ipa_marray *marray);
+           int             (*marray_alloc)(ipa_marray *marray,
+                               unsigned int *idxp, int fixed);
+           void            (*marray_free)(ipa_marray *marray,
+                               unsigned int idx);
+           void            (*marray_minimize)(ipa_marray *marray);
+           int             (*marray_check_index)(ipa_marray *marray,
+                               unsigned int idx);
+           unsigned int    (*marray_nused)(ipa_marray *marray);
+           ipa_mzone       *(*mzone_init)(const char *name, const char *desc,
+                               unsigned int flags, size_t isize,
+                               unsigned int nitems, unsigned int nalloc);
+           void            (*mzone_deinit)(ipa_mzone *mzone);
+           void            *(*mzone_alloc)(ipa_mzone *mzone);
+           void            (*mzone_free)(ipa_mzone *mzone, void *ptr);
+           unsigned int    (*mzone_nused)(ipa_mzone *mzone);
+       } ipa_memfunc;
+
+       api_ver
+              Version of the ipa_memfunc API, a module should check values of
+              supported API versions with IPA_MEMFUNC_API_VERSION during
+              compilation.
+
+       memfunc_init
+              A child of a module can call this function to initialize all
+              other ipa_memfunc functions.
+
+       memfunc_deinit
+              A child of a module can call this function to free all memory
+              allocated in mzones and marrays, and deinitialize all other
+              ipa_memfunc own structures.  If foreign flag is non-zero, then
+              all messages about memory leaks will be suppressed and
+              statistics about memory usage will be flushed.  Note that this
+              and previous functions can be called only in a child of some
+              module.
+
+       m_parser
+              This is a pointer to mem_type used by a parser to allocate
+              memory during configuration file parsing.
+
+       mem_type_new
+              Create new mem_type, name is a short name for new mem_type, desc
+              is its description (usually several words).  name and desc
+              should exist until marray is deinitialized.  flags are ORed
+              flags for new mem_type.  Currently only one flag
+              IPA_MEMFUNC_FLAG_PTHREAD is defined, which should be set if
+              memory of this mem_type will be allocated or freed by several
+              threads asynchronously.  This function returns a pointer to new
+              mem_type or NULL if an error occurred.
+
+       mem_malloc
+              Analogous to malloc(3).
+
+       mem_calloc
+              Analogous to calloc(3).
+
+       mem_realloc
+              Analogous to realloc(3).
+
+       mem_strdup
+              Analogous to strdup(3).
+
+       mem_vasprintf
+              Analogous to vasprintf(3) found on some systems.  This function
+              sets *buf_ptr to be a pointer to a buffer sufficiently large to
+              hold the formatted string and returns the number of characters
+              in a buffer (not including the trailing `\0').  If sufficient
+              space cannot be allocated, this function will return -1 and set
+              *buf_ptr to be a NULL pointer.  format and ap are the same
+              arguments as for vprintf(3).
+
+       mem_free
+              Analogous to free(3).
+
+       marray_init
+              Create marray, name is a name of marray, desc is its description
+              (usually several words).  name and desc should exist until
+              marray is deinitialized.  flags determines ORed flags for new
+              marray, currently only one flag IPA_MEMFUNC_FLAG_PTHREAD is
+              defined, this flag must be set if items from this marray can be
+              allocated and freed by several threads asynchronously.  arr is a
+              pointer where to store the pointer to the actual array of items.
+              isize is a size of one item in marray.  nitems means number of
+              items to allocate initially.  nalloc means number of items to
+              allocate if there is not any unused items in marray.  If you are
+              not sure about these values, then set them to 1.  This function
+              returns a pointer to just created marray or NULL if an error
+              occurred.  Note that the pointer saved in memory pointed by arr
+              can be changed by next marray_alloc and marray_free functions
+              calls.
+
+       marray_deinit
+              Release memory used by marray.  If a module does not call this
+              function, then an IPA utility will report about leak of memory
+              and deinitialize module's marray, but this deinitialization does
+              not mean that memory leak is avoided, because deinitialization
+              of marray is not deep-free for its items.  If marray is NULL,
+              then this function does nothing.
+
+       marray_alloc
+              Allocate a new item in marray.  If fixed is non-zero, then *idxp
+              should be a desired index number of a new item in marray, else
+              this function will allocate an item with the lowest possible
+              unused index number and save this index number in *idxp.  This
+              function returns 0 if a new item was allocated and -1 if an
+              error occurred.  Usually a module calls this function with non-
+              zero value of the fixed argument.
+
+       marray_free
+              Return previously allocated item with index idx to marray.
+
+       marray_minimize
+              Try to minimize memory used by marray.  Such minimization is
+              possible because marray_alloc and marray_free try to keep extra
+              memory for future items allocations.
+
+       marray_check_index
+              This function checks whether an item with the idx index was
+              allocated previously in marray.  If an item was allocated, then
+              0 is returned, else non-zero value is returned.
+
+       marray_nused
+              Return number of allocated items in marray.
+
+       mzone_init
+              Create mzone, name is a name of mzone, desc is its description
+              (usually several words).  name and desc should exist until
+              marray is deinitialized.  flags means the same as in marray_init
+              function, mzone also accepts IPA_MEMFUNC_FLAG_OPTIMIZE, this
+              flag should be set if it will be many items in mzone.  isize is
+              a size of one item in mzone.  nitems means number of items to
+              allocate initially.  nalloc means number of items to allocate if
+              there is not any unused item in mzone.  If you are not sure
+              about these values, then set them to 1.  This function returns a
+              pointer to just created mzone or NULL if an error occurred.
+
+       mzone_deinit
+              Release memory used by mzone.  If a module does not call this
+              function, then an IPA utility will report about leak of memory
+              and deinitialize module's mzone, but this deinitialization does
+              not mean that memory leak is avoided, because deinitialization
+              of mzone is not deep-free for its items.  If mzone is NULL, then
+              this function does nothing.
+
+       mzone_alloc
+              Allocate a new item from mzone.  This function returns a pointer
+              to a new item or NULL if an error occurred.
+
+       mzone_free
+              Return previously allocated item pointed by ptr to mzone.
+
+       mzone_nused
+              Return number of allocated items from mzone.
+
+   Exported support functions for a module
+       Sometime a module needs to add some macro variable to some section of
+       the configuration file, or needs to output own parameters when an IPA
+       utility outputs parsed configuration file, or needs to send a log
+       message.  Since a module does not know how to do this, an IPA utility,
+       which uses this module, exports ipa_suppfunc functions to a module:
+
+       typedef struct {
+           void    (*print_string)(const char *string);
+           void    (*print_bytes)(const uint64_t *value);
+           void    (*print_time)(const uint64_t *value);
+           void    (*print_value)(const uint64_t *value,
+                       unsigned int value_type);
+           void    (*print_boolean)(int value);
+           void    (*print_space)(void);
+           void    (*print_param_name)(const char *prefix, const char *param);
+           void    (*print_param_args)(const char *format, va_list ap);
+           void    (*print_param_end)(void);
+           void    (*print_sect_name)(const char *prefix, const char *sect);
+           void    (*print_sect_args)(const char *format, va_list ap);
+           void    (*print_sect_begin)(void);
+           void    (*print_sect_end)(void);
+           void    (*open_log)(void);
+           void    (*close_log)(void);
+           void    (*logmsg)(const char *mod_name, int priority, int code,
+                       const char *format, va_list ap);
+           void    (*logconferr)(const char *mod_name, int code,
+                       const char *format, va_list ap);
+           int     (*local_sym_add)(char *sym, char *val, int copy_flag);
+           int     (*local_sym_del)(const char *sym);
+           int     (*global_sym_add)(char *sym, char *val, int copy_flag);
+           int     (*global_sym_del)(const char *sym);
+       } ipa_suppfunc;
+
+       print_string
+              This function prints a string with quotes.
+
+       print_bytes
+              This function prints bytes value.
+
+       print_time
+              This function prints time value.
+
+       print_value
+              This function prints bytes, time or 64-bit unsigned number if
+              value_type is IPA_CONF_TYPE_BYTES, IPA_CONF_TYPE_TIME or
+              IPA_CONF_TYPE_UINT64 respectively.
+
+       print_boolean
+              This function prints boolean value.
+
+       print_space
+              This function prints one space character if it was not printed
+              yet.
+
+       print_param_name
+              This function outputs a parameter's name param with
+              configuration prefix prefix.  If a parameter does not have a
+              configuration prefix, then prefix should be NULL.
+
+       print_param_args
+              This vprintf(3)-like function outputs parameter's arguments.  It
+              can be invoked several times for the same parameter.
+
+       print_param_end
+              This function should be called after outputting all parameter's
+              arguments.
+
+       print_sect_name
+              This function outputs a section's name sect with configuration
+              prefix prefix.  If a section does not have a configuration
+              prefix, then prefix should be NULL.
+
+       print_sect_args
+              This vprintf(3)-like function outputs section's arguments.  It
+              can be invoked several times for the same section.
+
+       print_sect_begin
+              This function should be called after outputting all section's
+              arguments.
+
+       print_sect_end
+              This function should be called at the end of a module's section.
+
+       open_log, close_log
+              If a module needs to fork another process, then that process can
+              use logmsg function (described below), but if it needs to close
+              some descriptors and then use log system again, then it should
+              call close_log and then open_log function.  Creation of the file
+              descriptor for sending log messages is delayed until the first
+              message is sent.
+
+       logmsg A module should use this function for sending log messages from
+              any part of its code, but not from configuration file parsing
+              functions.  mod_name is a module's name.  priority is a priority
+              of the message: IPA_LOG_INFO, IPA_LOG_WARNING or IPA_LOG_ERR.
+              code is the errno(2) value or 0 if there is not any error
+              condition.  format and ap are vprintf(3)-like arguments.
+
+       logconferr
+              A module should use this function for sending messages about
+              errors during configuration file parsing.  Arguments means the
+              same as for logmsg function.
+
+       local_sym_add
+              Create a local macro variable with name sym and value val, if
+              copy_flag is non-zero, then memory will be allocated and sym and
+              val will be copied to it, else original pointers will be used.
+              This function returns 0 if a macro variable was created and -1
+              if memory could not be allocated.
+
+       local_sym_del
+              Delete a local macro variable with name sym.  If there is no
+              local variable with the given name, then -1 is returned, else 0
+              is returned.  A module has a choice not to call this function
+              for each variable previously created by the local_sym_add
+              function, because an IPA utility automatically handles this.
+
+       global_sym_add
+              Like local_sym_add, but for global macro variables.
+
+       global_sym_del
+              Like local_sym_del, but for global macro variables.
+
+   Configuration section description
+       The ipa_conf_sect structure is defined as:
+
+       typedef struct {
+           const char      *sect_name;
+           unsigned int    sect_id;
+           int             arg_nargs;
+           const char      *arg_pattern;
+           regex_t         *arg_regexp;
+           unsigned int    arg_type;
+           const unsigned int *sect_where;
+           int             (*arg_parse)(void *arg);
+       } ipa_conf_sect;
+
+       sect_name
+              This is a name of the section.
+
+       sect_id
+              This is a section ID, which is local for a module.  This value
+              should be greater than IPA_CONF_SECT_CUSTOM_OFFSET.
+
+       arg_nargs
+              This is a number of arguments a section should have.  Set this
+              field to zero if a section does not expect any arguments.  If a
+              section can have variable number of arguments, then set this
+              field to negative number, which absolute value is equal to
+              minimal number of arguments a section should have.
+
+       arg_pattern
+              A section's argument should match the given extended POSIX
+              regular expression.  If there is not such expression, then this
+              field should be set to NULL.
+
+       arg_regexp
+              This is a pointer to the variable with regex_t type.  if
+              arg_pattern is not NULL, then this field also should not be
+              NULL.  It is possible share some regular expression between
+              sections and parameters and do not waste memory for extra
+              variables.  In this case only one section or parameter must have
+              valid pointer in arg_pattern, all others sections and parameters
+              must set arg_pattern to NULL.
+
+       arg_type
+              This is a type of the argument.  There are following types:
+
+              IPA_CONF_TYPE_INT32    - int32_t;
+              IPA_CONF_TYPE_UINT32   - uint32_t;
+              IPA_CONF_TYPE_INT64    - int64_t;
+              IPA_CONF_TYPE_UINT64   - uint64_t;
+              IPA_CONF_TYPE_STRING   - a string;
+              IPA_CONF_TYPE_BYTES    - bytes;
+              IPA_CONF_TYPE_TIME     - time;
+              IPA_CONF_TYPE_VALUE    - value;
+              IPA_CONF_TYPE_PER_CENT - per cent;
+              IPA_CONF_TYPE_BOOLEAN  - boolean;
+              IPA_CONF_TYPE_MISC     - without any format.
+
+              Usually a module uses a regular expression (field arg_regexp)
+              with IPA_CONF_TYPE_MISC argument type and does not use a regular
+              expression with other argument types.  IPA_CONF_TYPE_VALUE means
+              time, bytes or uint64_t value.  See below details.
+
+       sect_where
+              This field determines where this section should be placed, it is
+              a pointer to an array of 'unsigned int' values, each value is an
+              ID of a section, last element in this array should be equal to
+              zero.  Predefined sections IDs are follows:
+
+              IPA_CONF_SECT_ROOT      - no section;
+              IPA_CONF_SECT_GLOBAL    - the global section;
+              IPA_CONF_SECT_RULE      - the rule section;
+              IPA_CONF_SECT_LIMIT     - the limit section;
+              IPA_CONF_SECT_THRESHOLD - the threshold section;
+              IPA_CONF_SECT_AUTORULE  - the autorule section;
+              IPA_CONF_SECT_RULEPAT   - the rulepat section;
+              IPA_CONF_SECT_RESTART   - the restart section;
+              IPA_CONF_SECT_REACH     - the reach section;
+              IPA_CONF_SECT_EXPIRE    - the expire section;
+              IPA_CONF_SECT_STARTUP   - the startup section;
+              IPA_CONF_SECT_SHUTDOWN  - the shutdown section;
+              IPA_CONF_SECT_IF_REACHED - the if_reached section;
+              IPA_CONF_SECT_IF_NOT_REACHED - the if_not_reached section;
+              IPA_CONF_SECT_IF_ALL_REACHED - the if_all_reached section;
+              IPA_CONF_SECT_IF_ANY_REACHED - the if_any_reached section;
+              IPA_CONF_SECT_IF_ALL_NOT_REACHED - the if_all_not_reached section;
+              IPA_CONF_SECT_IF_ANY_NOT_REACHED - the if_any_not_reached section;
+              IPA_CONF_SECT_BELOW_THRESHOLD - the below_threshold section;
+              IPA_CONF_SECT_EQUAL_THRESHOLD - the equal_threshold section;
+              IPA_CONF_SECT_ABOVE_THRESHOLD - the above_threshold section.
+
+       arg_parse
+              This function is called for parsing section arguments.  A module
+              can set this field to NULL if it has not any parsing function
+              for arguments.  arg is a pointer to some data, which depends on
+              arg_type, and arg_parse function should perform following casts:
+
+              IPA_CONF_TYPE_INT32   - *(int32_t *)arg;
+              IPA_CONF_TYPE_UINT32  - *(uint32_t *)arg;
+              IPA_CONF_TYPE_INT64   - *(int64_t *)arg;
+              IPA_CONF_TYPE_UINT64  - *(uint64_t *)arg;
+              IPA_CONF_TYPE_STRING  - *(char **)arg;
+              IPA_CONF_TYPE_BYTES   - *(uint64_t *)arg;
+              IPA_CONF_TYPE_TIME    - *(uint64_t *)arg;
+              IPA_CONF_TYPE_VALUE   - *(uint64_t *)arg, *((uint64_t *)arg + 1);
+              IPA_CONF_TYPE_BOOLEAN - *(int *)arg;
+              IPA_CONF_TYPE_MISC    - *(char **)arg.
+
+              If arg_type is IPA_CONF_TYPE_STRING, then arg is a pointer to
+              the allocated memory with the parsed string (whithout quotes) by
+              mem_malloc function with m_parser mem_type, and a module should
+              free this memory if it does not need it by mem_free function.
+              In other cases arg_parse function should copy any needed data
+              and do not use data by pointers, also it is allowed to modify
+              data arg points to.  If arg_type is IPA_CONF_TYPE_MISC, then
+              there are not space characters at the beginning and at the tail
+              of arg, also there is only one ` ' character between any two
+              arguments in arg.  If arg_type is IPA_CONF_TYPE_VALUE, then arg
+              is a pointer to an array, first item of this array has type of
+              value IPA_CONF_TYPE_BYTES, IPA_CONF_TYPE_TIME or
+              IPA_CONF_TYPE_UINT64, second item has a value itself.
+
+   Configuration parameter description
+       The ipa_conf_param structure is defined as:
+
+       typedef struct {
+           const char      *param_name;
+           int             arg_nargs;
+           const char      *arg_pattern;
+           regex_t         *arg_regexp;
+           unsigned int    arg_type;
+           const unsigned int *param_where;
+           int             (*arg_parse)(void *arg);
+       } ipa_conf_param;
+
+       param_name
+              This is a name of the parameter.
+
+       arg_nargs
+              Explained above.
+
+       arg_pattern
+              Explained above.
+
+       arg_regexp
+              Explained above.
+
+       arg_type
+              Explained above.
+
+       param_where
+              Explained above for sect_where.
+
+       arg_parse
+              Explained above.
+
+   Structure for representing dates
+       The ipa_tm structure is defined as:
+
+       typedef struct tm ipa_tm;
+
+       Only following fields in the ipa_tm structure can be used: tm_year,
+       tm_mon, tm_mday, tm_hour, tm_min, tm_sec and tm_wday.  These fields
+       determine some local date.  tm_year is equal to the real value of the
+       year and tm_mon is equal to the real value of the month.
+
+   Limit's state
+       The state of any limit is kept in the ipa_limit_state structure:
+
+       struct ipa_limit_state {
+           uint64_t        lim;
+           uint64_t        cnt;
+           unsigned int    event_date_set;
+           ipa_tm          event_date[IPA_LIMIT_EVENT_NUM];
+       };
+
+       lim    This is a value of the limit parameter.
+
+       cnt    This is a value of the limit's counter.
+
+       event_date_set
+              This is a bits filed, which determines valid entries in
+              event_date array, each IPA_LIMIT_EVENT_xxx element in event_date
+              array has corresponding IPA_LIMIT_EVENT_xxx_SET bit in
+              event_date_set.
+
+       event_date
+              This is an array of limit's events dates.  There are following
+              entries in this array:
+
+              IPA_LIMIT_EVENT_START - date when the limit started;
+
+              IPA_LIMIT_EVENT_RESTART - date when the limit will restart or
+              restarted;
+
+              IPA_LIMIT_EVENT_RESTART_EXEC - date when commands for the
+              restarted limit were run;
+
+              IPA_LIMIT_EVENT_REACH - date when the limit reached;
+
+              IPA_LIMIT_EVENT_REACH_EXEC - date when commands for the reached
+              limit were run;
+
+              IPA_LIMIT_EVENT_EXPIRE - date when the reached limit will expire
+              and will restart or expired and restarted;
+
+              IPA_LIMIT_EVENT_EXPIRE_EXEC - date when commands for the expired
+              limit were run;
+
+              IPA_LIMIT_EVENT_UPDATED - date when the limit was updated last
+              time.
+
+   Threshold's state
+       The state of any threshold is kept in the ipa_threshold_state
+       structure:
+
+       struct ipa_threshold_state {
+           uint64_t        thr;
+           uint64_t        cnt;
+           ipa_tm          tm_from;
+           ipa_tm          tm_updated;
+       };
+
+       thr    This is a value of the threshold parameter.
+
+       cnt    This is a value of the threshold's counter.
+
+       tm_from, tm_updated
+              Two timestamps for the threshold.
+
+   Accounting module API
+       Accounting module API is exported by a module to an IPA utility in the
+       ipa_ac_mod structure:
+
+       struct ipa_ac_mod {
+           unsigned int    api_ver;
+           unsigned int    mod_flags;
+           const char      *ac_name;
+           const ipa_suppfunc *suppfunc;
+           const ipa_memfunc *memfunc;
+           const char      *conf_prefix;
+           ipa_conf_sect   *conf_sect_tbl;
+           ipa_conf_param  *conf_param_tbl;
+           int             (*conf_init)(void);
+           int             (*conf_deinit)(void);
+           int             (*conf_event)(unsigned int event, unsigned int no,
+                               const void *arg);
+           int             (*conf_mimic_real)(void);
+           int             (*conf_inherit)(unsigned int rulepatno,
+                               unsigned int ruleno, const char *rule_name);
+           void            (*conf_show)(unsigned int sect_id, unsigned int no);
+           int             (*ac_pre_init)(void)
+           int             (*ac_init_autorule)(unsigned int autoruleno,
+                               const char *autorule_name);
+           int             (*ac_init_dynrule)(unsigned int autoruleno,
+                               unsigned int ruleno, const char *rule_name);
+           int             (*ac_init_statrule)(unsigned int ruleno,
+                               const char *rule_name);
+           int             (*ac_init)(void);
+           int             (*ac_deinit_rule)(unsigned int ruleno);
+           int             (*ac_deinit_autorule)(unsigned int autoruleno);
+           int             (*ac_deinit)(void);
+           int             (*ac_get_stat)(const struct ipa_tm *);
+           int             (*ac_get_rule_stat)(unsigned int stat_generation,
+                               int newstat, unsigned int ruleno,
+                               int *addition, uint64_t *chunk);
+           int             (*ac_set_autorule_active)(unsigned int autoruleno,
+                               int active);
+           int             (*ac_set_rule_active)(unsigned int ruleno,
+                               int active);
+           int             (*ac_set_limit_active)(unsigned int ruleno,
+                               unsigned int limitno, int active);
+           int             (*ac_set_threshold_active)(unsigned int ruleno,
+                               unsigned int thresholdno, int active);
+           int             (*ac_limit_event)(unsigned int ruleno,
+                               unsigned int limitno, unsigned int event);
+           int             (*ac_threshold_event)(unsigned int ruleno,
+                               unsigned int thresholdno, unsigned int event);
+           int             (*ac_create_rule)(const char *mod_name,
+                               unsigned int autoruleno, unsigned int *ruleno,
+                               const char *rule_name, const char *rule_info);
+           void            (*ac_delete_rule)(const char *mod_name,
+                               unsigned int ruleno);
+       };
+
+       api_ver
+              This is the version of the accounting module API, a module
+              should check values of supported API versions with
+              IPA_AC_MOD_API_VERSION during compilation.  After loading a
+              module, this version number is checked with version of used API
+              version.
+
+       mod_flags
+              Flags, which describe module working regimes.  Only one flag
+              IPA_MOD_FLAG_PTHREAD_SAFE is defined, and it must be set if a
+              module is thread-safe.
+
+       ac_name
+              This is a name of the module's accounting system.
+
+       suppfunc
+              This is a pointer to ipa_suppfunc structure, which is exported
+              to a module.
+
+       memfunc
+              This is a pointer to ipa_memfunc structure, which is exported to
+              a module.
+
+       conf_prefix
+              This is a configuration prefix for module's sections and
+              parameters.  If a module does not have a configuration prefix,
+              then set this field to NULL.
+
+       conf_sect_tbl
+              This is a pointer to the array of the ipa_conf_sect structures,
+              which describe module's sections.  Last item in this table
+              should have sect_name equal to NULL.  If a module does not have
+              sections, then set this field to NULL.
+
+       conf_param_tbl
+              This is a pointer to the array of the ipa_param_sect structures,
+              which describe module's parameters.  Last item in this table
+              should have param_name equal to NULL.  If a module does not have
+              parameters, then set this field to NULL.
+
+       conf_init
+              After loading a module, this function is called.
+
+       conf_deinit
+              After parsing a configuration file, this function is called.
+
+       conf_event
+              This function is called each time when some configuration event
+              occurs.  conf_event describes a configuration event.
+              Configuration events allows a module to know for which section
+              its parameter or section belongs.  There are following
+              configuration events:
+
+              IPA_CONF_EVENT_GLOBAL_BEGIN - the begin of the global section;
+
+              IPA_CONF_EVENT_RULE_BEGIN - the begin of the rule section, arg
+              points to a string with the rule's name and should be casted to
+              (const char *), no is an ordinal number of this section,
+              starting from 0;
+
+              IPA_CONF_EVENT_LIMIT_BEGIN - the begin of the limit section, arg
+              points to a string with the limit's name and should be casted to
+              (const char *), no is an ordinal number of this section in the
+              current section, starting from 0;
+
+              IPA_CONF_EVENT_THRESHOLD_BEGIN - the begin of the threshold
+              section, arg points to a string with the threshold's name and
+              should be casted to (const char *), no is an ordinal number of
+              this section in the current section, starting from 0;
+
+              IPA_CONF_EVENT_AUTORULE_BEGIN - the begin of the autorule
+              section, arg points to a string with the autorule's name and
+              should be casted to (const char *), no is an ordinal number of
+              this section, starting from 0;
+
+              IPA_CONF_EVENT_RULEPAT_BEGIN - the begin of the rulepat section,
+              arg points to a POSIX regular expression and should be casted to
+              (const char *), no is an ordinal number of this section,
+              starting from 0;
+
+              IPA_CONF_EVENT_CUSTOM_SECT_BEGIN - the begin of some module's
+              section, no is the ID of a module's section, arg should be
+              ignored;
+
+              There are IPA_CONF_EVENT_xxx_BEGIN configuration events for
+              other of IPA_CONF_SECT_xxx sections, but no and arg should be
+              ignored by a module for them.
+
+              For all above listed configuration events there are
+              corresponding IPA_CONF_EVENT_xxx_END configuration events, with
+              the same arguments.
+
+       conf_mimic_real
+              If this function is called, then a module should mimic real
+              configuration.
+
+       conf_inherit
+              In this function a module should inherit all settings from the
+              rulepat section number rulepatno for the rule number ruleno with
+              name rule_name.  This function is called before ac_pre_init,
+              then a module should use logconferr function for reporting about
+              occurred errors, else logmsg function should be used.
+
+       conf_show
+              This function is called when IPA utility outputs the parsed
+              configuration file.  sect_id is the ID of a section.  no is an
+              ordinal number of a section with the given section ID.  If a
+              module has some configuration for this section, then it should
+              output this configuration.  A module should not directly output
+              any configuration, instead it should use one of the functions
+              from the suppfunc structure.
+
+       ac_pre_init
+              This function is called after parsing a configuration file.  A
+              module should make general preinitialization of its accounting
+              system.  This function is always called before other ac_init*
+              functions.
+
+       ac_init_autorule
+              This function is called if some autorule uses a module.
+              autoruleno is a number of the autorule, autorule_name is its
+              name.
+
+       ac_init_dynrule
+              This function is called if some dynamic rule uses a module.
+              autoruleno is a number of the autorule from which this dynamic
+              rule was generated, ruleno is a number of the dynamic rule,
+              rule_name is its name.  Data, rule_name points to, will exist
+              until ac_deinit_rule is called for this rule.  This function is
+              called when a module calls ac_create_rule from ac_get_stat.
+
+       ac_init_statrule
+              The same as ac_init_dynrule but for static rules and is called
+              after configuration phase.
+
+       ac_init
+              This function is called after all other ac_init* functions
+              (except ac_init_dynrule, which is called from ac_create_rule).
+
+       ac_deinit_rule
+              This function is called to deinitialize a rule, which uses a
+              module.  A module should not expect, that ac_init_*rule for this
+              rule was called before.  This function is called for static and
+              dynamic rules.
+
+       ac_deinit_autorule
+              This function is called to deinitialize an autorule, which uses
+              a module.  A module should not expect, that ac_init_autorule was
+              called for this autorule before.
+
+       ac_deinit
+              This function is called to deinitialize a module.  A module
+              should not expect that ac_*init functions were called before.
+              This function is always called after all others ac_deinit_*
+              functions.
+
+       ac_get_stat
+              This function is called before calls to ac_get_rule_stat
+              function.  ctm is the current local date.  There is internal
+              statistics generation number, which is changed each time when
+              any module's ac_get_stat function is called and its value is
+              always greater than zero.
+
+       ac_get_rule_stat
+              This function should return statistics for the rule number
+              ruleno.  The stat_generation value is the value of statistics
+              generation number (see above for description).  The newstat flag
+              means, that a module should consider that this is a first
+              invocation of this function (for example this flag is non-zero
+              when a rule becomes active).  chunk points to statistics
+              returned by the module and *addition determines what to do with
+              returned statistics, if it is non-zero, then returned statistics
+              is added, else it is subtracted.  Here statistics means
+              statistics for period between two invocations of the
+              ac_get_rule_stat function.  This function is not called if a
+              rule which uses a module is inactive.
+
+       ac_set_autorule_active
+              This function should mark an autorule as active or inactive.  If
+              flag active is equal to zero, then an autorule should be marked
+              as inactive in a module, else an autorule should be marked as
+              active.
+
+       ac_set_rule_active
+              The same as above, but for a rule.
+
+       ac_set_limit_active
+              The same as above, but for a limit.
+
+       ac_set_threshold_active
+              The same as above, but for a threshold.
+
+       ac_limit_event
+              This function is called when some event occurred with the limit.
+              event can be:
+
+              IPA_LIMIT_EVENT_RESTART - the limit is restarted;
+              IPA_LIMIT_EVENT_REACH   - the limit becomes reached;
+              IPA_LIMIT_EVENT_EXPIRE  - the reached limit expires;
+              IPA_LIMIT_EVENT_STARTUP_IF_REACHED - reached at startup;
+              IPA_LIMIT_EVENT_STARTUP_IF_NOT_REACHED - not reached at startup;
+              IPA_LIMIT_EVENT_SHUTDOWN_IF_REACHED - reached at shutdown;
+              IPA_LIMIT_EVENT_SHUTDOWN_IF_NOT_REACHED - not reached at shutdown.
+
+       ac_threshold_event
+              This function is called when some event occurred with the
+              threshold.  event means that threshold's counter is:
+
+              IPA_THRESHOLD_EVENT_BELOW - below threshold's value;
+              IPA_THRESHOLD_EVENT_EQUAL - equal to threshold's value;
+              IPA_THRESHOLD_EVENT_ABOVE - above threshold's value.
+
+       ac_create_rule
+              This function is exported to a module.
+
+              A module should call this function only from the ac_get_stat
+              function to create a dynamic rule.  mod_name is a module's name
+              (is used only for debugging and only in this function).
+              autoruleno is a number of the autorule from which to create a
+              dynamic rule.  rule_name is a rule's name and rule_info is its
+              description, these strings are not used by pointers, so if a
+              module allocated memory for them, then it should release this
+              memory itself.  If everything is correct, then ac_init_dynrule
+              is called.
+
+              This function returns 0 if a dynamic rule was created, -2 if a
+              rule with the same name already exists and -1 if some critical
+              error occurred, in this case a module must return -1 from
+              ac_get_stat.
+
+       ac_delete_rule
+              This function is exported to a module.
+
+              A module should call this function only from the ac_get_stat
+              function to delete a dynamic rule number ruleno previously
+              created by the ac_create_rule function.  mod_name is a module's
+              name (is used only for debugging and only in this function).  At
+              some point the ac_deinit_rule is called for the given rule.
+
+              If everything is correct, then this functions returns 0.  If
+              there were problems with the deinitialization, then -1 should be
+              returned, in this case a module must return -1 from ac_get_stat.
+
+       If some function, except ac_create_rule, returns integer value, then it
+       should return the value -1 if an error occurred, else zero should be
+       returned.
+
+       If a module does not support some function for dynamic or static rule,
+       for autorules, for limits or thresholds, then it should set
+       corresponding field to NULL.
+
+       If some function is exported to a module, then corresponding field in
+       API structure can be set to any value (usually NULL).
+
+   Database module API
+       Database module API is exported by a module to an IPA utility in the
+       ipa_db_mod structure:
+
+       struct ipa_db_mod {
+           unsigned int    api_ver;
+           unsigned int    mod_flags;
+           const char      *db_name;
+           const ipa_suppfunc *suppfunc;
+           const ipa_memfunc *memfunc;
+           const char      *conf_prefix;
+           ipa_conf_sect   *conf_sect_tbl;
+           ipa_conf_param  *conf_param_tbl;
+           int             (*conf_init)(void);
+           int             (*conf_deinit)(void);
+           int             (*conf_event)(unsigned int event, unsigned int no,
+                               const void *arg);
+           int             (*conf_mimic_real)(void);
+           int             (*conf_inherit)(unsigned int rulepatno,
+                               unsigned int ruleno, const char *rule_name);
+           void            (*conf_show)(unsigned int sect_id, unsigned int no);
+           int             (*db_pre_init)(void);
+           int             (*db_init_dynrule)(unsigned int autoruleno,
+                               unsigned int ruleno, const char *rule_name,
+                               const char *rule_info);
+           int             (*db_init_statrule)(unsigned int ruleno,
+                               const char *rule_name, const char *rule_info);
+           int             (*db_init_dynlimit)(unsigned int autoruleno,
+                               unsigned int ruleno, const char *rule_name,
+                               const char *rule_info, unsigned int limitno,
+                               const char *limit_name, const char *limit_info);
+           int             (*db_init_statlimit)(unsigned int ruleno,
+                               const char *rule_name, const char *rule_info,
+                               unsigned int limitno, const char *limit_name,
+                               const char *limit_info);
+           int             (*db_init_dynthreshold)(unsigned int autoruleno,
+                               unsigned int ruleno, const char *rule_name,
+                               const char *rule_info, unsigned int thresholdno,
+                               const char *threshold_name,
+                               const char *threshold_info);
+           int             (*db_init_statthreshold)(unsigned int ruleno,
+                               const char *rule_name, const char *rule_info,
+                               unsigned int thresholdno,
+                               const char *threshold_name,
+                               const char *threshold_info);
+           int             (*db_init)(void);
+           int             (*db_get_limit_state)(unsigned int ruleno,
+                               unsigned int limitno,
+                               struct ipa_limit_state *state);
+           int             (*db_set_limit_state)(unsigned int ruleno,
+                               unsigned int limitno,
+                               const struct ipa_limit_state *state,
+                               int new_state);
+           int             (*db_get_threshold_state)(unsigned int ruleno,
+                               unsigned int thresholdno,
+                               struct ipa_threshold_state *state);
+           int             (*db_set_threshold_state)(unsigned int ruleno,
+                               unsigned int thresholdno,
+                               const struct ipa_threshold_state *state);
+           int             (*db_deinit_threshold)(unsigned int ruleno,
+                               unsigned int thresholdno);
+           int             (*db_deinit_limit)(unsigned int ruleno,
+                               unsigned int limitno);
+           int             (*db_deinit_rule)(unsigned int ruleno);
+           int             (*db_deinit)(void);
+           int             (*db_append_rule)(unsigned int ruleno,
+                               const uint64_t *cnt, const ipa_tm *ctm);
+           int             (*db_update_rule)(unsigned int ruleno,
+                               const uint64_t *cnt, const ipa_tm *ctm);
+           int             (*db_update_limit)(unsigned int ruleno,
+                               unsigned int limitno, const uint64_t *value,
+                               const ipa_tm *ctm);
+           int             (*db_limit_event)(unsigned int ruleno,
+                               unsigned int limitno, unsigned int event,
+                               const ipa_tm *etm, const ipa_tm *ctm);
+           int             (*db_update_threshold)(unsigned int ruleno,
+                               unsigned int thresholdno, const uint64_t *cnt,
+                               const ipa_tm *tm_from,
+                               const ipa_tm *tm_updated);
+           int             (*db_set_rule_active)(unsigned int ruleno,
+                               int active);
+           int             (*db_set_limit_active)(unsigned int ruleno,
+                               unsigned int limitno, int active);
+           int             (*db_set_threshold_active)(unsigned int ruleno,
+                               unsigned int thresholdno, int active);
+       }
+
+       api_ver
+              This is the version of the database module API, a module should
+              check values of supported API versions with
+              IPA_DB_MOD_API_VERSION during compilation.  After loading a
+              module, this version number is checked with version of used API
+              version.
+
+       mod_flags
+              Explained above.
+
+       db_name
+              This is a name of the module's database.
+
+       suppfunc
+              Explained above.
+
+       memfunc
+              Explained above.
+
+       conf_prefix
+              Explained above.
+
+       conf_sect_tbl
+              Explained above.
+
+       conf_param_tbl
+              Explained above.
+
+       conf_init
+              Explained above.
+
+       conf_deinit
+              Explained above.
+
+       conf_event
+              Explained above.
+
+       conf_mimic_real
+              Explained above.
+
+       conf_inherit
+              Explained above.
+
+       conf_show
+              Explained above.
+
+       db_pre_init
+              This function is called after parsing a configuration file.  A
+              module should make general initialization of its database.  This
+              function always is called before other db_init* functions.
+
+       db_init_dynrule
+              This function is called if some dynamic rule uses a module.
+              autoruleno is a number of the autorule from which this dynamic
+              rule was generated, ruleno is a number of the dynamic rule,
+              rule_name is its name and rule_info is its description.  Only
+              data, rule_name points to, will exist until db_deinit_rule is
+              called for this rule.
+
+       db_init_statrule
+              The same as db_init_dynrule but for static rules.
+
+       db_init_dynlimit
+              This function is called if some limit from a dynamic rule uses a
+              module.  limitno is an ordinal number of the limit in the rule,
+              limit_name is its name and limit_info is its description.  Rest
+              of arguments means the same as in db_init_dynrule.  Only data,
+              rule_name and limit_name point to, will exist until
+              db_deinit_limit is called for this limit.  Since a rule can use
+              another database, than its limits use, then a module should not
+              expect that db_init_dynrule was called before for a limit's
+              rule.  If a limit's rule uses this module too, then
+              db_init_dynrule for a rule is called first.
+
+       db_init_statlimit
+              The same as db_init_dynlimit but for limits from static rules.
+
+       db_init_dynthreshold
+              This function is called if some threshold from a dynamic rule
+              uses a module.  thresholdno is an ordinal number of the
+              threshold in the rule, threshold_name is its name and
+              threshold_info is its description.  Rest of arguments means the
+              same as in db_init_dynrule.  Only data, rule_name and
+              threshold_name point to, will exist until db_deinit_threshold is
+              called for this threshold.  Since a rule can use another
+              database, than its thresholds use, then a module should not
+              expect that db_init_dynrule was called before for a threshold's
+              rule.  If a threshold's rule uses this module too, then
+              db_init_dynrule for a rule is called first.
+
+       db_init_statthreshold
+              The same as db_init_dynthreshold but for thresholds from static
+              rules.
+
+       db_init
+              This function is called after all other db_init_stat* functions.
+
+       db_get_limit_state
+              This function should return the current state of the limit.  If
+              a module does not have current state for the limit, then the
+              return value should be zero.  If a module has current state for
+              the limit, then the return value should be 1.
+
+       db_set_limit_state
+              This function should set a new state for the limit.  If
+              new_state is zero, then current limit's state in the database
+              should be updated, else a new limit's state should be
+              registered.
+
+       db_get_threshold_state
+              This function should return the current state of the threshold.
+              If a module does not have current state for the threshold, then
+              the return value should be zero.  If a module has current state
+              for the threshold, then the return value should be 1.
+
+       db_set_threshold_state
+              This function should update the current state for the threshold.
+
+       db_deinit_threshold
+              This function is called to deinitialize a threshold, which uses
+              a module.  A module should not expect, that db_init_*threshold
+              was called for this threshold before.
+
+       db_deinit_limit
+              This function is called to deinitialize a limit, which uses a
+              module.  A module should not expect, that db_init_*limit was
+              called for this limit before.
+
+       db_deinit_rule
+              This function is called to deinitialize a rule, which uses a
+              module.  If some of rule's limits or thresholds use this module
+              too, then db_deinit_limit or db_deinit_threshold is called
+              first.  A module should not expect, that db_init_*rule for this
+              rule was called before.
+
+       db_deinit
+              This function is called to deinitialize a module.  A module
+              should not expect that db_*init functions were called before.
+              This function is always called after all other db_deinit_*
+              functions.
+
+       db_append_rule
+              This function should append a new record for the given rule.
+              cnt is a pointer to a new value of the rule's counter.  ctm is
+              the current local date.  This function is called before first
+              call of the db_update_rule function.
+
+       db_update_rule
+              This function should update a database record for the given
+              rule.  cnt is a pointer to a new value of the rule's counter,
+              ctm is the current local date.
+
+       db_update_limit
+              This function should update a state of the limit in the
+              database.  cnt is a pointer to a new value of the counter, ctm
+              is the current local date.  IPA_LIMIT_EVENT_UPDATED date should
+              be also updated by a module.
+
+       db_limit_event
+              This function should register an event event for the limit in
+              the database.  The given event can take place right now or in
+              future.  etm is the local date of the given event and ctm is the
+              current local date.  IPA_LIMIT_EVENT_UPDATED date should be also
+              updated by a module.  This function is called only for following
+              limit's events IPA_LIMIT_EVENT_: RESTART_EXEC, REACH,
+              REACH_EXEC, EXPIRE and EXPIRE_EXEC.
+
+       db_update_threshold
+              This function should update a state of the threshold in the
+              database.  cnt is a pointer to a new value of the counter,
+              tm_from and tm_updated are two timestamps for the threshold.
+
+       db_set_rule_active
+              Explained above in ac_set_rule_active.  When a rule is marked as
+              active, then db_append_rule will be called before
+              db_update_rule.
+
+       db_set_limit_active
+              Explained above in ac_set_limit_active.
+
+       db_set_threshold_active
+              Explained above in ac_set_threshold_active.
+
+       If some function returns integer value, then it should return the value
+       -1 if an error occurred, else zero should be returned (if corresponding
+       description does not specify another value).
+
+       If a database module does not support dynamic rules, limits or
+       thresholds, then it should set corresponding db_init_dyn* fields to
+       NULL.  If a database module does not support static rules, limits or
+       thresholds, then set corresponding db_init_stat* fields to NULL.
+
+       If a database module does not support db_get_limit_state,
+       db_get_threshold_state, db_set_*active function, then set corresponding
+       field to NULL.
+
+       If some function is exported to a module, then corresponding field in
+       API structure can be set to any value (usually NULL).
+
+   Statistics module API
+       Statistics module API is exported by a module to an IPA utility in the
+       ipa_st_mod structure:
+
+       struct ipa_entity_desc {
+           char            *name;
+           char            *info;
+       };
+
+       struct ipa_rule_stat {
+           unsigned int    year;
+           unsigned char   mon;
+           unsigned char   mday;
+           unsigned char   h1, m1, s1;
+           unsigned char   h2, m2, s2;
+           uint64_t        cnt;
+       };
+
+       struct ipa_st_mod {
+           unsigned int    api_ver;
+           unsigned int    mod_flags;
+           const char      *st_name;
+           const ipa_suppfunc *suppfunc;
+           const ipa_memfunc *memfunc;
+           const char      *conf_prefix;
+           ipa_conf_sect   *conf_sect_tbl;
+           ipa_conf_param  *conf_param_tbl;
+           int             (*conf_init)(void);
+           int             (*conf_deinit)(void);
+           int             (*conf_event)(unsigned int event, unsigned int no,
+                               const void *arg);
+           int             (*conf_mimic_real)(void);
+           int             (*conf_inherit)(unsigned int rulepatno,
+                               unsigned int ruleno, const char *rule_name);
+           void            (*conf_show)(unsigned int sect_id, unsigned int no);
+           int             (*st_pre_init)(void);
+           int             (*st_init_rule)(unsigned int ruleno,
+                               const char *rule_name);
+           int             (*st_init_limit)(unsigned int ruleno,
+                               const char *rule_name, unsigned int limitno,
+                               const char *limit_name);
+           int             (*st_init_threshold)(unsigned int ruleno,
+                               const char *rule_name, unsigned int thresholdno,
+                               const char *threshold_name);
+           int             (*st_init)(void);
+           int             (*st_deinit_threshold)(unsigned int ruleno,
+                               unsigned int thresholdno);
+           int             (*st_deinit_limit)(unsigned int ruleno,
+                               unsigned int limitno);
+           int             (*st_deinit_rule)(unsigned int ruleno);
+           int             (*st_deinit)(void);
+           int             (*st_get_rule_info)(unsigned int ruleno,
+                               ipa_mem_type *mem_type, char **info_ptr);
+           int             (*st_get_limit_info)(unsigned int ruleno,
+                               unsigned int limitno,
+                               ipa_mem_type *mem_type, char **info_ptr);
+           int             (*st_get_threshold_info)(unsigned int ruleno,
+                               unsigned int thresholdno,
+                               ipa_mem_type *mem_type, char **info_ptr);
+           int             (*st_get_rules_list)(const char *pat,
+                               const regex_t *pat_reg, ipa_mem_type *mem_type,
+                               unsigned int *n,
+                               struct ipa_entity_desc **buf_ptr);
+           int             (*st_get_limits_list)(unsigned int ruleno,
+                               const char *pat, const regex_t *pat_reg,
+                               ipa_mem_type *mem_type, unsigned int *n,
+                               struct ipa_entity_desc **buf_ptr);
+           int             (*st_get_thresholds_list)(unsigned int ruleno,
+                               const char *pat, const regex_t *pat_reg,
+                               ipa_mem_type *mem_type, unsigned int *n,
+                               struct ipa_entity_desc **buf_ptr);
+           int             (*st_get_rule_stat)(unsigned int ruleno,
+                               const ipa_tm *tm1, const ipa_tm *tm2,
+                               int exact, ipa_mem_type *mem_type,
+                               unsigned int *n,
+                               struct ipa_rule_stat **buf_ptr);
+           int             (*st_get_limit_stat)(unsigned int ruleno,
+                               unsigned int limitno, const ipa_tm *tm1,
+                               const ipa_tm *tm2, ipa_mem_type *mem_type,
+                               unsigned int *n,
+                               struct ipa_limit_state **buf_ptr);
+           int             (*st_get_threshold_stat)(unsigned int ruleno,
+                               unsigned int thresholdno,
+                               struct ipa_threshold_state *buf);
+       };
+
+       api_ver
+              This is the version of the statistics module API, a module
+              should check values of supported API versions with
+              IPA_ST_MOD_API_VERSION during compilation.  After loading a
+              module, this version number is checked with version of used API
+              version.
+
+       mod_flags
+              Explained above.
+
+       st_name
+              This is a name of the module's statistics system.
+
+       suppfunc
+              Explained above.
+
+       memfinc
+              Explained above.
+
+       conf_prefix
+              Explained above.
+
+       conf_sect_tbl
+              Explained above.
+
+       conf_param_tbl
+              Explained above.
+
+       conf_init
+              Explained above.
+
+       conf_deinit
+              Explained above.
+
+       conf_event
+              Explained above.
+
+       conf_mimic_real
+              Explained above.
+
+       conf_inherit
+              Explained above.
+
+       conf_show
+              Explained above.
+
+       st_pre_init
+              This function is called after parsing a configuration file.  A
+              module should make general initialization of its statistics
+              system.  This function always is called before other st_init*
+              functions.
+
+       st_init_rule
+              This function is called if a rule uses a module.  ruleno is a
+              number of the rule, rule_name is its name.  Data, rule_name
+              points to, will exist until st_deinit_rule is called for this
+              rule.  This function can be called for a rule which has
+              corresponding section in the configuration file, and for a rule
+              which was generated on-the-fly (can be considered as a dynamic
+              rule).
+
+       st_init_limit
+              This function is called if some limit from a rule uses a module.
+              limitno is an ordinal number of the limit in the rule,
+              limit_name is a its name.  Only data, rule_name and limit_name
+              point to, will exist until st_deinit_limit is called for this
+              limit.  Since a rule can use another statistics system, than its
+              limits use, then a module should not expect that st_init_rule
+              was called before for a limit's rule.  If a limit's rule uses
+              this module too, then st_init_rule for a limit's rule is called
+              first.  Like st_init_rule this function can be called for a rule
+              and/or a limit which has corresponding section in the
+              configuration file, and for a rule and/or limit which was
+              generated on-the-fly (can be considered as a dynamic rule and/or
+              a limit).
+
+       st_init_threshold
+              This function is called if some threshold from a rule uses a
+              module.  thresholdno is an ordinal number of the threshold in
+              the rule, threshold_name is a its name.  Only data, rule_name
+              and threshold_name point to, will exist until
+              st_deinit_threshold is called for this threshold.  Since a rule
+              can use another statistics system, than its thresholds use, then
+              a module should not expect that st_init_rule was called before
+              for a threshold's rule.  If a threshold's rule uses this module
+              too, then st_init_rule for a threshold's rule is called first.
+              Like st_init_rule this function can be called for a rule and/or
+              a threshold which has corresponding section in the configuration
+              file, and for a rule and/or threshold which was generated on-
+              the-fly (can be considered as a dynamic rule and/or a
+              threshold).
+
+       st_init
+              This function is called after all other st_init* functions.
+
+       st_deinit_threshold
+              This function is called to deinitialize a threshold, which uses
+              a module.  A module should not expect, that st_init_threshold
+              was called for this threshold before.
+
+       st_deinit_limit
+              This function is called to deinitialize a limit, which uses a
+              module.  A module should not expect, that st_init_limit was
+              called for this limit before.
+
+       st_deinit_rule
+              This function is called to deinitialize a rule, which uses a
+              module.  If some of rule's limits or thresholds use this module
+              too, then st_deinit_limit or st_deinit_threshold is called for
+              such rule's limits or thresholds before.  A module should not
+              expect, that st_init_rule for this rule was called before.
+
+       st_deinit
+              This function is called to deinitialize a module.  A module
+              should not expect that st_*init functions were called before.
+              This function is always called after all other st_deinit_*
+              functions.
+
+       st_get_rule_info
+              This function should return a description for the rule number
+              ruleno, pointer to a rule's description should be returned in
+              *info_ptr.  If a rule does not have a description, then
+              *info_ptr should be set to NULL.
+
+       st_get_limit_info
+              The same as st_get_rule_info, but for a limit.
+
+       st_get_threshold_info
+              The same as st_get_rule_info, but for a threshold.
+
+       st_get_rules_list
+              This function should return an array with rules names and
+              descriptions.  If the POSIX regular expression pat is not NULL,
+              then a module should return only rules, with names which matched
+              this regular expression (pat_reg is a compiled regular
+              expression pat).  The pointer to the array of
+              struct_ipa_entity_desc should be returned in *buf_ptr, number of
+              entries in this array should be returned in *n.  If number of
+              entries is equal to zero, then *buf_ptr must be NULL.
+
+       st_get_limits_list
+              The same as st_get_rules_list, buf for limits.
+
+       st_get_thresholds_list
+              The same as st_get_rules_list, buf for thresholds.
+
+       st_get_rule_stat
+              This function is used for querying statistics for a rule number
+              ruleno for time interval from tm1 till tm2.  If exact is zero,
+              then both of rule's records timestamps should be inside the
+              given time interval, else only one of rule's records timestamps
+              should be inside the given time interval.  The pointer to the
+              array of struct_ipa_rule_stat should be returned in *buf_ptr,
+              number of entries in this array should be returned in *n.  If
+              number of entries is equal to zero, then *buf_ptr must be NULL.
+
+              Structure struct_ipa_rule_stat represents statistics of one
+              rule's record.  In struct_ipa_rule_stat fields year, mon and
+              mday specify date of both timestamps of a rule's record (a new
+              record for any rule is always appended for a new day, that's why
+              it is enough only these three fields for dates of both
+              timestamps).  t1, m1 and s1 is time of first timestamp; t2, m2
+              and s2 is time of second timestamp.  cnt is statistics for the
+              time interval in one rule's record.
+
+       st_get_limit_stat
+              This function is used for querying statistics for a limit number
+              limitno in a rule number ruleno, dates when a limit was started
+              should be in time interval from tm1 till tm2.  The pointer to
+              the array of struct_ipa_limit_state should be returned in
+              *buf_ptr, number of entries in this array should be returned in
+              *n.  If number of entries is equal to zero, then *buf_ptr must
+              be NULL.  If tm1 is NULL, then current limit state should be
+              returned.
+
+       st_get_threshold_stat
+              This function is used for querying current state for a threshold
+              number thresholdno in a rule number ruleno.  If a module does
+              not have current state for the threshold, then the return value
+              should be 0.  If a module has current state for the threshold,
+              then the return value should be 1.
+
+       If some function returns integer value, then it should return the value
+       -1 if an error occurred, else zero should be returned (if corresponding
+       description does not specify another value).
+
+       If a statistics module does not support some functions, which query
+       statistics or description, then set corresponding fields to NULL.
+
+       If some function accepts mem_type argument, then all allocated data
+       being returned by this function should be allocated with the help from
+       ipa_memfunc functions with the given mem_type.
+
+       If some function is exported to a module, then corresponding field in
+       API structure can be set to any value (usually NULL).
+
+SEE ALSO
+       ipa(8), ipactl(8), ipastat(8), ipa.conf(5), ipastat.conf(5)
+
+AUTHOR
+       Andrey Simonenko <simon@comsys.ntu-kpi.kiev.ua>
+
+BUGS
+       If you find any, please send email me.
+
+                               December 5, 2010                     IPA_MOD(3)

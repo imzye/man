@@ -1,0 +1,245 @@
+Geo::GDAL::FFI(3)     User Contributed Perl Documentation    Geo::GDAL::FFI(3)
+
+
+NAME
+       Geo::GDAL::FFI - A foreign function interface to GDAL
+
+SYNOPSIS
+       This is an example of creating a vector dataset.
+
+        use Geo::GDAL::FFI qw/GetDriver/;
+
+        my $sr = Geo::GDAL::FFI::SpatialReference->new(EPSG => 3067);
+        my $layer = GetDriver('ESRI Shapefile')
+            ->Create('test.shp')
+            ->CreateLayer({
+                Name => 'test',
+                SpatialReference => $sr,
+                GeometryType => 'Point',
+                Fields => [
+                {
+                    Name => 'name',
+                    Type => 'String'
+                }
+                ]
+            });
+        my $f = Geo::GDAL::FFI::Feature->new($layer->GetDefn);
+        $f->SetField(name => 'a');
+        my $g = Geo::GDAL::FFI::Geometry->new('Point');
+        $g->SetPoint(1, 2);
+        $f->SetGeomField($g);
+        $layer->CreateFeature($f);
+
+       This is an example of reading a vector dataset.
+
+        use Geo::GDAL::FFI qw/Open/;
+
+        my $layer = Open('test.shp')->GetLayer;
+        $layer->ResetReading;
+        while (my $feature = $layer->GetNextFeature) {
+            my $value = $feature->GetField('name');
+            my $geom = $feature->GetGeomField;
+            say $value, ' ', $geom->AsText;
+        }
+
+       This is an example of creating a raster dataset.
+
+        use Geo::GDAL::FFI qw/GetDriver/;
+
+        my $tiff = GetDriver('GTiff')->Create('test.tiff', 3, 2);
+        my $ogc_wkt =
+               'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS84",6378137,298.257223563,'.
+               'AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,'.
+               'AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,'.
+               'AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]';
+        $tiff->SetProjectionString($ogc_wkt);
+        my $transform = [10,2,0,20,0,3];
+        $tiff->SetGeoTransform($transform);
+        my $data = [[0,1,2],[3,4,5]];
+        $tiff->GetBand->Write($data);
+
+       This is an example of reading a raster dataset. Note that using PDL and
+       MCE::Shared can greatly reduce the time needed to process large raster
+       datasets.
+
+        use Geo::GDAL::FFI qw/Open/;
+
+        my $band = Open($ARGV[0])->GetBand;
+        my ($w_band, $h_band) = $band->GetSize;
+        my ($w_block, $h_block) = $band->GetBlockSize;
+        my $nodata = $band->GetNoDataValue;
+        my ($xoff, $yoff) = (0,0);
+        my ($min, $max);
+
+        while (1) {
+            if ($xoff >= $w_band) {
+                $xoff = 0;
+                $yoff += $h_block;
+                last if $yoff >= $h_band;
+            }
+            my $w_real = $w_band - $xoff;
+            $w_real = $w_block if $w_real > $w_block;
+            my $h_real = $h_band - $yoff;
+            $h_real = $h_block if $h_real > $h_block;
+
+            my $data = $band->Read($xoff, $yoff, $w_real, $h_real);
+
+            for my $y (0..$#$data) {
+                my $row = $data->[$y];
+                for my $x (0..$#$row) {
+                    my $value = $row->[$x];
+                    next if defined $nodata && $value == $nodata;
+                    $min = $value if !defined $min || $value < $min;
+                    $max = $value if !defined $max || $value > $max;
+                }
+            }
+
+            $xoff += $w_block;
+        }
+
+        say "min = $min, max = $max";
+
+DESCRIPTION
+       This is a foreign function interface to the GDAL geospatial data access
+       library.
+
+IMPORTABLE FUNCTIONS
+       The most important importable functions are GetDriver and Open, which
+       return a driver and a dataset objects respectively. GetDrivers returns
+       all available drivers as objects.
+
+       Other importable functions include error handling configuration
+       (SetErrorHandling and UnsetErrorHandling), functions that return lists
+       of strings that are used in methods (Capabilities, OpenFlags,
+       DataTypes, ResamplingMethods, FieldTypes, FieldSubtypes,
+       Justifications, ColorInterpretations, GeometryTypes, GeometryFormats,
+       GridAlgorithms), also functions GetVersionInfo, HaveGEOS,
+       SetConfigOption, GetConfigOption, FindFile, PushFinderLocation,
+       PopFinderLocation, and FinderClean can be imported.
+
+       :all imports all above functions.
+
+   GetVersionInfo
+        my $info = GetVersionInfo($request);
+
+       Returns the version information from the underlying GDAL library.
+       $request is optional and by default 'VERSION_NUM'.
+
+   GetDriver
+        my $driver = GetDriver($name);
+
+       Returns the specific driver object.
+
+   GetDrivers
+       Returns a list of all available driver objects.
+
+   Open
+        my $dataset = Open($name, {Flags => [qw/READONLY/], ...});
+
+       Open a dataset. $name is the name of the dataset. Named arguments are
+       the following.
+
+       "Flags"
+           Optional, default is a reference to an empty array. Note that some
+           drivers can open both raster and vector datasets.
+
+       "AllowedDrivers"
+           Optional, default is all drivers. Use a reference to an array of
+           driver names to limit which drivers to test.
+
+       "SiblingFiles"
+           Optional, default is to probe the file system. You may use a
+           reference to an array of auxiliary file names.
+
+       "Options"
+           Optional, a reference to an array of driver specific open options.
+           Consult the main GDAL documentation for open options.
+
+   Capabilities
+       Returns the list of capabilities (strings) a GDAL major object (Driver,
+       Dataset, Band, or Layer in Geo::GDAL::FFI) can have.
+
+   OpenFlags
+       Returns the list of opening flags to be used in the Open method.
+
+   DataTypes
+       Returns the list of raster cell data types to be used in e.g. the
+       CreateDataset method of the Driver class.
+
+   FieldTypes
+       Returns the list of field types.
+
+   FieldSubtypes
+       Returns the list of field subtypes.
+
+   Justifications
+       Returns the list of field justifications.
+
+   ColorInterpretations
+       Returns the list of color interpretations.
+
+   GeometryTypes
+       Returns the list of geometry types.
+
+   SetErrorHandling
+       Set a Perl function to catch errors reported within GDAL with CPLError.
+       The errors are collected into @Geo::GDAL::FFI::errors and confessed if
+       a method fails. This is the default.
+
+   UnsetErrorHandling
+       Unset the Perl function to catch GDAL errors. If no other error handler
+       is set, GDAL prints the errors into stderr.
+
+NOTES ABOUT THREAD-SAFETY
+       This module is thread-safe provided the error handling is taken care
+       of.  To ensure thread-safety GDAL error handling is automatically
+       disabled before creating a new thread and re-enabled after that in the
+       just created thread. The main thread needs to re-enable it via
+       "SetErrorHandling", after all thread creations and before eventually
+       using any GDAL function. This must be done explicitly in the main
+       thread because there is no way to do that automatically as for other
+       threads.
+
+METHODS
+   get_instance
+        my $gdal = Geo::GDAL::FFI->get_instance;
+
+       Obtain the Geo::GDAL::FFI singleton object. The object is usually not
+       needed.
+
+LICENSE
+       This software is released under the Artistic License. See perlartistic.
+
+AUTHOR
+       Ari Jolma - Ari.Jolma at gmail.com
+
+SEE ALSO
+       Geo::GDAL::FFI::Object
+
+       Geo::GDAL::FFI::Driver
+
+       Geo::GDAL::FFI::SpatialReference
+
+       Geo::GDAL::FFI::Dataset
+
+       Geo::GDAL::FFI::Band
+
+       Geo::GDAL::FFI::FeatureDefn
+
+       Geo::GDAL::FFI::FieldDefn
+
+       Geo::GDAL::FFI::GeomFieldDefn
+
+       Geo::GDAL::FFI::Layer
+
+       Geo::GDAL::FFI::Feature
+
+       Geo::GDAL::FFI::Geometry
+
+       Geo::GDAL::FFI::VSI
+
+       Geo::GDAL::FFI::VSI::File
+
+       Alien::gdal, FFI::Platypus, <http://www.gdal.org>
+
+perl v5.40.2                      2025-08-12                 Geo::GDAL::FFI(3)

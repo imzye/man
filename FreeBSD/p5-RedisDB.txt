@@ -1,0 +1,617 @@
+RedisDB(3)            User Contributed Perl Documentation           RedisDB(3)
+
+
+NAME
+       RedisDB - Perl extension to access redis database
+
+SYNOPSIS
+           use RedisDB;
+
+           my $redis = RedisDB->new(host => 'localhost', port => 6379);
+           $redis->set($key, $value);
+           my $value = $redis->get($key);
+
+DESCRIPTION
+       This module provides interface to access redis key-value store, it
+       transparently handles disconnects and forks, supports transactions,
+       pipelining, and subscription mode.
+
+METHODS
+   $class->new(%options)
+       Creates a new RedisDB object. The following options are accepted:
+
+       host
+           domain name of the host running redis server. Default: "localhost"
+
+       port
+           port to connect. Default: 6379
+
+       path
+           you can connect to redis using UNIX socket. In this case instead of
+           "host" and "port" you should specify path.
+
+       password
+           Password, if redis server requires authentication. Alternatively
+           you can use auth method after creating the object.
+
+       database
+           DB number to use. Specified database will be selected immediately
+           after connecting to the server. Database changes when you sending
+           select command to the server. You can get current database using
+           selected_database method.  Default value is 0.
+
+       url A Redis URL as described in URI::redis.
+
+           You cannot use "url" together with any of "host", "port", "path",
+           "password", "database".
+
+       raise_error
+           By default if redis-server returned error reply, or there was a
+           connection error get_reply method throws an exception of
+           RedisDB::Error type, if you set this parameter to false it will
+           return an error object instead. Note, that if you set this to false
+           you should always check if the result you've got from RedisDB
+           method is a RedisDB::Error object.
+
+       timeout
+           IO timeout. With this option set, if I/O operation has taken more
+           than specified number of seconds, module will croak or return
+           RedisDB::Error::EAGAIN error object depending on "raise_error"
+           setting.  Note, that some OSes do not support SO_RCVTIMEO, and
+           SO_SNDTIMEO socket options, in this case timeout will not work.
+
+       utf8
+           Assume that all data on the server encoded in UTF-8. As result all
+           strings will be converted to UTF-8 before sending to server, and
+           all results will be decoded from UTF-8. See "UTF-8 SUPPORT".
+
+       connection_name
+           After establishing a connection set its name to the specified using
+           "CLIENT SETNAME" command.
+
+       lazy
+           by default new establishes a connection to the server. If this
+           parameter is set, then connection will be established only when you
+           will send first command to the server.
+
+       reconnect_attempts
+           this parameter allows you to specify how many attempts to
+           (re)connect to the server should be made before returning an error.
+           Default value is 1, set to -1 if module should try to reconnect
+           indefinitely.
+
+       reconnect_delay_max
+           module waits some time before every new attempt to connect. Delay
+           increases each time. This parameter allows you to specify maximum
+           delay between attempts to reconnect. Default value is 10.
+
+       on_connect_error
+           if module failed to establish connection with the server it will
+           invoke this callback.  First argument to the callback is a
+           reference to the RedisDB object, and second is the error
+           description. You must not invoke any methods on the object inside
+           the callback, but you can change port and host, or path attributes
+           of the RedisDB object to point to another server.  After callback
+           returned, module tries to establish connection again using new
+           parameters. To prevent further connection attempts callback should
+           throw an exception, which is done by default callback. This may be
+           useful to switch to backup server if primary went down. RedisDB
+           distribution includes an example of using this callback in
+           eg/server_failover.pl.
+
+   $self->execute($command, @arguments)
+       send a command to the server, wait for the result and return it. It
+       will throw an exception if the server returns an error or return
+       RedisDB::Error object depending on "raise_error" parameter. It may be
+       more convenient to use instead of this method wrapper named after the
+       corresponding redis command.  E.g.:
+
+           $redis->execute('set', key => 'value');
+           # is the same as
+           $redis->set(key => 'value');
+
+       See "WRAPPER METHODS" section for the full list of defined aliases.
+
+       Note, that you can not use execute if you have sent some commands using
+       send_command method without the callback argument and have not yet got
+       all replies.
+
+   $self->send_command($command[, @arguments][, \&callback])
+       send a command to the server. If send has failed command will die or
+       return RedisDB::Error object depending on raise_error parameter.  Note,
+       that it does not return reply from the server, if callback was not
+       specified, you should retrieve result using get_reply method, otherwise
+       callback  will be invoked upon receiving the result with two arguments:
+       the RedisDB object, and the reply from the server. If the server
+       returned an error, the second argument to the callback will be a
+       RedisDB::Error object, you can get description of the error using this
+       object in string context.  If you are not interested in reply, you can
+       use RedisDB::IGNORE_REPLY constant as the last argument.
+
+       Note, that RedisDB does not run any background threads, so it will not
+       receive the reply and invoke the callback unless you call some of its
+       methods which check if there are replies from the server, like
+       send_command, reply_ready, get_reply, or get_all_replies.
+
+   $self->reply_ready
+       this method may be used in the pipelining mode to check if there are
+       some replies already received from the server. Returns true if there
+       are replies ready to be fetched with get_reply method.
+
+   $self->mainloop
+       this method blocks till all replies from the server will be received.
+       Note, that callbacks for some replies may send new requests to the
+       server and so this method may block for indefinite time.
+
+   $self->get_reply
+       receive and return reply from the server. If the server returned an
+       error, method throws RedisDB::Error exception or returns RedisDB::Error
+       object, depending on the "raise_error" parameter.
+
+   $self->get_all_replies
+       wait till replies to all the commands without callback set will be
+       received.  Returns a list of replies to these commands. For commands
+       with callback set replies are processed as usual. Unlike mainloop this
+       method blocks only till replies to all commands for which callback was
+       NOT set will be received.
+
+   $self->replies_to_fetch
+       return the number of commands sent to the server replies to which were
+       not yet retrieved with get_reply or get_all_replies. This number only
+       includes commands for which callback was not set.
+
+   $self->selected_database
+       get currently selected database.
+
+   $self->reset_connection
+       reset connection. This method closes existing connection and drops all
+       previously sent requests. After invoking this method the object returns
+       to the same state as it was returned by the constructor.
+
+   $self->version
+       return the version of the server the client is connected to. The
+       version is returned as a floating point number represented the same way
+       as the perl versions. E.g. for redis 2.1.12 it will return 2.001012.
+
+WRAPPER METHODS
+       Instead of using execute and send_command methods directly, it may be
+       more convenient to use wrapper methods with names matching names of the
+       redis commands. These methods call execute or send_command depending on
+       the presence of the callback argument. If callback is specified, the
+       method invokes send_command and returns as soon as the command has been
+       sent to the server; when the reply is received, it will be passed to
+       the callback (see "PIPELINING SUPPORT"). If there is no callback, the
+       method invokes execute, waits for the reply from the server, and
+       returns it. E.g.:
+
+           $val = $redis->get($key);
+           # equivalent to
+           $val = $redis->execute("get", $key);
+
+           $redis->get($key, sub { $val = $_[1] });
+           # equivalent to
+           $redis->send_command("get", $key, sub { $val = $_[1] });
+
+       The following wrapper methods are defined: append, asking, auth,
+       bgrewriteaof, bgsave, bitcount, bitop, bitpos, blpop, brpop,
+       brpoplpush, client, client_kill, client_getname, client_setname,
+       cluster, command, config, config_get, config_set, config_resetstat,
+       config_rewrite, dbsize, debug_error, debug_object, debug_segfault,
+       decr, decrby, del, dump, echo, eval, evalsha, exists, expire, expireat,
+       flushall, flushdb, geoadd, geodist, geohash, geopos, georadius,
+       georadiusbymember, get, getbit, getrange, getset, hdel, hexists, hget,
+       hgetall, hincrby, hincrbyfloat, hkeys, hlen, hmget, hscan, hmset, hset,
+       hsetnx, hvals, incr, incrby, incrbyfloat, keys, lastsave, lindex,
+       linsert, llen, lpop, lpush, lpushx, lrange, lrem, lset, ltrim, mget,
+       migrate, move, mset, msetnx, object, object_refcount, object_encoding,
+       object_idletime, persist, pexpire, pexpireat, pfadd, pfcount, pfmerge,
+       ping, psetex, pttl, publish, pubsub, pubsub_channels, pubsub_numsub,
+       pubsub_numpat, quit, randomkey, rename, renamenx, restore, rpop,
+       rpoplpush, rpush, rpushx, sadd, save, scan, scard, script,
+       script_exists, script_flush, script_kill, script_load, sdiff,
+       sdiffstore, select, set, setbit, setex, setnx, setrange, sinter,
+       sinterstore, sismember, slaveof, slowlog, smembers, smove, sort, spop,
+       srandmember, srem, sscan strlen, sunion, sunionstore, time, ttl, type,
+       unwatch, watch, zadd, zcard, zcount, zincrby, zinterstore, zlexcount,
+       zrange, zrangebylex, zrangebyscore, zrank, zrem, zremrangebylex,
+       zremrangebyrank, zremrangebyscore, zrevrange, zrevrangebyscore,
+       zrevrank, zscan, zscore, zunionstore.
+
+       See description of all commands in redis documentation at
+       <http://redis.io/commands>.
+
+       The following commands implement some additional postprocessing of the
+       results:
+
+   $self->info([\&callback])
+       return information and statistics about the server. Redis-server
+       returns information in form of field:value, the info method parses
+       result and returns it as a hash reference.
+
+   $self->client_list([\&callback])
+       return list of clients connected to the server. This method parses
+       server output and returns result as reference to array of hashes.
+
+   $self->cluster_info([\&callback])
+       return information and statistics about the cluster. Redis-server
+       returns information in form of field:value, the cluster_info method
+       parses result and returns it as a hash reference.
+
+   $self->cluster_nodes([\&callback])
+       return list of cluster nodes. Each node represented as a hash with the
+       following keys: node_id, address, host, port, flags, master_id,
+       last_ping_sent, last_pong_received, link_state, slots.
+
+   $self->role([\&callback])
+       return reference to a hash describing the role of the server. Hash
+       contains "role" element that can be either "master", "slave", or
+       "sentinel". For master hash will also contain "replication_offset" and
+       "slaves" elements, for slave it will contain "master", "status", and
+       "replication_offset" elements, and for sentinel it will contain
+       "services".
+
+   $self->shutdown
+       Shuts the redis server down. Returns undef, as the server doesn't send
+       the answer.  Croaks in case of the error.
+
+   $self->scan_all([MATCH => $pattern,][COUNT => $count,])
+       this method starts a new SCAN iteration and executes SCAN commands till
+       cursor returned by server is 0. It then returns all the keys returned
+       by server during the iteration. MATCH and COUNT are passed to SCAN
+       command. In case of success returns reference to array with matching
+       keys, in case of error dies or returns RedisDB::Error object depending
+       on raise_error option.
+
+   $self->hscan_all($key, [MATCH => $pattern,][COUNT => $count,])
+   $self->sscan_all($key, [MATCH => $pattern,][COUNT => $count,])
+   $self->zscan_all($key, [MATCH => $pattern,][COUNT => $count,])
+       these three methods are doing the same thing as scan_all except that
+       they require a key as the first parameter, and they iterate using
+       HSCAN, SSCAN and ZSCAN commands.
+
+UTF-8 SUPPORT
+       The redis protocol is designed to work with the binary data, both keys
+       and values are encoded in the same way as sequences of octets.  By
+       default this module expects all data to be just strings of bytes. There
+       is an option to treat all data as UTF-8 strings. If you pass utf8
+       parameter to the constructor, module will encode all strings to UTF-8
+       before sending them to server, and will decode all strings received
+       from server from UTF-8. This has following repercussions you should be
+       aware off: first, you can't store binary data on server with this
+       option on, it would be treated as a sequence of latin1 characters, and
+       would be converted into a corresponding sequence of UTF-8 encoded
+       characters; second, if data returned by the server is not a valid UTF-8
+       encoded string, the module will croak, and you will have to
+       reinitialize the connection. The parser only checks for invalid UTF-8
+       byte sequences, it doesn't check if input contains invalid code points.
+       Generally, using this option is not recommended.
+
+ERROR HANDLING
+       If "raise_error" parameter was set to true in the constructor (which is
+       default setting), then module will throw an exception in case network
+       IO function returned an error, or if redis-server returned an error
+       reply. Network exceptions belong to RedisDB::Error::EAGAIN or
+       RedisDB::Error::DISCONNECTED class, if redis-server returned an error
+       exception will be of RedisDB::Error class. If the object was in
+       subscription mode, you will have to restore all the subscriptions. If
+       the object was in the middle of transaction, when after network error
+       you will have to start the transaction again.
+
+       If "raise_error" parameter was disabled, then instead of throwing an
+       exception, module will return exception object and also pass this
+       exception object to every callback waiting for the reply from the
+       server. If the object is in subscription mode, then module will
+       automatically restore all subscriptions after reconnect. Note, that
+       during transaction "raise_error" is always enabled, so any error will
+       throw an exception.
+
+HANDLING OF SERVER DISCONNECTS
+       Redis server may close a connection if it was idle for some time, also
+       the connection may be closed in case when redis-server was restarted,
+       or just because of the network problem. RedisDB always tries to restore
+       connection to the server if no data has been lost as a result of
+       disconnect, and if "raise_error" parameter disabled it will try to
+       reconnect even if disconnect happened during data transmission.  E.g.
+       if the client was idle for some time and the redis server closed the
+       connection, it will be transparently restored when you send a command
+       next time no matter if "raise_error" enabled or not.  If you sent a
+       command and the server has closed the connection without sending a
+       complete reply, then module will act differently depending on
+       "raise_error" value.  If "raise_error" enabled, the module will cancel
+       all current callbacks, reset the object to the initial state, and throw
+       an exception of RedisDB::Error::DISCONNECTED class, next time you use
+       the object it will establish a new connection. If "raise_error"
+       disabled, the module will pass RedisDB::Error::DISCONNECTED object to
+       all outstanding callbacks and will try to reconnect to the server; it
+       will also automatically restore subscriptions if object was in
+       subscription mode. Module never tries to reconnect after MULTI or WATCH
+       command was sent to server and before corresponding UNWATCH, EXEC or
+       DISCARD was sent as this may cause data corruption, so during
+       transaction module behaves like if "raise_error" is set.
+
+       Module makes several attempts to reconnect each time increasing
+       interval before the next attempt, depending on the values of
+       "reconnect_attempts" and "reconnect_delay_max". After each failed
+       attempt to connect module will invoke "on_connect_error" callback which
+       for example may change redis-server hostname, so on next attempt module
+       will try to connect to different server.
+
+PIPELINING
+       You can send commands in the pipelining mode. It means you are sending
+       multiple commands to the server without waiting for the replies.  This
+       is implemented by the send_command method. Recommended way of using it
+       is to pass a reference to the callback function as the last argument.
+       When module receives reply from the server, it will call this function
+       with two arguments: reference to the RedisDB object, and reply from the
+       server. It is important to understand though, that RedisDB does not run
+       any background threads, neither it checks for the replies by setting
+       some timer, so e.g. in the following example callback will never be
+       invoked:
+
+           my $pong;
+           $redis->send_command( "ping", sub { $pong = $_[1] } );
+           sleep 1 while not $pong;    # this will never return
+
+       Therefore you need periodically trigger check for the replies. The
+       check is triggered when you call the following methods: send_command,
+       reply_ready, get_reply, get_all_replies.  Calling wrapper method, like
+       "$redis->get('key')", will also trigger check as internally wrapper
+       methods use methods listed above.
+
+       Also you can omit callback argument when invoke send_command. In this
+       case you have to fetch reply later explicitly using get_reply method.
+       This is how synchronous execute is implemented, basically it is:
+
+           sub execute {
+               my $self = shift;
+               $self->send_command(@_);
+               return $self->get_reply;
+           }
+
+       That is why it is not allowed to call execute unless you have got
+       replies to all commands sent previously with send_command without
+       callback. Using send_command without callback is not recommended.
+
+       Sometimes you are not interested in replies sent by the server, e.g.
+       SET command usually just return 'OK', in this case you can pass to
+       send_command callback which ignores its arguments, or use
+       "RedisDB::IGNORE_REPLY" constant, it is a no-op function:
+
+           for (@keys) {
+               # execute will not just send 'GET' command to the server,
+               # but it will also receive response to the 'SET' command sent on
+               # the previous loop iteration
+               my $val = $redis->execute( "get", $_ );
+               $redis->send_command( "set", $_, fun($val), RedisDB::IGNORE_REPLY );
+           }
+           # and this will wait for the last reply
+           $redis->mainloop;
+
+       or using "WRAPPER METHODS" you can rewrite it as:
+
+           for (@keys) {
+               my $val = $redis->get($_);
+               $redis->set( $_, fun($val), RedisDB::IGNORE_REPLY );
+           }
+           $redis->mainloop;
+
+PUB/SUB MESSAGING
+       RedisDB supports subscriptions to redis channels. In the subscription
+       mode you can subscribe to some channels and receive all the messages
+       sent to these channels. You can subscribe to channels and then manually
+       check messages using get_reply method, or you can invoke
+       subscription_loop method, which will block in loop waiting for messages
+       and invoking callback for each received message.  In the first case you
+       can use subscribe and psubscribe methods to subscribe to channels and
+       then you can use get_reply method to get messages from the channel:
+
+           $redis->subscribe(
+               foo => sub {
+                   my ( $redis, $channel, $patern, $message ) = @_;
+                   print "Foo: $message\n";
+               }
+           );
+           # Wait for messages
+           $res = $redis->get_reply;
+
+       get_reply method for messages from the channel will invoke callback
+       specified as the second optional argument of the subscribe method and
+       will also return raw replies from the server, both for messages from
+       the channels and for informational messages from the redis server. If
+       you do not want to block in get_reply method, you can check if there
+       are any messages using reply_ready method.
+
+       In the second case you invoke subscription_loop method, it subscribes
+       to specified channels and waits for messages, when a message arrived it
+       invokes callback defined for the channel from which the message came.
+       Here is an example:
+
+           my $message_cb = sub {
+               my ( $redis, $channel, $pattern, $message ) = @_;
+               print "$channel: $message\n";
+           };
+
+           my $control_cb = sub {
+               my ( $redis, $channel, $pattern, $message ) = @_;
+               if ( $channel eq 'control.quit' ) {
+                   $redis->unsubscribe;
+                   $redis->punsubscribe;
+               }
+               elsif ( $channel eq 'control.subscribe' ) {
+                   $redis->subscribe($message);
+               }
+           };
+
+           $redis->subscription_loop(
+               subscribe        => [ 'news', ],
+               psubscribe       => [ 'control.*' => $control_cb ],
+               default_callback => $message_cb,
+           );
+
+       subscription_loop will subscribe you to the "news" channel and
+       "control.*" channels. It will call specified callbacks every time a new
+       message received.  When message came from "control.subscribe" channel,
+       callback subscribes to an additional channel. When message came from
+       "control.quit" channel, callback unsubscribes from all channels.
+
+       Callbacks used in subscription mode receive four arguments: the RedisDB
+       object, the channel from which the message came, the pattern if you
+       subscribed to this channel using psubscribe method, and the message
+       itself.
+
+       Once you switched into subscription mode using either subscribe or
+       psubscribe command, or by entering subscription_loop, you only can send
+       subscribe, psubscribe, unsubscribe, and punsubscribe commands to the
+       server, other commands will throw an exception.
+
+       You can publish messages into the channels using the publish method.
+       This method should be called when you in the normal mode, and can't be
+       used while you're in the subscription mode.
+
+       Following methods can be used in subscription mode:
+
+   $self->subscription_loop(%parameters)
+       Enter into the subscription mode. The method subscribes you to the
+       specified channels, waits for the messages, and invokes the appropriate
+       callback for every received message. The method returns after you
+       unsubscribed from all the channels. It accepts the following
+       parameters:
+
+       default_callback
+           reference to the default callback. This callback is invoked for a
+           message if you didn't specify other callback for the channel this
+           message comes from.
+
+       subscribe
+           an array reference. Contains the list of channels you want to
+           subscribe. A channel name may be optionally followed by the
+           reference to a callback function for this channel.  E.g.:
+
+               [ 'news', 'messages', 'errors' => \&error_cb, 'other' ]
+
+           channels "news", "messages", and "other" will use default callback,
+           but for the "errors" channel error_cb function will be used.
+
+       psubscribe
+           same as subscribe, but you specify patterns for channels' names.
+
+       All parameters are optional, but you must subscribe at least to one
+       channel. Also if default_callback is not specified, you have to
+       explicitly specify a callback for every channel you are going to
+       subscribe.
+
+   $self->subscribe($channel[, \&callback])
+       Subscribe to the $channel. If $callback is not specified, default
+       callback will be used in subscription loop, or messages will be
+       returned by get_reply if you are not using subscription loop.
+
+   $self->psubscribe($pattern[, \&callback])
+       Subscribe to channels matching $pattern. If $callback is not specified,
+       default callback will be used in subscription loop, or messages will be
+       returned by get_reply if you are not using subscription loop.
+
+   $self->unsubscribe([@channels])
+       Unsubscribe from the listed @channels. If no channels was specified,
+       unsubscribe from all the channels to which you have subscribed using
+       subscribe.
+
+   $self->punsubscribe([@patterns])
+       Unsubscribe from the listed @patterns. If no patterns was specified,
+       unsubscribe from all the channels to which you have subscribed using
+       psubscribe.
+
+   $self->subscribed
+       Return list of channels to which you have subscribed using subscribe
+
+   $self->psubscribed
+       Return list of channels to which you have subscribed using psubscribe
+
+TRANSACTIONS
+       Transactions allow you to execute a sequence of commands in a single
+       step. In order to start a transaction you should use the multi method.
+       After you have entered a transaction all the commands you issue are
+       queued, but not executed till you call the exec method. Typically these
+       commands return string "QUEUED" as a result, but if there is an error
+       in e.g. number of arguments, they may return an error. When you call
+       exec, all the queued commands will be executed and exec will return a
+       list of results for every command in the transaction. If instead of
+       exec you call discard, all scheduled commands will be canceled.
+
+       You can set some keys as watched. If any watched key has been changed
+       by another client before you called exec, the transaction will be
+       discarded and exec will return false value.
+
+   $self->watch(@keys[, \&callback])
+       mark given keys to be watched
+
+   $self->unwatch([\&callback])
+       unwatch all keys
+
+   $self->multi([\&callback])
+       Enter the transaction. After this and till exec or discard will be
+       called, all the commands will be queued but not executed.
+
+   $self->exec([\&callback])
+       Execute all queued commands and finish the transaction. Returns a list
+       of results for every command. Will croak if some command has failed.
+       Also unwatches all the keys. If some of the watched keys has been
+       changed by other client, the transaction will be canceled and exec will
+       return false.
+
+   $self->discard([\&callback])
+       Discard all queued commands without executing them and unwatch all
+       keys.
+
+CLUSTER SUPPORT
+       For accessing redis cluster use RedisDB::Cluster package
+
+SENTINEL SUPPORT
+       For accessing redis servers managed by sentinel use RedisDB::Sentinel
+       package
+
+SEE ALSO
+       Redis, Redis::hiredis, Redis::Client, AnyEvent::Redis,
+       AnyEvent::Redis::RipeRedis
+
+WHY ANOTHER ONE
+       I was in need of the client for redis database. AnyEvent::Redis didn't
+       suite me as it requires an event loop, and it didn't fit into the
+       existing code. The problem with Redis is that it didn't (at the time I
+       started this) reconnect to the server if connection was closed after
+       timeout or as result of the server restart, and it does not support
+       pipelining. After analyzing what I need to change in Redis in order to
+       get all I want, I decided that it will be simpler to write the new
+       module from scratch. This also solves the problem of backward
+       compatibility.
+
+BUGS
+       Please report any bugs or feature requests via GitHub bug tracker at
+       <http://github.com/trinitum/RedisDB/issues>.
+
+       Known bugs are:
+
+       Timeout support is OS dependent. If OS doesn't support SO_SNDTIMEO and
+       SO_RCVTIMEO options timeouts will not work.
+
+       QUIT command doesn't work with redis-server before version 2.0
+
+ACKNOWLEDGEMENTS
+       Sanko Robinson and FunkyMonk helped me with porting this module to
+       Windows.
+
+       HIROSE Masaake fixed handling of commands containing space (like
+       "CONFIG GET")
+
+AUTHOR
+       Pavel Shaydo, "<zwon at cpan.org>"
+
+LICENSE AND COPYRIGHT
+       Copyright 2011-2021 Pavel Shaydo.
+
+       This program is free software; you can redistribute it and/or modify it
+       under the terms of either: the GNU General Public License as published
+       by the Free Software Foundation; or the Artistic License.
+
+       See http://dev.perl.org/licenses/ for more information.
+
+perl v5.40.2                      2021-01-19                        RedisDB(3)

@@ -1,0 +1,173 @@
+NGINX-CONFGEN(1)                                                                           General Commands Manual                                                                         NGINX-CONFGEN(1)
+
+NAME
+       nginx-confgen — A preprocessor and macro system for nginx(-like) configuration files
+
+SYNOPSIS
+       nginx-confgen [-i input.conf] [-o output.conf] [-I path]
+
+DESCRIPTION
+       nginx-confgen  can be used to do pre-processing for nginx configuration files (and other configuration files with a similar syntax).  It has support for "compile-time" macro expansion and variable
+       interpolation, which should make it less tedious to maintain large and complex configurations.
+
+       nginx-confgen works by parsing the input into a syntax tree, modifying this tree, and then formatting the tree to generate the output.  It is completely oblivious to nginx contexts and directives,
+       so it is possible to do nonsensical transformations and generate incorrect configuration files.  Comments in the input file will not be present in the output.  See also the “BUGS & WARTS” below.
+
+       SECURITY CONSIDERATION: Do NOT use nginx-confgen with untrusted input, the pre_exec directive allows arbitrary code execution by design.
+
+OPTIONS
+       The following command-line options are supported:
+
+       -h      Show help text.
+
+       -v, --version
+               Show program version.
+
+       -i file
+               Use the given file name as input file.  If this option is not given or set to a dash (-), then the file will be read from standard input.
+
+       -o file
+               Write the output to the given file.  If this option is not given or set to a dash (-), then the file will be written to standard output.
+
+       -I path
+               Set the search path for pre_include directives.  This option can be given multiple times to search several directories in order.  If this option is not given, then include  files  are  re‐
+               solved relative to the directory that nginx-confgen is run from (i.e. "-I .").
+
+DIRECTIVES
+       nginx-confgen recognizes and interprets the following directives:
+
+   pre_include
+       Similar to the include directive in nginx, except that the file is included during preprocessing.  The included file may contain any preprocessing directives supported by nginx-confgen.  Variables
+       and macros defined in the included file will be available in the parent file.
+
+       Relative paths are searched for in the directories given with the -I flag.
+
+   pre_set
+       Similar  to the set directive in nginx, except that variables defined with pre_set are resolved during preprocessing.  Variables are set in the order that they are encountered in the configuration
+       file, regardless of scoping.  For example:
+
+             pre_set $var outer;
+             location / {
+               pre_set $var inner;
+             }
+             # $var is "inner" at this point.
+       Only variables that are known to nginx-confgen will be substituted, unknown variables are assumed to be run-time variables for nginx and will be left alone without warning.  For example:
+
+             pre_set $ip 127.0.0.1;
+             deny $ip;      # This will output as: deny 127.0.0.1;
+             deny $otherip; # This will output as: deny $otherip;
+
+   pre_exec
+       Run a shell command and store the output in a variable.  For example, nginx will not use your system's DNS resolution methods to resolve domain names, instead you need to manually set  a  resolver
+       address.  With the following hack you can fetch the nameserver from /etc/resolv.conf and use that as the resolver:
+
+             pre_exec $nameserver "grep nameserver /etc/resolv.conf \
+                                   | head -n 1 | sed 's/^nameserver //'";
+             resolver $nameserver;
+       (The "\" is necessary, otherwise your shell will consider the newline as a new command).
+
+   pre_if
+       Similar to the if directive in nginx, except that this is evaluated during preprocessing.  Braces around the condition are optional.  Some examples:
+
+             pre_if -f $certdir/ocsp.der {
+               ssl_stapling on;
+               ssl_stapling_file $certdir/ocsp.der;
+             }
+             pre_if (!-f $certdir/ocsp.der) {
+               ssl_stapling off;
+             }
+
+             # You can have different configuration depending on the name of
+             # the system on which nginx-confgen runs. Like... yeah.
+             pre_exec $hostname 'hostname';
+             pre_if $hostname ~* ^proxy_for_(.+) {
+               proxy_pass http://$1/;
+             }
+
+   pre_warn
+       This directive, when interpreted, will generate a warning to the standard error of nginx-confgen.  Can be used to signal that a special configuration is being used:
+
+             pre_if -e /etc/offline-mode {
+               pre_warn "Putting website in offline mode!";
+             }
+       Or to warn about certain directives:
+
+             pre_macro proxy_cache $var {
+               pre_warn "Using proxy_cache with $var violates company policy!";
+
+               # But we can output it anyway.
+               proxy_cache $var;
+             }
+
+   macro
+       Define a macro, which is a configuration block that you can later refer to.  The general syntax is as follows:
+
+             macro macro_name $var1 $var2 @remaining_vars &block_var {
+               # contents
+             }
+       The optional @remaining_vars argument will capture any number of variables and can be passed to another directive inside the macro contents.  $#remaining_vars syntax expands to the number of argu‐
+       ments passed to the macro.  The optional &block_var allows the macro to be invoked with a block argument, which will expand to any number of directives.  Some examples:
+
+             macro le {
+               location /.well-known/acme-challenge {
+                 alias /etc/letsencrypt/challenge;
+               }
+             }
+             # Usage:
+             le;
+
+             macro redir $path $to {
+               location $path {
+                 return 301 $to;
+               }
+             }
+             # Usage:
+             redir / http://blicky.net/;
+
+             macro vhost $primary_name @aliases &block {
+               server {
+                 listen [::]:443 ssl;
+                 server_name $primary_name @aliases;
+                 ssl_certificate $crtdir/$primary_name/fullchain.pem;
+                 ssl_certificate_key $crtdir/$primary_name/privkey.pem;
+                 &block;
+               }
+             }
+             # Usage:
+             vhost example.com {
+               root /var/www/example.com;
+             }
+             vhost example.org alias.example.org {
+               root /var/www/example.org;
+             }
+       Note that these are hygienic macros, so variable capture is predictable (but not necessarily the most useful):
+
+             pre_var $dest /a;
+             macro redir {
+               # This will be /a, regardless of the context in which this macro is called.
+               return 301 $dest;
+             }
+             # $dest is still '/a' inside the macro after this new variable definition.
+             pre_var $dest /b;
+             redir;
+       Similarly, macro arguments will not be available inside &block expansion or nested macro expansion and any variables set inside a macro will not be available outside of the macro body.
+
+BUGS & WARTS
+       nginx-confgen is a quickly written hack to solve a particular use case, it is quite likely to have some weird behavior and bugs.  In particular, processing performance may suffer on large configu‐
+       ration files with many macros and/or variables.  Performance has simply not been a problem for me, but if you do run into trouble with your use case, let me know so I can fix it.
+
+       Comments and whitespace in the input files are thrown away and ignored.  The generated output is completely reformatted.
+
+       The  nginx  configuration  syntax  is not as regular as I had hoped.  It's possible for nginx modules to extend the syntax somewhat.  A good example is the types directive in ngx_http_core_module.
+       While nginx-confgen should be able to handle the types directive just fine, other extensions may cause syntax errors or will not survive a round-trip through nginx-confgen.  This  applies  to  all
+       *_by_lua_block directives in the ngx_http_lua_module.  The _by_lua directives that accept a string should work just fine.
+
+SEE ALSO
+       nginx(8)
+
+       nginx-confgen has a website: https://dev.yorhel.nl/nginx-confgen
+
+AUTHORS
+       Written by Yorhel <projects@yorhel.nl>
+
+Debian                                                                                        October 22, 2024                                                                             NGINX-CONFGEN(1)
