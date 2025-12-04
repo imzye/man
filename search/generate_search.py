@@ -6,7 +6,7 @@ import os
 def main():
     DIR_PARSE = ['MacOS', 'Linux', 'FreeBSD']
     # DIR_PARSE = ['MacOS']
-    with open('search_index.json', 'r') as f:
+    with open('search.json', 'r') as f:
         data = json.load(f)
 
     for dir in DIR_PARSE:
@@ -19,7 +19,7 @@ def main():
     # for d in data["docs"]:
     #     d["text"] = d["title"]
 
-    with open('search.json', 'w') as f:
+    with open('search_index.json', 'w') as f:
         json.dump(data, f)
 
 if __name__ == '__main__':
