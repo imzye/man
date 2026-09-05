@@ -1,0 +1,539 @@
+
+VAST(1)                                                                                                                                                                                                 VAST(1)
+
+NAME
+       vast – manage a VAST node
+
+OVERVIEW
+       This section describes the VAST system and its components from a user interaction point of view.
+
+   vast
+       VAST is a platform for network forensics at scale.  It ingests security telemetry in a unified data model and offers a type-safe search interface to extract a data in various formats.
+
+       The vast executable manages a VAST deployment by starting and interacting with a node, the server-side component that manages the application state.
+
+   Usage
+       The command line interface (CLI) is the primary way to interact with VAST.  All functionality is available in the form of commands, each of which have their own set of options:
+
+              vast [options] [command] [options] [command] ...
+
+       Commands are recursive and the top-level root command is the vast executable itself.  Usage follows typical UNIX applications:
+
+       • standard input feeds data to commands
+
+       • standard output represents the result of a command
+
+       • standard error includes logging output
+
+       The help subcommand always prints the usage instructions for a given command, e.g., vast help lists all available top-level subcommands.
+
+       More  information  about  subcommands  is  available using help and documentation subcommands.  E.g., vast import suricata help prints a helptext for vast import suricata, and vast start documentation
+       prints a longer documentation for vast start.
+
+   Configuration
+       In addition to command options, a YAML configuration file vast.yaml allows for persisting option values and tweaking system parameters.  Command line options always override configuration file values.
+
+       During startup, VAST looks for configuration files in the following places, and merges their content with the more specific files taking a higher precedence:
+
+       1. <sysconfdir>/vast/vast.yaml for system-wide configuration, where <sysconfdir> is the platform-specific directory for configuration files, e.g., /etc/vast.
+
+       2. ~/.config/vast/vast.yaml for user-specific configuration.  VAST respects the XDG base directory specification and its environment variables.
+
+       3. A configuration file passed using --config=path/to/vast.yaml on the command line.
+
+   System Architecture
+       VAST consists of multiple components, each of which implement specific system functionality.  The following key componetns exist:
+
+       source Generates events by parsing a particular data format, such as packets from a network interface, IDS log files, or generic CSV or JSON data.
+
+       sink Produces events by printing them in a particular format, such as ASCII, CSV, JSON, PCAP, or Zeek logs.
+
+       archive Stores the raw event data.
+
+       index Accelerates queries by constructing index structures that point into the archive.
+
+       importer Ingests events from sources, assigns them unique IDs, and relays them to archive and index for persistence.
+
+       exporter Accepts query expressions from users, extracts events, and relays results to sinks.
+
+   Schematic
+                              +--------------------------------------------+
+                              | node                                       |
+                              |                                            |
+                +--------+    |             +--------+                     |    +-------+
+                | source |    |         +--->archive <------+           +-------> sink  |
+                +----zeek+-------+      |   +--------<---+  v-----------++ |    +---json+
+                              |  |      |                |  | exporter   | |
+                              | +v------++           +------>------------+ |
+                   ...        | |importer|           |   |     ...         |      ...
+                              | +^------++           |   |                 |
+                              |  |      |            |   +-->------------+ |
+                +--------+-------+      |            |      | exporter   | |
+                | source |    |         |   +--------v      ^-----------++ |    +-------+
+                +----pcap+    |         +---> index  <------+           +-------> sink  |
+                              |             +--------+                     |    +--ascii+
+                              |                                            |
+                              |                                            |
+                              +--------------------------------------------+
+
+       The above diagram illustrates the default configuration of a single node and the flow of messages between the components.  The importer, index, and archive are singleton  instances  within  the  node.
+       Sources are spawned on demand for each data import.  Sinks and exporters form pairs that are spawned on demand for each query.  Sources and sinks exist in their own vast processes, and are responsible
+       for parsing the input and formatting the search results.  #### count
+
+       The count command counts the number of events that a given query expression yields.  For example:
+
+              vast count ':addr in 192.168.0.0/16'
+
+       This prints the number of events in the database that have an address field in the subnet 192.168.0.0/16.
+
+       An optional --estimate flag skips the candidate checks, i.e., asks only the index and does not verify the hits against the database.  This is a faster operation and useful when  an  upper  bound  suf‐
+       fices.
+
+   dump
+       The dump command prints configuration and schema-related information.  By default, the output is JSON-formatted.  The flag --yaml flag switches to YAML output.
+
+       For example, to see all registered concept definitions, use the following command:
+
+              vast dump concepts
+
+       To dump all models in YAML format, use:
+
+              vast dump --yaml models
+
+       Specifying dump alone without a subcommand shows the concatenated output from all subcommands.  ##### concepts
+
+       The dump concepts command prints all registered concept definitions.
+
+              vast dump concepts
+
+   models
+       The dump models command prints all registered model definitions.
+
+              vast dump models
+
+   export
+       The export command retrieves a subset of data according to a given query expression.  The export format must be explicitly specified:
+
+              vast export [options] <format> [options] <expr>
+
+       This is easiest explained on an example:
+
+              vast export --max-events=100 --continuous json ':timestamp < 1 hour ago'
+
+       The above command outputs line-delimited JSON like this, showing one event per line:
+
+              {"ts": "2020-08-06T09:30:12.530972", "nodeid": "1E96ADC85ABCA4BF7EE5440CCD5EB324BEFB6B00#85879", "aid": 9, "actor_name": "pcap-reader", "key": "source.start", "value": "1596706212530"}
+
+       The  above  command  signals  the  running server to export 100 events to the export command, and to do so continuously (i.e., not matching data that was previously imported).  Only events that have a
+       field of type timestamp will be exported, and only if the timestamp in that field is older than 1 hour ago from the current time at the node.
+
+       The default mode of operation for the export command is historical queries, which exports data that was already archived and indexed by the node.  The --unified flag can be used to export both histor‐
+       ical and continuous data.
+
+       For more information on the query expression, see the query language documentation (https://docs.tenzir.com/vast/query-language/overview).
+
+       Some  export  formats  have format-specific options.  For example, the pcap export format has a --flush-interval option that determines after how many packets the output is flushed to disk.  A list of
+       format-specific options can be retrieved using the vast export <format> help, and individual documentation is available using vast export <format> documentation.  ##### zeek
+
+       The Zeek (https://zeek.org) export format writes events in Zeek’s tab-separated value (TSV) style.
+
+   csv
+       The export csv command renders comma-seperatated values (https://en.wikipedia.org/wiki/Comma-separated_values) in tabular form.  The first line in a CSV file contains a header that describes the field
+       names.  The remaining lines contain concrete values.  Except for the header, one line corresponds to one event.
+
+   ascii
+       The ASCII export format renders events according to VAST’s data grammar.  It merely dumps the data, without type information, and is therefore useful when digging for specific values.
+
+   json
+       The JSON export format renders events in newline-delimited JSON (aka.  JSONL (https://en.wikipedia.org/wiki/JSON_streaming#Line-delimited_JSON)).
+
+   null
+       The null export format does not render its results, and is used for debugging and benchmarking only.
+
+   pcap
+       The PCAP export format uses libpcap (https://www.tcpdump.org) to write PCAP events as a trace.
+
+       This command only supports events of type pcap.packet.  As a result, VAST transforms a provided query expression E into #type == "pcap.packet" && E.
+
+   explore
+       The explore command correlates spatially and temporally related activity.
+
+       :::note Work In Progress This documentation does not represent the current state of the vast explore command.  Only some of the options shown below are currently implemented.  :::
+
+       First,  VAST  evaluates the provided query expression.  The results serve as input to generate further queries.  Specifying temporal constraints (--after, --before, or --context) apply relative to the
+       timestamp field of the results.  Specifying spatial constraints can include a join field (--by) or a join expression (--where) that references fields from the result set.  Restricting the  exploration
+       to specific sets of types (--for) works in both cases.
+
+       The  --before,  --after, and --context parameters create a time box around every result of the query.  For example, this invocation shows all events that happened up to five minutes after each connec‐
+       tion to 192.168.1.10:
+
+              vast explore --after=5min 'zeek.conn.id.resp_h == 192.168.1.10'
+
+       The --for option restricts the result set to specific types.  Note that --for cannot appear alone but must occur with at least one other of the selection options.  For example, this  invocation  shows
+       all DNS requests captured by Zeek up to 60 seconds after a connection to 192.168.1.10:
+
+              vast explore --after=60s --for=zeek.dns 'zeek.conn.id.resp_h == 192.168.1.10'
+
+       The --by option takes a field name as argument and restricts the set of returned records to those records that have a field with the same name and where that field has the same value as the same field
+       in the original record.  In other words, it performs an equi-join over the given field.
+
+       For example, to select all outgoing connections from some address up to five minutes after a connection to host 192.168.1.10 was made from that address:
+
+              vast explore --after=5min --by=orig_h 'zeek.conn.id.resp_h == 192.168.1.10'
+
+       The --where option specifies a dynamic filter expression that restricts the set of returned records to those for which the expression returns true.  Syntactically, the expression must be a boolean ex‐
+       pression  in  the VAST query language.  Inside the expression, the special character $ refers to an element of the result set.  Semantically, the where expression generates a new query for each result
+       of the original query.  In every copy of the query, the $ character refers to one specific result of the original query.
+
+       For example, the following query first looks for all DNS queries to the host evil.com captured by Zeek, and then generates a result for every outgoing connection where the destination IP  was  one  of
+       the IPs inside the answer field of the DNS result.
+
+              vast explore --where='resp_h in $.answer' 'zeek.dns.query == "evil.com"'
+
+       Combined specification of the --where, --for, or --by options results in the intersection of the result sets of the individual options.  Omitting all of the --after, --before and --context options im‐
+       plicitly sets an infinite range, i.e., it removes the temporal constraint.
+
+       Unlike the export command, the output format can be selected using --format=<format>.  The default export format is json.
+
+   get
+       The get command retrieves events of specific ids that were assigned to them when they were imported.
+
+              vast get [options] [ids]
+
+       Let’s look at an example:
+
+              vast get 0 42 1234
+
+       The above command outputs the requested events in JSON format.  Other formatters can be selected with the --format option.
+
+   infer
+       The infer command attempts to derive a schema from user input.  Upon success, it prints a schema template to standard output.
+
+       The infer command allows for inferring schemas for the Zeek TSV and JSON formats.  Note that the input is required to be JSON, and unlike other VAST commands, JSONL  (newline-delimited  JSON)  is  not
+       supported.
+
+       Example usage:
+
+              gunzip -c integration/data/json/conn.log.json.gz |
+                head -1 |
+                vast infer
+
+       Note  that  the  output  of the vast infer command still needs to be manually edited in case there was an ambiguity, as the type system of the data source format may be less strict than the data model
+       used by VAST.  E.g., there is no way to represent an IP address in JSON other than using a string type.
+
+       The vast infer command is a good starting point for writing custom schemas, but is not designed to be a replacement for it.
+
+       For more informatio on VAST’s data model, head over to our data model documentation page (https://docs.tenzir.com/vast/data-model/overview).
+
+   import
+       The import command ingests data.  An optional filter expression allows for restricing the input to matching events.  The format of the imported data must be explicitly specified:
+
+              vast import [options] <format> [options] [expr]
+
+       The import command is the dual to the export command.
+
+       This is easiest explained on an example:
+
+              vast import suricata < path/to/eve.json
+
+       The above command signals the running node to ingest (i.e., to archive and index for later export) all Suricata events from the Eve JSON file passed via standard input.
+
+   Filter Expressions
+       An optional filter expression allows for importing the relevant subset of information only.  For example, a user might want to import Suricata Eve JSON, but  skip  over  all  events  of  type  surica‐
+       ta.stats.
+
+              vast import suricata '#type != "suricata.stats"' < path/to/eve.json
+
+       For more information on the optional filter expression, see the query language documentation (https://docs.tenzir.com/vast/query-language/overview).
+
+   Format-Specific Options
+       Some  import  formats have format-specific options.  For example, the pcap import format has an interface option that can be used to ingest PCAPs from a network interface directly.  To retrieve a list
+       of format-specific options, run vast import <format> help, and similarly to retrieve format-specific documentation, run vast import <format> documentation.
+
+   Type Filtering
+       The --type option filters known event types based on a prefix.  E.g., vast import json --type=zeek matches all event types that begin with zeek, and restricts the event types known to the import  com‐
+       mand accordingly.
+
+       VAST permanently tracks imported event types.  They do not need to be specified again for consecutive imports.
+
+   Batching
+       The import command parses events into table slices (batches).  The following options control the batching:
+
+   vast.import.batch-encoding
+       Selects the encoding of table slices.  Available options are msgpack (row-based) and arrow (column-based).
+
+   vast.import.batch-size
+       Sets an upper bound for the number of events per table slice.
+
+       Most  components in VAST operate on table slices, which makes the table slice size a fundamental tuning knob on the spectrum of throughput and latency.  Small table slices allow for shorter processing
+       times, resulting in more scheduler context switches and a more balanced workload.  However, the increased pressure on the scheduler comes at the cost of throughput.  A large table  slice  size  allows
+       actors to spend more time processing a block of memory, but makes them yield less frequently to the scheduler.  As a result, other actors scheduled on the same thread may have to wait a little longer.
+
+       The  vast.import.batch-size option merely controls number of events per table slice, but not necessarily the number of events until a component forwards a batch to the next stage in a stream.  The CAF
+       streaming framework (https://actor-framework.readthedocs.io/en/latest/Streaming.html) uses a credit-based flow-control mechanism to determine buffering of tables  slices.   Setting  vast.import.batch-
+       size to 0 causes the table slice size to be unbounded and leaves it to other parameters to determine the actual table slice size.
+
+   vast.import.batch-timeout
+       Sets a timeout for forwarding buffered table slices to the importer.
+
+       The vast.import.batch-timeout option controls the maximum buffering period until table slices are forwarded to the node.  The default batch timeout is one second.
+
+   vast.import.read-timeout
+       Sets a timeout for reading from input sources.
+
+       The  vast.import.read-timeout  option  determines  how long a call to read data from the input will block.  The process yields and tries again at a later time if no data is received for the set value.
+       The default read timeout is 20 milliseconds.  ##### zeek
+
+       The  import  zeek  command  consumes  Zeek  (https://zeek.org)  logs  in  tab-separated  value  (TSV)  style,  and  the  import  zeek-json  command  consumes   Zeek   logs   as   line-delimited   JSON
+       (https://en.wikipedia.org/wiki/JSON_streaming#Line-delimited_JSON)  objects  as  produced by the json-streaming-logs (https://github.com/corelight/json-streaming-logs) package.  Unlike stock Zeek JSON
+       logs, where one file contains exactly one log type, the streaming format contains different log event types in a single stream and uses an additional _path field to disambiguate  the  log  type.   For
+       stock Zeek JSON logs, use the existing import json with the -t flag to specify the log type.
+
+       Here’s an example of a typical Zeek conn.log:
+
+              #separator \x09
+              #set_separator  ,
+              #empty_field  (empty)
+              #unset_field  -
+              #path conn
+              #open 2014-05-23-18-02-04
+              #fields ts  uid id.orig_h id.orig_p id.resp_h id.resp_p proto service duration  orig_bytes resp_bytes  conn_state  local_orig  missed_bytes  history orig_pkts orig_ip_bytes  resp_pkts resp_ip_bytes tunnel_parents
+              #types  time  string  addr  port  addr  port  enum  string  interval  count count  string  bool  count string  count count count count table[string]
+              1258531221.486539 Pii6cUUq1v4 192.168.1.102 68  192.168.1.1 67  udp - 0.163820  301  300 SF  - 0 Dd  1 329 1 328 (empty)
+              1258531680.237254 nkCxlvNN8pi 192.168.1.103 137 192.168.1.255 137 udp dns 3.780125 350 0 S0  - 0 D 7 546 0 0 (empty)
+              1258531693.816224 9VdICMMnxQ7 192.168.1.102 137 192.168.1.255 137 udp dns 3.748647 350 0 S0  - 0 D 7 546 0 0 (empty)
+              1258531635.800933 bEgBnkI31Vf 192.168.1.103 138 192.168.1.255 138 udp - 46.725380  560 0 S0  - 0 D 3 644 0 0 (empty)
+              1258531693.825212 Ol4qkvXOksc 192.168.1.102 138 192.168.1.255 138 udp - 2.248589  348  0 S0  - 0 D 2 404 0 0 (empty)
+              1258531803.872834 kmnBNBtl96d 192.168.1.104 137 192.168.1.255 137 udp dns 3.748893 350 0 S0  - 0 D 7 546 0 0 (empty)
+              1258531747.077012 CFIX6YVTFp2 192.168.1.104 138 192.168.1.255 138 udp - 59.052898  549 0 S0  - 0 D 3 633 0 0 (empty)
+              1258531924.321413 KlF6tbPUSQ1 192.168.1.103 68  192.168.1.1 67  udp - 0.044779  303  300 SF  - 0 Dd  1 331 1 328 (empty)
+              1258531939.613071 tP3DM6npTdj 192.168.1.102 138 192.168.1.255 138 udp - - - - S0  -  0 D 1 229 0 0 (empty)
+              1258532046.693816 Jb4jIDToo77 192.168.1.104 68  192.168.1.1 67  udp - 0.002103  311  300 SF  - 0 Dd  1 339 1 328 (empty)
+              1258532143.457078 xvWLhxgUmj5 192.168.1.102 1170  192.168.1.1 53  udp dns 0.068511 36  215 SF  - 0 Dd  1 64  1 243 (empty)
+              1258532203.657268 feNcvrZfDbf 192.168.1.104 1174  192.168.1.1 53  udp dns 0.170962 36  215 SF  - 0 Dd  1 64  1 243 (empty)
+              1258532331.365294 aLsTcZJHAwa 192.168.1.1 5353  224.0.0.251 5353  udp dns 0.100381 273 0 S0  - 0 D 2 329 0 0 (empty)
+
+       When  Zeek  rotates  logs (https://docs.zeek.org/en/stable/frameworks/logging.html#rotation), it produces compressed batches of *.tar.gz regularly.  Ingesting a compressed batch involves unpacking and
+       concatenating the input before sending it to VAST:
+
+              gunzip -c *.gz | vast import zeek
+
+   zeek-json
+       The  import  zeek  command  consumes  Zeek  (https://zeek.org)  logs  in  tab-separated  value  (TSV)  style,  and  the  import  zeek-json  command  consumes   Zeek   logs   as   line-delimited   JSON
+       (https://en.wikipedia.org/wiki/JSON_streaming#Line-delimited_JSON)  objects  as  produced by the json-streaming-logs (https://github.com/corelight/json-streaming-logs) package.  Unlike stock Zeek JSON
+       logs, where one file contains exactly one log type, the streaming format contains different log event types in a single stream and uses an additional _path field to disambiguate  the  log  type.   For
+       stock Zeek JSON logs, use the existing import json with the -t flag to specify the log type.
+
+       Here’s an example of a typical Zeek conn.log:
+
+              #separator \x09
+              #set_separator  ,
+              #empty_field  (empty)
+              #unset_field  -
+              #path conn
+              #open 2014-05-23-18-02-04
+              #fields ts  uid id.orig_h id.orig_p id.resp_h id.resp_p proto service duration  orig_bytes resp_bytes  conn_state  local_orig  missed_bytes  history orig_pkts orig_ip_bytes  resp_pkts resp_ip_bytes tunnel_parents
+              #types  time  string  addr  port  addr  port  enum  string  interval  count count  string  bool  count string  count count count count table[string]
+              1258531221.486539 Pii6cUUq1v4 192.168.1.102 68  192.168.1.1 67  udp - 0.163820  301  300 SF  - 0 Dd  1 329 1 328 (empty)
+              1258531680.237254 nkCxlvNN8pi 192.168.1.103 137 192.168.1.255 137 udp dns 3.780125 350 0 S0  - 0 D 7 546 0 0 (empty)
+              1258531693.816224 9VdICMMnxQ7 192.168.1.102 137 192.168.1.255 137 udp dns 3.748647 350 0 S0  - 0 D 7 546 0 0 (empty)
+              1258531635.800933 bEgBnkI31Vf 192.168.1.103 138 192.168.1.255 138 udp - 46.725380  560 0 S0  - 0 D 3 644 0 0 (empty)
+              1258531693.825212 Ol4qkvXOksc 192.168.1.102 138 192.168.1.255 138 udp - 2.248589  348  0 S0  - 0 D 2 404 0 0 (empty)
+              1258531803.872834 kmnBNBtl96d 192.168.1.104 137 192.168.1.255 137 udp dns 3.748893 350 0 S0  - 0 D 7 546 0 0 (empty)
+              1258531747.077012 CFIX6YVTFp2 192.168.1.104 138 192.168.1.255 138 udp - 59.052898  549 0 S0  - 0 D 3 633 0 0 (empty)
+              1258531924.321413 KlF6tbPUSQ1 192.168.1.103 68  192.168.1.1 67  udp - 0.044779  303  300 SF  - 0 Dd  1 331 1 328 (empty)
+              1258531939.613071 tP3DM6npTdj 192.168.1.102 138 192.168.1.255 138 udp - - - - S0  -  0 D 1 229 0 0 (empty)
+              1258532046.693816 Jb4jIDToo77 192.168.1.104 68  192.168.1.1 67  udp - 0.002103  311  300 SF  - 0 Dd  1 339 1 328 (empty)
+              1258532143.457078 xvWLhxgUmj5 192.168.1.102 1170  192.168.1.1 53  udp dns 0.068511 36  215 SF  - 0 Dd  1 64  1 243 (empty)
+              1258532203.657268 feNcvrZfDbf 192.168.1.104 1174  192.168.1.1 53  udp dns 0.170962 36  215 SF  - 0 Dd  1 64  1 243 (empty)
+              1258532331.365294 aLsTcZJHAwa 192.168.1.1 5353  224.0.0.251 5353  udp dns 0.100381 273 0 S0  - 0 D 2 329 0 0 (empty)
+
+       When  Zeek  rotates  logs (https://docs.zeek.org/en/stable/frameworks/logging.html#rotation), it produces compressed batches of *.tar.gz regularly.  Ingesting a compressed batch involves unpacking and
+       concatenating the input before sending it to VAST:
+
+              gunzip -c *.gz | vast import zeek
+
+   csv
+       The import csv command imports comma-separated values (https://en.wikipedia.org/wiki/Comma-separated_values) in tabular form.  The first line in a CSV file must contain a  header  that  describes  the
+       field names.  The remaining lines contain concrete values.  Except for the header, one line corresponds to one event.
+
+       Because  CSV  has  no notion of typing, it is necessary to select a layout via --type whose field names correspond to the CSV header field names.  Such a layout must either be defined in a schema file
+       known to VAST, or be defined in a schema passed using --schema or --schema-file.
+
+       E.g., to import Threat Intelligence data into VAST, the known type intel.indicator can be used:
+
+              vast import --type=intel.indicator --read=path/to/indicators.csv csv
+
+   json
+       The json import format consumes line-delimited JSON (https://en.wikipedia.org/wiki/JSON_streaming#Line-delimited_JSON) objects according to a specified schema.  That is, one line  corresponds  to  one
+       event.  The object field names correspond to record field names.
+
+       JSON’s can express only a subset VAST’s data model.  For example, VAST has first-class support IP addresses but JSON can only represent them as strings.  To get the most out of your data, it is there‐
+       fore important to define a schema to get a differentiated view of the data.
+
+       The infer command also supports schema inference for JSON data.  For example, head data.json | vast infer will print a raw schema that can be supplied to --schema-file / -s as file or to --schema / -S
+       as  string.   However,  after infer dumps the schema, the generic type name should still be adjusted and this would be the time to make use of more precise types, such as timestamp instead of time, or
+       annotate them with additional attributes, such as #skip.
+
+       If no type prefix is specified with --type / -t, or multiple types match based on the prefix, VAST uses an exact match based on the field names to automatically deduce the event type for every line in
+       the input.
+
+   suricata
+       The  import suricata command format consumes Eve JSON (https://suricata.readthedocs.io/en/latest/output/eve/eve-json-output.html) logs from Suricata (https://suricata-ids.org).  Eve JSON is Suricata’s
+       unified format to log all types of activity as single stream of line-delimited JSON (https://en.wikipedia.org/wiki/JSON_streaming#Line-delimited_JSON).
+
+       For each log entry, VAST parses the field event_type to determine the specific record type and then parses the data according to the known schema.
+
+       To add support for additional fields and event types, adapt the suricata.schema file that ships with every installation of VAST.
+
+              vast import suricata < path/to/eve.log
+
+   syslog
+       Ingest Syslog messages into VAST.  The following formats are supported: - RFC 5424 (https://tools.ietf.org/html/rfc5424) - A fallback format that consists only of the Syslog message.
+
+              # Import from file.
+              vast import syslog --read=path/to/sys.log
+
+              # Continuously import from a stream.
+              syslog | vast import syslog
+
+   test
+       The import test command exists primarily for testing and benchmarking purposes.  It generates and ingests random data for a given schema.
+
+   pcap
+       The import pcap command uses libpcap (https://www.tcpdump.org) to read network packets from a trace or an interface.
+
+       VAST automatically calculates the Community ID (https://github.com/corelight/community-id-spec) for PCAPs for better pivoting support.  The extra computation induces an overhead of  approximately  15%
+       of the ingestion rate.  The option --disable-community-id disables the computation completely.
+
+       The PCAP import format has many additional options that offer a user interface that should be familiar to users of other tools interacting with PCAPs.  To see a list of all available options, run vast
+       import pcap help.
+
+       Here’s an example that reads from the network interface en0 cuts off packets after 65535 bytes.
+
+              sudo vast import pcap --interface=en0 --cutoff=65535
+
+   pivot
+       The pivot command retrieves data of a related type.  It inspects each event in a query result to find an event of the requested type.  If the related type exists in the schema, VAST  will  dynamically
+       create a new query to fetch the contextual data according to the type relationship.
+
+              vast pivot [options] <type> <expr>
+
+       VAST uses the field community_id to pivot between logs and packets.  Pivoting is currently implemented for Suricata, Zeek (with community ID computation (https://github.com/corelight/bro-community-id)
+       enabled), and PCAP.  For Zeek specifically, the uid field is supported as well.
+
+       For example, to get all events of type pcap.packet that can be pivoted to over common fields from other events that match the query dest_ip == 72.247.178.18, use this command:
+
+              vast pivot pcap.packet 'dest_ip == 72.247.178.18'
+
+       The pivot command is similar to the explore command in that they allow for querying additional context.
+
+       Unlike the export command, the output format can be selected using --format=<format>.  The default export format is json.
+
+       For more information on schema pivoting, head over to docs.tenzir.com (https://docs.tenzir.com/vast/features/schema-pivoting).
+
+   spawn
+       The spawn command spawns a component inside the node.  This is useful when the server process itself is to be used for importing events, e.g., because the latency for  sending  events  to  the  server
+       process is too high.
+
+       Currently, only the spawn source command is documented.  See vast spawn source help for more information.  ##### source
+
+       The spawn source command spawns a new source inside the node.
+
+       The following commands do the same thing, except for the spawn source version not running in a separate process:
+
+              vast spawn source [options] <format> [options] [expr]
+              vast import [options] <format> [options] [expr]
+
+       For more information, please refer to the documentation for the import command (https://docs.tenzir.com/vast/cli/vast/import).  ###### csv
+
+       The spawn source csv command spawns a CSV source inside the node and is the analog to the import csv command.
+
+       For  more  information,  please  refer to the documentation for the commands spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and import csv (https://docs.tenzir.com/vast/cli/vast/im‐
+       port#import-csv).
+
+   json
+       The spawn source json command spawns a JSON source inside the node and is the analog to the import json command.
+
+       For more information, please refer to the documentation for the commands spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and  import  json  (https://docs.tenzir.com/vast/cli/vast/im‐
+       port#import-json).
+
+   pcap
+       The spawn source pcap command spawns a PCAP source inside the node and is the analog to the import pcap command.
+
+       For  more  information,  please refer to the documentation for the commands spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and import pcap (https://docs.tenzir.com/vast/cli/vast/im‐
+       port#import-pcap).
+
+   suricata
+       The spawn source suricata command spawns a Suricata source inside the node and is the analog to the import suricata command.
+
+       For more information, please refer to the documentation for the spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and import suricata  (https://docs.tenzir.com/vast/cli/vast/import#im‐
+       port-suricata).
+
+   syslog
+       The spawn source syslog command spawns a Syslog source inside the node and is the analog to the import syslog command.
+
+       For  more information, please refer to the documentation for the commands spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and import syslog (https://docs.tenzir.com/vast/cli/vast/im‐
+       port#import-syslog).
+
+   test
+       The spawn source test command spawns a test source inside the node and is the analog to the import test command.
+
+       For more information, please refer to the documentation for the commands spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and  import  test  (https://docs.tenzir.com/vast/cli/vast/im‐
+       port#import-test).
+
+   zeek
+       The spawn source zeek command spawns a Zeek source inside the node and is the analog to the import zeek command.
+
+       For  more  information,  please refer to the documentation for the commands spawn source (https://docs.tenzir.com/vast/cli/vast/spawn/source) and import zeek (https://docs.tenzir.com/vast/cli/vast/im‐
+       port#import-zeek).
+
+   start
+       The start command spins up a VAST node.  Starting a node is the first step when deploying VAST as a continuously running server.  The process runs in the foreground and uses standard  error  for  log‐
+       ging.  Standard output remains unused, unless the --print-endpoint option is enabled.
+
+       By  default,  the  start command creates a vast.db directory in the current working directory.  It is recommended to set the options for the node in the vast.yaml file, such that they are picked up by
+       all client commands as well.
+
+       In the most basic form, VAST spawns one server process that contains all core actors that manage the persistent state, i.e., archive and index.  This process spawns only one “container” actor that  we
+       call a node.
+
+       The  node  is  the  core piece of VAST that is continuously running in the background, and can be interacted with using the import and export commands (among others).  To gracefully stop the node, the
+       stop command can be used.
+
+       To use VAST without running a central node, pass the --node flag to commands interacting with the node.  This is useful mostly for quick experiments, and spawns an ad-hoc node instead of connecting to
+       one.
+
+       Only one node can run at the same time for a given database.  This is ensured using a lock file named pid.lock that lives inside the vast.db directory.
+
+       Further information on getting started with using VAST is available on docs.tenzir.com (https://docs.tenzir.com/vast/quick-start/introduction).
+
+   status
+       The status command dumps VAST’s runtime state in JSON format.
+
+       The unit of measurement for memory sizes is kilobytes.
+
+       For example, to see how many events of each type are indexed, this command can be used:
+
+              vast status --detailed | jq '.index.statistics.layouts'
+
+   stop
+       The stop command gracefully brings down a VAST server, and is the analog of the start command.
+
+       While  it  is technically possible to shut down a VAST server gracefully by sending SIGINT(2) to the vast start process, it is recommended to use vast stop to shut down the server process, as it works
+       over the wire as well and guarantees a proper shutdown.  The command blocks execution until the node has quit, and returns a zero exit code when it succeeded, making it ideal for use in launch  system
+       scripts.
+
+   version
+       The version command prints the version of the VAST executable and its major dependencies in JSON format.
+
+ISSUES
+       If you encounter a bug or have suggestions for improvement, please file an issue at <http://vast.fail>.
+
+SEE ALSO
+       Visit <http://vast.io> for more information about VAST.
+
+AUTHORS
+       Tenzir GmbH.
+
+                                                                                                                                                                                                        VAST(1)

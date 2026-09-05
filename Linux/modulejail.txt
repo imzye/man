@@ -1,0 +1,360 @@
+MODULEJAIL(8)                                                                              System Administration                                                                              MODULEJAIL(8)
+
+NAME
+     modulejail - shrink a Linux host's kernel-module attack surface
+
+SYNOPSIS
+     modulejail [-p profile] [-o output] [--whitelist-file path] [--no-syslog-logging] [--verbose-logging] [--dry-run] [--quiet|--verbose] [-f] [--output-format format]
+     modulejail {-h|--help|-V|--version}
+
+DESCRIPTION
+     modulejail shrinks the kernel-module attack surface of a Linux host by writing a modprobe.d(5) blacklist file that disables every kernel module not currently in use.
+
+     On  invocation,  the script snapshots the set of currently loaded modules from /proc/modules and computes the complement against the full module tree under /lib/modules/$(uname -r).  Every module in
+     the complement, minus a built-in baseline of essential modules and an optional sysadmin-supplied whitelist, is emitted as an install mod <body> directive in /etc/modprobe.d/modulejail-blacklist.conf
+     (or the path passed to -o).  Since v1.2, when /usr/bin/logger is executable on the host and --no-syslog-logging is not set, <body> is a small shell invocation that calls logger(1) with  tag  module‐
+     jail so blocked module load attempts produce a syslog entry; otherwise <body> is /bin/true, matching the silent v1.1.4 behaviour. See VIEWING BLOCKED ATTEMPTS below.
+
+     The  script  is  a POSIX-friendly /bin/sh program with no runtime dependencies beyond awk, comm, find, sha256sum, and standard coreutils. It is aimed at Linux fleet operators who need to harden many
+     servers against the wave of AI-assisted kernel privilege-escalation discoveries: every additional loaded module is additional latent attack surface for the next disclosed CVE.
+
+OPTIONS
+     -p, --profile {minimal|conservative|desktop|none}
+            Select the built-in baseline profile of always-preserved modules (default: conservative).  See PROFILES below.
+
+     The special value none zeroes the built-in baseline; the keep-set becomes the union of currently loaded modules, the in-script WHITELIST, and any --whitelist-file additions. The >99% blacklist  san‐
+     ity  guard is disabled under -p none (the loaded-keep invariant remains the boot-safety contract).  recommended only when --whitelist-file is supplied, so that essential modules not currently loaded
+     are still preserved. Available since v1.3.
+
+     -o, --output path
+            Write the generated blacklist to path (default: /etc/modprobe.d/modulejail-blacklist.conf).  The target directory must be writable; non-root invocations are supported  when  the  chosen  path
+            lies outside /etc/modprobe.d/.
+
+     --whitelist-file path
+            Read  site-local  module  names from path and append them to the in-script WHITELIST (additive). The file is in the format described under SITE-LOCAL WHITELIST FILE below: one module name per
+            line, with # introducing a comment and blank lines ignored. Each non-comment line must match [a-zA-Z0-9_-]+ exactly; malformed lines exit 65 (EX_DATAERR) with a line-numbered stderr  diagnos‐
+            tic. The file mode must not be group- or world-writable; if it is, modulejail exits 77 (EX_NOPERM) and prints a chmod go-w hint. When this flag is not given, modulejail auto-detects /etc/mod‐
+            ulejail/whitelist.conf and uses it if present (and prints an info: line on stderr noting the choice). Pass --no-whitelist-file to skip the default for one run.  Available since v1.2.
+
+     --no-whitelist-file
+            Skip  the default whitelist file even if /etc/modulejail/whitelist.conf is present. mutually exclusive with --whitelist-file path; combining them exits 64 (EX_USAGE).  Use during recovery, or
+            when you want a guaranteed-empty external whitelist contribution for a single run. Available since v1.2.
+
+     --no-syslog-logging
+            Force the v1.1.4-style install <mod> /bin/true install-line body, suppressing the default-on syslog emission added in v1.2. Use this on hosts without /usr/bin/logger, in minimal or  initramfs
+            builds, or when a byte-identical regression contract across versions is required. Available since v1.2.
+
+     --dry-run
+            Simulate  the  full  pipeline without writing any file. Prints a one-line DRY-RUN: would blacklist summary to stdout (or a JSON/logfmt object when --output-format is set). Prints the would-be
+            8-line header block plus the full set of would-be install directives to stderr (unless --quiet is also set). Writes nothing under /etc/modprobe.d/ or the path passed to -o.  Exits 0 on  simu‐
+            lated  success.  Useful for previewing what would be blacklisted before committing a profile change or whitelist edit; redirect stderr to a file to capture the preview output. Available since
+            v1.3.
+
+     --quiet
+            Suppress all non-error stderr output: the default-whitelist info: line, the -p none info: line, the dry-run would-be header block, and the update-check notice: line. Also suppresses the  std‐
+            out summary line. Severity-prefixed error: messages on stderr are never suppressed, so EX_USAGE, EX_NOPERM, and EX_SOFTWARE failures remain visible. mutually exclusive with --verbose; combin‐
+            ing them exits 64 (EX_USAGE).  Available since v1.3.
+
+     --verbose
+            Emit  one  decision  line  per  module to stderr, in the form keep: NAME (loaded|whitelist|baseline) or blacklist: NAME.  Reasons are shown only for keep lines. Precedence among keep-sources:
+            loaded > whitelist > baseline. These lines carry no severity prefix (they are operator-requested telemetry, not script-status diagnostics). mutually exclusive with --quiet; combining them ex‐
+            its 64 (EX_USAGE).  Available since v1.3.
+
+     --output-format {json|logfmt}
+            Emit a single-line machine-readable run summary on stdout instead of the human-readable summary line. Valid formats are json and logfmt.  See OUTPUT FORMATS below for the full 11-field schema
+            v1. The machine-readable output is not silenced by --quiet; it is the parser surface. Combinable with --dry-run (the JSON/logfmt dry_run field becomes true and  output_path  is  the  would-be
+            path; no file is written). Available since v1.3.
+
+     -f, --fail-on-module-load
+            Make  blocked  module  loads  return a non-zero exit code so that modprobe fails loudly for blacklisted modules. By default, blocked loads silently succeed (modprobe returns 0 even though the
+            module was not loaded). With this flag, the install-line body uses /bin/false instead of exit 0 or /bin/true, so modprobe <module> returns non-zero for any blacklisted module. Use  this  when
+            blocked loads should produce a visible error rather than silently succeeding.
+
+     --verbose-logging
+            Enrich  the  per-blocked-load logger call with the caller context, read from /proc/$PPID/: the parent PID (ppid), the audit loginuid (persists across su/sudo), the parent's short command name
+            (pcomm), and argv[0] (pexe, truncated at the first NUL by command substitution; full cmdline is one ps -fp <ppid> away). Default logger output is the bare  blocked:  <module>  form.  Requires
+            /usr/bin/logger to be executable (modulejail exits 66 (EX_NOINPUT) otherwise); mutually exclusive with --no-syslog-logging.  Available since v1.3.4.
+
+     -V, --version
+            Print version, repository URL, and license, then exit 0.
+
+     -h, --help
+            Print a usage summary including exit codes and environment, then exit 0.
+
+PROFILES
+     minimal
+            Core filesystems plus essential kernel modules only.
+
+     conservative
+            Minimal plus common server and VM drivers. The default; appropriate for virtualised or bare-metal Linux servers across the mainstream hardware matrix.
+
+     desktop
+            Conservative plus WiFi, Bluetooth, audio, and video drivers. For laptops and workstations.
+
+SYSADMIN WHITELIST
+     A  site-local  WHITELIST variable near the top of the script holds space-separated module names that are always preserved, beyond the selected baseline. It ships empty.  Edit the script in place and
+     look for the === SYSADMIN WHITELIST === banner. The === anchors are designed for Ansible template insertion (lineinfile or blockinfile).
+
+     Since v1.2, an external file is also supported via --whitelist-file; see SITE-LOCAL WHITELIST FILE below. The two mechanisms are additive: the in-script value remains  the  sysadmin's  editable  de‐
+     fault, the file appends to it.
+
+SITE-LOCAL WHITELIST FILE
+     The  --whitelist-file  flag reads modules to keep from an operator-chosen file. This is the preferred path when modulejail is installed via .deb/.rpm/ curl | sh and editing the script in place would
+     lose site-local additions on the next reinstall.
+
+     If the flag is not passed, modulejail auto-detects /etc/modulejail/whitelist.conf and uses it when present, with the same strict mode and content gates as an explicitly-passed path. An info: line is
+     printed on stderr so the choice is never silent. Pass --no-whitelist-file to opt out for one run.
+
+     File format:
+         # Comments start with # and run to end of line.
+         # Blank lines are ignored.
+         # Each non-comment line is one module name, matching [a-zA-Z0-9_-]+.
+         # Trailing whitespace and CR (CRLF endings) are stripped silently.
+         # Module names are accepted in both dash and underscore form;
+         # the pipeline normalises - to _ internally.
+
+         nft_compat
+         xt_owner
+         zfs
+
+     File mode must not be group-writable or world-writable (the same hardening that sshd(8) applies to authorized_keys and that sudo(8) applies to sudoers).  modulejail calls stat(1)  with  the  GNU  -c
+     '%a'  form,  falling  back  to the BSD -f '%Lp' form for cross-distro portability; if either group- or world-write bits are set, it refuses to run with exit code 77 (EX_NOPERM) and prints chmod go-w
+     PATH as the remediation hint.
+
+OUTPUT FORMATS
+     When --output-format json or --output-format logfmt is passed, modulejail emits a single-line machine-readable run summary to stdout instead of the human-readable line. The  schema  is  small,  ver‐
+     sioned, and additive-only across future schema versions.
+
+   Schema version 1 fields
+         schema_version    integer  (always 1)
+         tool              object   {name, version}
+         kernel_version    string   (host uname -r output)
+         profile           string   (minimal|conservative|desktop|none)
+         dry_run           boolean  (true when --dry-run was passed)
+         whitelist_file    string or null  (null when no --whitelist-file)
+         modules_available integer  (total .ko* files under /lib/modules/KVER)
+         modules_loaded    integer  (lines in /proc/modules at snapshot time)
+         modules_blacklisted integer (entries written to the output file)
+         fingerprint       string   (64-char lowercase hex, no "sha256:" prefix)
+         output_path       string   (target path; under --dry-run, the would-be path)
+
+   JSON example
+         {"schema_version":1,"tool":{"name":"modulejail","version":"1.3.0"},
+          "kernel_version":"6.8.0-31-generic","profile":"conservative",
+          "dry_run":false,"whitelist_file":"/etc/modulejail/whitelist.conf",
+          "modules_available":4912,"modules_loaded":47,
+          "modules_blacklisted":4810,"fingerprint":"a3f5b9c2e1d4...",
+          "output_path":"/etc/modprobe.d/modulejail-blacklist.conf"}
+
+   logfmt example
+         schema_version=1 tool_name=modulejail tool_version=1.3.0 kernel_version=6.8.0-31-generic profile=conservative dry_run=false whitelist_file=/etc/modulejail/whitelist.conf modules_available=4912 modules_loaded=47 modules_blacklisted=4810 fingerprint=a3f5b9c2e1d4... output_path=/etc/modprobe.d/modulejail-blacklist.conf
+
+   Fleet automation idiom
+     Without --quiet, modulejail may emit human-readable info: lines to stderr (for example, the default-whitelist notice or the -p none sanity-guard notice) alongside the machine-readable stdout record.
+     Fleet  automation  that  captures  stderr into a unified log (2>&1) will receive both the structured output and these human-readable lines.  To suppress all non-error stderr output while keeping the
+     structured stdout record intact, combine --output-format with --quiet:
+
+         modulejail --output-format json --quiet | jq .
+         modulejail --output-format logfmt --quiet
+
+     --quiet never suppresses the machine-readable stdout record, only the human-targeted stderr diagnostics.
+
+   Fingerprint format
+     The fingerprint field in JSON and logfmt output is raw 64-character lowercase hex without the sha256: prefix that appears in the generated file header (# fingerprint: sha256:HEX).  Machine consumers
+     parsing via jq(1) or awk do not need string slicing to extract the hash; the file header keeps the algorithm tag for human auditability.
+
+   Schema stability contract
+     schema_version=1 is stable. Future schema versions are strictly additive: new fields may be added; renames and removals require schema_version=2.  This mirrors the reproducible-builds.org  stability
+     convention: field semantics locked once published.
+
+   Known limitation
+     Operator-supplied paths containing a literal double-quote character ("), a backslash (\), or a newline are not JSON-escaped in the v1 schema. Real-world paths essentially never contain these charac‐
+     ters, but operators using exotic paths may receive malformed JSON and a jq(1) parse error. A future schema_version may add full path escaping.
+
+VIEWING BLOCKED ATTEMPTS
+     Since  v1.2,  when  /usr/bin/logger  is  executable  on  the host running modulejail and --no-syslog-logging is not set, the generated install lines emit a syslog entry tagged modulejail each time a
+     blocked module is targeted by modprobe(8).  View the entries via:
+
+            journalctl -t modulejail --since '1 hour ago'      # systemd / journald
+            grep modulejail /var/log/syslog                       # classic syslog
+
+     The generated blacklist file's header annotation records which install-line form is in use:
+
+            # install-line: /bin/sh + logger (syslog tag: modulejail)
+            # install-line: /bin/true (silent, --no-syslog-logging or logger absent)
+
+     If /usr/bin/logger is absent and --no-syslog-logging was NOT set, modulejail silently falls back to the /bin/true form. No stderr warning is emitted; the header annotation is the only  visible  cue.
+     Use --no-syslog-logging explicitly when the v1.1.4 install-line body is a hard requirement.
+
+INVOCATION
+     A  header line starting with # invocation: is added to the blacklist, which registers the invocation that was used to produce the blacklist, and can be copied and pasted into the terminal for repro‐
+     ducible results.
+
+HEADER FIELDS
+     The generated blacklist file carries an 8-line # -prefixed header documenting the tool version, repository, generation profile, host kernel, fingerprint, install-line form, invocation, and a do-not-
+     edit-by-hand disclaimer.
+
+     # modulejail VERSION
+            Tool name and version that produced the file.
+
+     # https://modulejail.com
+            Project home page (source repository is at
+
+     # profile: PROFILE
+            The profile name passed to -p (or conservative when the default was used).
+
+     # kernel: KVER
+            The host kernel version string from uname -r at the time modulejail ran. This is the same value as the kernel_version field in the JSON and logfmt output (see OUTPUT FORMATS above).
+
+     # fingerprint: sha256:HEX
+            A sha256 hash over canonical inputs: sorted loaded-module set, sorted baseline, sorted whitelist, profile name, and kernel version. The sha256: prefix identifies the algorithm for human read‐
+            ers; the JSON and logfmt fingerprint field strips this prefix and carries raw hex only.
+
+     # install-line: FORM
+            Records which install-line body is in use: /bin/sh + logger (syslog tag: modulejail) or /bin/true (silent, --no-syslog-logging or logger absent).
+
+     # invocation: ARGV-STRING
+            The full command line that produced the file, in POSIX-canonical single-quote encoding. See INVOCATION above.
+
+     # Do not edit by hand -- regenerate with modulejail(8).
+            Disclaimer. Edits are overwritten on the next run.
+
+     The # kernel: line is regression-locked: test suite fixture header-kernel-line-locked.sh asserts that this line exists and carries a non-empty kernel-version token in every generated file. See  OUT‐
+     PUT FORMATS for the machine-readable schema that parallels these header fields.
+
+SCOPE OF THE BLACKLIST
+     A modprobe.d(5) blacklist intercepts modprobe(8)-mediated module loads: udev hotplug events, dependency resolution, autoloaded modules via the alias system. It does not intercept, by design:
+
+     insmod(8)
+            insmod bypasses modprobe(8) entirely; it never reads /etc/modprobe.d/.  A root user can always insert a .ko directly.
+
+     modprobe --ignore-install
+            modprobe(8)'s explicit escape hatch from install-line indirection. Treating it as suspicious is a higher-layer concern (auditd, eBPF) outside the modprobe.d contract.
+
+     modulejail  is  a  default-safe  policy on modprobe(8).  It removes the auto-loading attack surface that unprivileged code or remote attackers can reach, and it does not pretend to block a root user
+     with intent.
+
+SAFETY MODEL
+     The invariant is: whatever is currently loaded is assumed necessary for the host to function, and is preserved.  modulejail does not guess; it reads /proc/modules at run time and treats  that  exact
+     set  as the keep-list. The operator's responsibility is to run modulejail when the host is in a known-good, steady-state configuration: after all services are started, all kernel drivers loaded, all
+     filesystems mounted. Running it on a partial or in-flux system risks blacklisting a module that is occasionally needed.
+
+     The built-in baseline ensures that core filesystems, storage controllers, and essential networking modules are never blacklisted regardless of the running profile.
+
+IDEMPOTENCY
+     Two consecutive runs on an unchanged host produce byte-identical output files. The generated blacklist header carries a sha256 fingerprint over canonical inputs  (sorted  loaded-module  set,  sorted
+     baseline, sorted whitelist, profile name, and kernel version) rather than a wall-clock timestamp. Identical inputs therefore produce an identical fingerprint, and an identical output file. Fleet op‐
+     erators  can  use  the  fingerprint to correlate hardening state across machines: two hosts with the same fingerprint had identical loaded sets, baseline, whitelist, profile, and kernel version when
+     modulejail ran.
+
+EXIT CODES
+     Exit codes follow sysexits(3) conventions.
+
+     0      Success.
+
+     64     Command-line argument error: bad flag, missing value, or unknown profile.
+
+     65     Invalid data in --whitelist-file (EX_DATAERR): malformed module name on at least one non-comment, non-blank line.
+
+     66     Required kernel input missing (/proc/modules or /lib/modules/<kernel>).
+
+     70     Sanity guard tripped: the computed blacklist is empty, or covers more than 99% of the module universe. Aborting to avoid an unbootable host.
+
+     71     OS-level error: cannot create the temporary work directory, or find reported errors walking /lib/modules.
+
+     73     Output path cannot be created: symlinked target, existing directory, trailing slash, or mktemp failure in the target directory.
+
+     77     Target directory not writable. Try sudo, or use -o other-path.
+
+ENVIRONMENT
+     MODULEJAIL_NO_UPDATE_CHECK
+            In Debian, this value defaults to 1, so one has to empty it to enable it.  Set to any non-empty value to skip the post-run check for a newer release on GitHub. The check has a 10-second  hard
+            timeout and is silent on every failure mode; this variable disables it entirely for offline fleets, restricted networks, or pipeline-style automation where any unexpected output is noise.
+
+     MODULEJAIL_LOGGER_PATH
+            Path to the logger(1) binary used for the v1.2 syslog install-line detection (default: /usr/bin/logger).  Test-only plumbing that lets acceptance tests exercise the absent-fallback path with‐
+            out a chroot or namespace; end-user operators leave this unset.
+
+     MODULEJAIL_MODULES_ROOT
+            Root  of  the  kernel  modules  tree to walk (default: /lib/modules).  Test-only plumbing parallel to MODULEJAIL_PROC_MODULES and MODULEJAIL_KVER; lets host-local cases on non-Linux dev boxes
+            point modulejail at a synthetic tree under $TMPDIR.  End-user operators leave this unset.
+
+     MODULEJAIL_PROC_MODULES
+            Path to read the loaded-module list from (default: /proc/modules).  Test-only plumbing.
+
+     MODULEJAIL_KVER
+            Kernel version string used to locate the module tree (default: uname -r).  Test-only plumbing.
+
+FILES
+     /etc/modprobe.d/modulejail-blacklist.conf
+            Default output path. Overridable with -o.
+
+     /proc/modules
+            Read at run time as the keep-list.
+
+     /lib/modules/$(uname -r)
+            Walked to enumerate the full module universe (including DKMS and weak-updates modules).
+
+EXAMPLES
+     Hardening a server with the default profile and default output path:
+
+            sudo modulejail
+
+     Workstation hardening, preserving WiFi, Bluetooth, audio, and video drivers:
+
+            sudo modulejail -p desktop
+
+     Writing to a custom path (does not require root if the directory is writable):
+
+            modulejail -o /tmp/site-blacklist.conf
+
+     Fleet-automation context: disable the update check to keep output deterministic.
+
+            MODULEJAIL_NO_UPDATE_CHECK=1 sudo modulejail
+
+     Site-local whitelist via an operator-owned file (preferred when modulejail is installed via package manager):
+
+            # /etc/modulejail/whitelist.conf —— chmod 0644 (or stricter)
+            #
+            # nft_compat
+            # xt_owner
+            # zfs
+
+            sudo modulejail --whitelist-file /etc/modulejail/whitelist.conf
+
+     View syslog entries for blocked module load attempts (since v1.2):
+
+            journalctl -t modulejail --since '1 hour ago'
+            grep modulejail /var/log/syslog
+
+     Suppress syslog emission to restore the v1.1.4 install-line body byte-for-byte (useful on hosts without logger, or for byte-identical regression contracts):
+
+            sudo modulejail --no-syslog-logging
+
+REVERTING
+     Remove the generated file and reboot:
+
+            sudo rm /etc/modprobe.d/modulejail-blacklist.conf
+            sudo reboot
+
+     To bring back a specific module without rebooting (the restriction re-applies after the next reboot unless the file has been removed):
+
+            sudo modprobe <module_name>
+
+SEE ALSO
+     modprobe(8), modprobe.d(5), sysexits(3), lsmod(8)
+
+AUTHOR
+     Jasper Nuyens <jnuyens@linuxbe.com>
+
+COPYRIGHT
+     Copyright © 2026 Jasper Nuyens.  License GPL-3.0-only.
+
+     This is free software: you are free to change and redistribute it. There is NO WARRANTY, to the extent permitted by law.
+
+HOMEPAGE
+     https://modulejail.com
+
+     Source repository, issue tracker, signed release tarballs and binary artifacts: https://github.com/jnuyens/modulejail
+
+modulejail 1.4.2                                                                                 2026-06-20                                                                                   MODULEJAIL(8)

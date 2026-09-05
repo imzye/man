@@ -1,0 +1,147 @@
+FPSYNC(1)                                                                                 BSD General Commands Manual                                                                                 FPSYNC(1)
+
+NAME
+     fpsync — Synchronize directories in parallel using fpart and an external tool
+
+SYNOPSIS
+     fpsync [-p] [-n jobs] [-w wrks] [-m tool] [-f files] [-s size] [-E] [-o toolopts] [-O fpartopts] [-S] [-t tmpdir] [-d shdir] [-M mailaddr] [-v] src_dir/ dst_url/
+     fpsync -l
+     fpsync -r runid [-R] [OPTIONS...]
+     fpsync -a runid
+     fpsync -D runid
+
+DESCRIPTION
+     The fpsync tool synchronizes directories in parallel using fpart(1) and rsync(1), cpio(1) or tar(1).  It computes subsets of src_dir/ and spawns jobs to synchronize them to dst_url/.
+
+     Synchronization jobs can be executed either locally or remotely (using SSH workers, see option -w) and are executed on-the-fly while filesystem crawling goes on.  This makes fpsync a good tool for
+     migrating large filesystems.
+
+COMMON OPTIONS
+     -t tmpdir
+             Set fpsync temporary directory to tmpdir.  This directory remains local and does not need to be shared amongst SSH workers when using the -w option.  Default: /tmp/fpsync
+
+     -d shdir
+             Set fpsync shared directory to shdir.  This option is mandatory when using SSH workers and set by default to tmpdir when running locally.  The specified directory must be an absolute path ; it
+             will be used to handle communications with SSH hosts (sharing partitions and log files) and, as a consequence, must be made available to all participating hosts (e.g. through a r/w NFS mount),
+             including the master one running fpsync.
+
+     -M mailaddr
+             Send an e-mail to mailaddr after a run.  Multiple -space-separated- addresses can be specified.  That option requires the mail(1) client to be installed and configured on the master host running
+             fpsync.
+
+     -v      Verbose mode.  Can be be specified several times to increase verbosity level.
+
+     -h      Print help
+
+SYNCHRONIZATION OPTIONS
+     -m tool
+             External copy tool used to synchronize files.  Currently supported tools are: rsync, cpio, tar, and tarify.  Default: rsync.  When using cpio or tar and more than one worker, directory time‐
+             stamps may not be replicated.  A second pass will fix them.  Special tool tarify generates tarballs into destination directory.
+
+     -f files
+             Transfer at most files files or directories per sync job.  0 means unlimited but you must at least specify one file or size limit.  Default: 2000
+
+     -s size
+             Transfer at most size bytes per sync job.  0 means unlimited but you must at least specify one file or size limit.  You can use a human-friendly unit suffix here (k, m, g, t, p).
+             Default: 4294967296 (4 GB)
+
+     -E      Work on a per-directory basis (rsync tool only).  In that mode, fpsync works with lists of directories instead of files.  That mode may generate coarse-grained lists but enables rsync(1) 's
+             --delete option by default ( WARNING!!!  ), making it a good candidate for a final (cleaning) pass after several incremental passes using standard (file) mode.
+
+     -o toolopts
+             Override default rsync(1), cpio(1) or tar(1) options with toolopts.  Use this option with care as certain options are incompatible with a parallel usage (e.g. rsync's --delete).  Default for
+             rsync: “-lptgoD -v --numeric-ids”.  Empty for cpio, tar and tarify.
+
+     -O fpartopts
+             Override default fpart(1) options with fpartopts.  Options and values must be separated by a pipe character.
+             Default: “-x|.zfs|-x|.snapshot*|-x|.ckpt”.
+
+     -S      Sudo mode.  Use sudo(8) for filesystem crawling and synchronizations.
+
+     src_dir/
+             Source directory.  It must be absolute and available on all participating hosts (including the master one, running fpsync).
+
+     dst_url/
+             Destination directory or URL (rsync tool only).  If a remote URL is provided, it must be supported by rsync(1).  All participating workers must be able to reach that target.
+
+JOB HANDLING AND DISPATCHING OPTIONS
+     -n jobs
+             Start jobs concurrent sync jobs (either locally or remotely, see below) per run.  Default: 2
+
+     -w wrks
+             Use remote SSH wrks to synchronize files.  Synchronization jobs are executed locally when this option is not set.  wrks is a space-separated list of login@machine connection strings and can be
+             specified several times.  You must be allowed to connect to those machines using a SSH key to avoid user interaction.
+
+RUN HANDLING OPTIONS
+     -p      Prepare mode: prepare, test synchronization environment, start fpart(1) and create partitions but do not actually start transfers.  That mode can be used to create a run that can then be resumed
+             using option -r.
+
+     -l      List previous runs and their status.
+
+     -r runid
+             Resume run runid and restart synchronizing remaining partitions from a previous run.  runid is displayed when using verbose mode (see option -v) or prepare mode (option -p) and can be retrieved
+             afterwards using option -l.  Note that filesystem crawling is skipped when resuming a previous run.  As a consequence, options -m, -f, -s, -E, -o, -O, -S, src_dir/, and dst_url/ are ignored.
+
+     -R      Replay mode: when using option -r, force re-synchronizing run's all partitions instead of remaining ones only.  That mode can be useful to skip filesystem crawling when you have to replay a
+             final pass several times and you know directory structure has not changed in the meantime (you may miss files if you use replay mode with a standard, file-based, run).
+
+     -a runid
+             Archive run runid (including partition files, logs, queue and work directories) to tmpdir.  That option requires the tar(1) client to be installed on the master host running fpsync.
+
+     -D runid
+             Delete run runid (including partition files, logs, queue and work directories).
+
+RUNNING FPSYNC
+     Each fpsync run generates a unique runid, which is displayed in verbose mode (see option -v) and within log files.  You can use that runid to resume a previous run (see option -r).  fpsync will then
+     restart synchronizing data from the parts that were being synchronized at the time it stopped.
+
+     This unique feature gives the administrator the ability to stop fpsync and restart it later, without having to restart the whole filesystem crawling and synchronization process.  Note that resuming is
+     only possible when filesystem crawling step has finished.
+
+     During synchronization, you can press CTRL-C to interrupt the process.  The first CTRL-C prevents new synchronizations from being submitted and the process will wait for current synchronizations to be
+     finished before exiting.  If you press CTRL-C again, current synchronizations will be killed and fpsync will exit immediately.  When using option -E to enable directory mode and rsync's --delete option,
+     keep in mind that killing rsync processes may lead to a situation where certain files have been updated and others not deleted yet (because the deletion process is postponed using rsync's --delete-after
+     option).
+
+     On certain systems, CTRL-T can be pressed to get the status of current and remaining parts to be synchronized.  This can also be achieved by sending a SIGINFO to the fpsync process.
+
+     Whether you use verbose mode or not, everything is logged within shdir/log/.
+
+EXAMPLES
+     Here are some examples:
+
+     fpsync -n 4 /usr/src/ /var/src/
+
+             Synchronizes /usr/src/ to /var/src/ using 4 local jobs.
+
+     fpsync -n 2 -w login@machine1 -w login@machine2 -d /mnt/fpsync /mnt/src/ /mnt/dst/
+
+             Synchronizes /mnt/src/ to /mnt/dst/ using 2 concurrent jobs executed remotely on 2 SSH workers (machine1 and machine2).  The shared directory is set to /mnt/fpsync and mounted on the machine
+             running fpsync, as well as on machine1 and machine2.  The source directory (/mnt/src/) is also available on those 3 machines, while the destination directory (/mnt/dst/) is mounted on SSH work‐
+             ers only (machine1 and machine2).
+
+LIMITATIONS
+     Parallelizing rsync(1) can make several options not usable, such as --delete.  If your source directory is live while fpsync is running, you will have to delete extra files from destination directory.
+     This is traditionally done by using a final -offline- rsync(1) pass that will use this option, but you can also use fpsync and option -E to perform the same task using several workers.
+
+     fpsync enqueues synchronization jobs on disk, within the tmpdir/queue directory.  Be careful to host this queue on a filesystem that can handle fine-grained mtime timestamps (i.e. with a sub-second pre‐
+     cision) if you want the queue to be processed in order when fpart(1) generates several jobs per second.  On FreeBSD, VFS(9) timestamps' precision can be tuned using the 'vfs.timestamp_precision' sysctl.
+     See vfs_timestamp(9).
+
+     Contrary to rsync(1), fpsync enforces the final '/' on the source directory.  It means that directory contents are synchronized, not the source directory itself (i.e. you will not get a subdirectory of
+     the name of the source directory in the target directory after synchronization).
+
+     Before starting filesystem crawling, fpsync changes its current working directory to src_dir/ and generates partitions containing relative paths (all starting with './').  This is important to keep in
+     mind when modifying toolopts or fpartopts dealing with file or directory paths.
+
+SEE ALSO
+     cpio(1), fpart(1), mail(1), rsync(1), tar(1), sudo(8)
+
+AUTHOR, AVAILABILITY
+     Fpsync has been written by Ganaël LAPLANCHE and is available under the BSD license on
+           http://contribs.martymac.org
+
+BUGS
+     No bug known (yet).
+
+BSD                                                                                             January 27, 2015                                                                                            BSD

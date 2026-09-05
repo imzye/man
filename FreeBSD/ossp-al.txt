@@ -1,0 +1,359 @@
+al(3)                            Assembly Line                           al(3)
+
+
+NAME
+       OSSP al - Assembly Line
+
+VERSION
+       OSSP al 0.9.2 (03-Oct-2005)
+
+SYNOPSIS
+       Abstract Data Types:
+           al_rc_t, al_t, al_tx_t, al_td_t, al_chunk_t.
+
+       Assembly Line Operations:
+           al_create, al_destroy, al_append_bytes, al_prepend_bytes,
+           al_attach_buffer, al_splice, al_setlabel, al_bytes.
+
+       Traversal Operations:
+           al_txalloc, al_txfree, al_traverse, al_traverse_next,
+           al_traverse_end, al_traverse_cb.
+
+       Convenience Operations:
+           al_flatten, al_copy, al_firstlabel, al_spanlabel.
+
+       Chunk Operations:
+           al_chunk_len, al_chunk_span, al_chunk_label, al_same_label,
+           al_chunk_ptr.
+
+       Error Handling:
+           al_error.
+
+DESCRIPTION
+       OSSP al defines an abstract data type of a data buffer that can
+       assemble, move and truncate chunks of data in a stream but avoids
+       actual copying. It was built to deal efficiently with communication
+       streams between software modules. It especially provides flexible
+       semantical data attribution through by-chunk labeling. It also has
+       convenient chunk traversal methods and optional OSSP ex based exception
+       handling.
+
+DATA TYPES
+       OSSP al uses six data types in its API:
+
+       al_rc_t (Return Code Type)
+           This is an exported enumerated integer type with the following
+           possible values:
+
+            AL_OK       Everything Ok
+            AL_ERR_ARG  Invalid Argument
+            AL_ERR_MEM  Not Enough Memory
+            AL_ERR_EOF  End Of Communication
+            AL_ERR_INT  Internal Error
+
+       al_t (Assembly Line Type)
+           This is an opaque data type representing a data buffer.  Only
+           pointers to this abstract data type are used in the API.
+
+       al_label_t (Label Type)
+           This is an opaque pointer type representing a specific data
+           flavour.  You can restrict traversal operations to data that was
+           marked with the specific flavour. Usually you would cast a pointer
+           to the object that maintains the data to al_label_t. You may use
+           NULL as a label but on traversal NULL matches any label.
+
+       al_tx_t (Traversal Context Type)
+           This is an opaque data type representing the state of a buffer
+           traversal operation. Only pointers to this abstract data type are
+           used in the API.
+
+       al_td_t (Traversal Direction Type)
+           This is an exported enumerated integer type with the following
+           possible values:
+
+            AL_FORWARD        traverse assembly line from beginning to end
+            AL_BACKWARD       traverse assembly line from end to beginning
+            AL_FORWARD_SPAN   like AL_FORWARD, but stop when label does not match
+            AL_BACKWARD_SPAN  like AL_BACKWARD, but stop when label does not match
+
+       al_chunk_t (Chunk Type)
+           This is an opaque data type representing a chunk of a buffer during
+           a traversal operation. Only pointers to this abstract data type are
+           used in the API. The al_chunk_t type is used to generate a pointer
+           and byte count to access the data in the buffer.
+
+FUNCTIONS
+       OSSP al provides a bunch of API functions, all modelled after the same
+       prototype: "al_rc_t al_name(al_[chunk]_t *, ...)". This means every
+       function returns al_rc_t to indicate its success (AL_OK) or failure
+       (AL_ERR_XXX) by returning a return code (the corresponding describing
+       text can be determined by passing this return code to al_error). Each
+       function name starts with the common prefix al_ and receives a al_t (or
+       al_chunk_t) object on which it operates as its first argument.
+
+       Assembly Line Operations
+
+       al_rc_t al_create(al_t **alp);
+           Create an assembly line abstraction object.  The object is stored
+           in alp on success.
+
+           Example: al_t *al; al_create(&al);
+
+       al_rc_t al_destroy(al_t *al);
+           Destroy an assembly line abstraction object.  The object al is
+           invalid after this call succeeded.
+
+           Example: al_destroy(al);
+
+       al_rc_t al_append_bytes(al_t *al, const char *src, size_t n, al_label_t
+       label);
+           Append n bytes from a storage array at src to the assembly line.
+           The bytes are copied, memory is allocated as necessary. The data is
+           tagged with label.
+
+           Example: al_append_bytes(al, "Goodbye cruel world\n", 20, NULL);
+
+       al_rc_t al_prepend_bytes(al_t *al, const char *src, size_t n,
+       al_label_t label);
+           Prepend n bytes from a storage array at src to the assembly line.
+           The bytes are copied, memory is allocated as necessary.
+
+           Example: al_prepend_bytes(al, "Hello world\n", 12, NULL);
+
+       al_rc_t al_attach_buffer(al_t *al, char *p, size_t n, al_label_t label,
+       void (*freemem)(char *, size_t, void *), void *u);
+           Attach the storage array starting at p with size n at the end of
+           the assembly line. Its content becomes part of the assembly line
+           and is subject to assembly line operations. The storage array must
+           stay in scope until it is no longer referenced by the assembly
+           line. When this happens the function freemem is called with the
+           original pointer p, size n and an arbitrary pointer u. Passing a
+           NULL pointer for freemem is valid, then no callback takes place,
+           which might be appropriate for static buffers.
+
+           Example: char store[] = "foo\n"; al_attach_buffer(al, store,
+           sizeof(store), NULL, NULL, NULL);
+
+       al_rc_t al_splice(al_t *al, size_t off, size_t n, al_t *nal, al_t
+       *tal);
+           This is the general data move operation modelled after the perl
+           operator splice.
+
+           off and n are byte counts that define a span of bytes within the
+           source assembly line al. These bytes are moved to the target
+           assembly line tal while the content of the new assembly line nal is
+           moved to the source to replace the selected span.
+
+           There are two deviations from the Perl operator to avoid copying:
+
+           The move to the target assembly line tal appends the data to its
+           end.  The move from the new assembly line nal removes the data from
+           its origin.
+
+           The target assembly line tal may be NULL, the data bytes that would
+           be moved to the target are then discarded. This avoids creation and
+           destruction of a dummy target.
+
+           The new assembly line nal may be NULL, then nothing is inserted
+           into the source. This avoids creation and destruction of an empty
+           assembly line.
+
+           Examples:
+
+            al_t *source;
+            al_t *insertion;
+            al_t *buffer;
+
+            al_create(&source);
+            al_create(&insertion);
+            al_create(&buffer);
+
+            al_append_bytes(source, "Hello world\n", 12, NULL);
+            al_append_bytes(insertion, "Goodbye cruel", 13, NULL);
+
+            al_splice(source, 0, 5, insertion, buffer);
+
+           The buffer now holds the string "Hello".  The source now holds the
+           string "Goodbye cruel world\n".  The insertion is now empty.
+
+            al_append_bytes(insertion, "brave", 5, NULL);
+            al_splice(source, 8, 5, insertion, NULL);
+
+           The source now holds the string "Goodbye brave world\n".  The
+           insertion is now empty.
+
+            al_append_bytes(insertion, "B", 1, NULL);
+            al_splice(source, 0, 8, NULL, buffer);
+            al_splice(source, 0, 1, insertion, NULL);
+            al_append_bytes(insertion, "\n", 1, NULL);
+            al_splice(buffer, al_bytes(buffer)-1, 1, insertion, NULL),
+
+           The source now holds the string "Brave world\n".  The buffer now
+           holds the string "HelloGoodbye\n".  The insertion is empty.
+
+       al_rc_t al_setlabel(al_t *al, size_t off, size_t n, al_label_t
+       oldlabel, al_label_t newlabel);
+           off and n are byte counts that define a span of bytes within the
+           source assembly line al. The bytes within that span that match
+           oldlabel are tagged with newlabel, any existing labels for these
+           bytes are overwritten.
+
+       size_t al_bytes(const al_t *al);
+           Returns the number of bytes stored in the assembly line.
+
+           Example: al_t *al; size_t count; count = al_bytes(al);
+
+       Traversal Operations
+
+       al_rc_t al_txalloc(al_t *al, al_tx_t **txp);
+           Allocate a traversal context.
+
+           Example: al_tx_t *tx; al_txalloc(&tx);
+
+       al_rc_t al_txfree(al_t *al, al_tx_t *tx);
+           Free a traversal context.
+
+           Example: al_tx_t *tx; al_txfree(tx);
+
+       al_rc_t al_traverse(al_t *al, size_t off, size_t n, al_td_t dir,
+       al_label_t label, al_tx_t *tx);
+           Start traversing the assembly line al beginning at byte offset off
+           for up to n bytes in direction dir. If label is not NULL then you
+           will see only data that was tagged with label. The state of the
+           traversal is stored in the supplied context tx.
+
+           This function fails when the offset is outside the assembly line
+           bounds.
+
+       al_rc_t al_traverse_next(al_t *al, al_tx_t *tx, al_chunk_t **alcp);
+           Complete a traversal step on the assembly line al using the
+           initialized context tx. In each step a chunk descriptor is filled
+           and stored in alcp. All bytes of the chunk are guaranteed to be
+           stored in a flat array and can be accessed through the chunk
+           operations described below.
+
+           The function returns AL_ERR_EOF when it passes the end (or
+           beginning in case of backward traversal) of the assembly line.
+
+       al_rc_t al_traverse_end(al_t *al, al_tx_t *tx, int final);
+           Clean up internal state of traversal. If final is zero, you may
+           continue the traversal later by calling al_traverse_next. If final
+           is non-zero you need to start a new traversal. It is mandatory that
+           every traversal that was started is finished by a call to
+           al_traverse_end with final set to a non-zero value.
+
+       al_rc_t al_traverse_cb(al_t *al, size_t off, size_t n, al_td_t dir,
+       al_label_t label, al_rc_t (*cb)(al_chunk_t *, void *), void *u);
+           al_traverse_cb is a wrapper function that does a full assembly line
+           traversal in a single call. In every step a chunk descriptor is
+           passed to the callback function cb together with a user supplied
+           pointer u. When the callback function returns AL_OK the traversal
+           continues, when it returns AL_ERR_EOF the traversal is aborted and
+           AL_OK is returned to the original caller. Any other return code
+           returned by the callback is passed to the original caller verbatim.
+
+       Convenience Operations
+
+       al_rc_t al_flatten(al_t *al, size_t off, size_t n, al_td_t dir, char
+       *dst, size_t *lenp);
+           off and n are byte counts that define a span of bytes with the
+           assembly line al. These bytes are copied to the storage array dst
+           which must be sized appropriately.  off must be a valid offset, n
+           must be positive but may exceed the size of the assembly line.  The
+           actual number of bytes that is copied to the destination is stored
+           in lenp.  If dst is NULL then no data is copied but the number of
+           bytes is still counted in lenp. This can be used to precalculate
+           the size of the needed storage array by passing an arbitrary high
+           maximum size as n.  If dir denotes a backwards traversal the
+           storage array is filled from its end.
+
+           Example:
+
+            al_t *al;
+            char buffer[42];
+            size_t actual;
+
+            al_flatten(al, 500, 42, AL_FORWARD, buffer, &actual);
+
+       al_rc_t al_copy(al_t *al, size_t off, size_t n, al_td_t dir, al_t
+       *tal);
+           off and n are byte counts that define a span of bytes within the
+           assembly line al. These bytes are appended to the target assembly
+           line tal, memory is allocated as necessary.  off must be a valid
+           offset, n must be positive but may exceed the size of the assembly
+           line.
+
+           Example:
+
+            al_t *al;
+            al_t *tal;
+
+            al_create(&tal);
+            al_flatten(al, 500, 42, tal);
+
+       al_rc_t al_firstlabel(al_t *al, size_t off, size_t n, al_td_t dir,
+       al_label_t *labelp);
+           off and n are byte counts that define a span of bytes within the
+           assembly line al. The label that was attached to the first byte
+           within the defined span is stored in labelp, otherwise
+           al_firstlabel returns an error.
+
+       al_rc_t al_spanlabel(al_t *al, size_t off, size_t n, al_label_t *label,
+       size_t *<offp>, size_t *<spanp>);
+           off and n are byte counts that define a span of bytes within the
+           assembly line al. This span is searched for data tagged with the
+           label.  The absolute byte offset of the first byte matching the
+           label and the length of the span of the same label is returned in
+           offp and spanp respectively.
+
+       Chunk Operations
+
+       size_t al_chunk_len(al_chunk_t *alc);
+           Returns the number of bytes in a chunk.
+
+       size_t al_chunk_span(al_chunk_t *alc, size_t off, size_t n);
+           off and n are byte counts that define a span of bytes.
+           al_chunk_span returns the number of bytes that are stored in the
+           chunk.  off must be a valid offset, n must be positive but may
+           exceed the size of the chunk.
+
+       al_label_t al_chunk_label(al_chunk_t *alc);
+           Return the label that was used to tag the data in alc. This can be
+           NULL.
+
+       int al_same_label(al_chunk_t *alc, al_label_t *label);
+           Return true if label matches the label that was used to tag the
+           data in alc. A NULL label matches everything.
+
+       char *al_chunk_ptr(al_chunk_t *alc, size_t off);
+           Returns the pointer to the byte at offset off within the chunk alc.
+           off must be positive and must not exceed the size of the chunk.
+           Since all bytes of the chunk are guaranteed to be stored in a flat
+           array the pointer can be used to reference every byte within the
+           chunk.
+
+           Example:
+
+            al_chunk_t *alc;
+            char *start, *end;
+
+            start = al_chunk_ptr(alc, 0);
+            end   = start + al_chunk_len(alc) - 1;
+
+       Error Handling
+
+       const char *al_error(al_rc_t rv);
+           Retrieve a string that describes the return code rv in english.
+
+SEE ALSO
+HISTORY
+       OSSP al was invented in October 2002 by Michael van Elst
+       <mlelstv@serpens.de> under contract with Cable & Wireless Germany
+       <http://www.cw.com/de> for use inside the OSSP project
+       <http://www.ossp.org/>.
+
+AUTHORS
+        Michael van Elst
+        mlelstv@serpens.de
+
+03-Oct-2005                      OSSP al 0.9.2                           al(3)

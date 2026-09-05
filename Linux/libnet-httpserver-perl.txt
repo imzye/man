@@ -1,0 +1,331 @@
+Net::HTTPServer(3pm)                                         User Contributed Perl Documentation                                         Net::HTTPServer(3pm)
+
+NAME
+       Net::HTTPServer - HTTP server
+
+SYNOPSIS
+       Net::HTTPServer provides a lite HTTP server.  It can serve files, or can be configured to call Perl functions when a URL is accessed.
+
+DESCRIPTION
+       Net::HTTPServer basically turns a CGI script into a stand alone server.  Useful for temporary services, mobile/local servers, or embedding an HTTP
+       server into another program.
+
+EXAMPLES
+           use Net::HTTPServer;
+
+           my $server = new Net::HTTPServer(port=>5000,
+                                            docroot=>"/var/www/site");
+
+           $server->Start();
+
+           $server->Process();  # Run forever
+
+           ...or...
+
+           while(1)
+           {
+               $server->Process(5);  # Run for 5 seconds
+               # Do something else...
+           }
+
+           $server->Stop();
+
+METHODS
+   new(%cfg)
+       Given a config hash, return a server object that you can start, process, and stop.  The config hash takes the options:
+
+           chroot => 0|1       - Run the server behind a virtual chroot().
+                                 Since only root can actually call chroot,
+                                 a URL munger is provided that will not
+                                 allow URLs to go beyond the document root
+                                 if this is specified.
+                                 ( Default: 1 )
+
+           datadir => string   - Path on the filesystem where you want to
+                                 store the server side session files.
+                                 ( Deault: "/tmp/nethttpserver.sessions" )
+
+           docroot => string   - Path on the filesystem that you want to be
+                                 the document root "/" for the server.  If
+                                 set to undef, then the server will not serve
+                                 any files off the local filesystem, but will
+                                 still serve callbacks.
+                                 ( Default: undef )
+
+           index => list       - Specify a list of file names to use as the
+                                 the index file when a directory is requested.
+                                 ( Default: ["index.html","index.htm"] )
+
+           log => string       - Path to store the log at.  If you set this to
+                                 "STDOUT" then it will display to STDOUT.
+                                 ( Default: access.log )
+
+           mimetypes => string - Path to an alternate mime.types file.
+                                 ( Default: included in release )
+
+           numproc => int      - When type is set to "forking", this tells the
+                                 server how many child processes to keep
+                                 running at all times.
+                                 ( Default: 5 )
+
+           oldrequests => 0|1  - With the new request objects, old programs
+                                 will not work.  To postpone updating your
+                                 code, just set this to 1 and your programs
+                                 should work again.
+                                 ( Default: 0 )
+
+           port => int         - Port number to use.  You can optionally
+                                 specify the string "scan", and the server
+                                 will loop through ports until it finds one
+                                 it can listen on.  This port is then returned
+                                 by the Start() method.
+                                 ( Default: 9000 )
+
+           sessions => 0|1     - Enable/disable server side session support.
+                                 ( Default: 0 )
+
+           ssl => 0|1          - Run a secure server using SSL.  You must
+                                 specify ssl_key, ssl_cert, and ssl_ca if
+                                 set this to 1.
+                                 ( Default: 0 )
+
+           ssl_ca => string    - Path to the SSL ca file.
+                                 ( Default: undef )
+
+           ssl_cert => string  - Path to the SSL cert file.
+                                 ( Default: undef )
+
+           ssl_key => string   - Path to the SSL key file.
+                                 ( Default: undef )
+
+           type => string      - What kind of server to create?  Available
+                                 types are:
+                                   single  - single process/no forking
+                                   forking - preforking server
+                                 (Default: "single")
+
+   AddServerTokens(token,[token,...])
+       Adds one or more tokens onto the Server header line that the server sends back in a response.  The list is separated by a ; to distinguish the various
+       tokens from each other.
+
+         $server->AddServerTokens("test/1.3");
+
+       This would result in the following header being sent in a response:
+
+       HTTP/1.1 200 Server: Net::HTTPServer/0.9 test/1.3 Content-Type: text/html ...
+
+   Process(timeout)
+       Listens for incoming requests and responds back to them.  This function will block, unless a timeout is specified, then it will block for that number
+       of seconds before returning.  Useful for embedding this into other programs and still letting the other program get some CPU time.
+
+   RegisterAuth(method,url,realm,function)
+       Protect the URL using the Authentication method provided.  The supported methods are: "Basic" and "Digest".
+
+       When a URL with a path component that matchs the specified URL is requested the server requests that the client perform the specified of
+       authentication for the given realm.  When the URL is accessed the second time, the client provides the authentication pieces and the server parses the
+       pieces and using the return value from the specified function answers the request.  The function is called with the username and the URL they are
+       trying to access.  It is required that the function return a two item list with a return code and the users's password.
+
+       The valid return codes are:
+
+         200   The user exists and is allowed to access
+               this URL.  Return the password.
+               return( "200", password )
+
+         401   The user does not exist.  Obviously you
+               do not have to return a password in this
+               case.
+               return( "401" )
+
+         403   The user is forbidden to access this URL.
+               (You must still return the password because
+               if the user did not auth, then we do not want
+               to tip off the bad people that this username
+               is valid.)
+               return( "403", password )
+
+       The reasoning for having the function return the password is that Digest authentication is just complicated enough that asking you to write part of
+       logic would be considered rude.  By just having you give the server the password we can keep the whole Auth interface simple.
+
+       Here is an example:
+
+         $server->RegisterAuth("Basic","/foo/bar.pl","Secure",\&testBasic);
+
+         sub testBasic
+         {
+             my $url = shift;
+             my $user = shift;
+
+             my $password = &lookupPassword($user);
+
+             return("401","") unless defined($password);
+
+             if (($url eq "/foo/bar.pl") && ($user eq "dr_evil"))
+             {
+                 return ("403",$password);
+             }
+
+             return ("200",$password);
+         }
+
+         sub lookupPassword
+         {
+             my $user = shift;
+
+             my %passwd;
+             $passwd{larry}   = "wall";
+             $passwd{dr_evil} = "1million";
+
+             return unless exists($passwd{$user});
+             return $passwd{$user};
+         }
+
+       Start a server with that, and the following RegisterURL example, and point your browser to:
+
+         http://localhost:9000/foo/bar.pl?test=bing&test2=bong
+
+       You should be prompted for a userid and password, entering "larry" and "wall"  will allow you to see the page.  Entering "dr_evil" and "1million"
+       should result in getting a Forbidden page (and likely needing to restart your browser).  Entering any other userid or password should result in you
+       being asked again.
+
+       If you have a handler for both RegisterURL and RegisterAuth, then your function for RegisterURL can find the identify of the user in the
+       "$env->{'REMOTE_USER'}" hash entry. This is similar to CGI scripts.
+
+       You can have multiple handlers for different URLs. If you do this, then the longest complete URL handler will be called. For example, if you have
+       handlers for "/foo/bar.pl" and "/foo", and a URL of "/foo/bar.pl" is called, then the handler "/foo/bar.pl" is called to authorize this request, but
+       if a URL of "/foo/bar.html" is called, then the handler "/foo" is called.
+
+       Only complete directories are matched, so if you had a handler for "/foo/bar", then it would not be called for either /foo/bar.pl or "/foo/bar.html".
+
+   RegisterRegex(regex,function)
+       Register the function with the provided regular expression.  When a URL that matches that regular expression is requested, the function is called and
+       passed the environment (GET+POST) so that it can do something meaningfiul with them.  For more information on how the function is called and should be
+       used see the section on RegisterURL below.
+
+         $server->RegisterRegex(".*.news$",\&news);
+
+       This will match any URL that ends in ".news" and call the &news function.  The URL that the user request can be retrieved via the Request object
+       ($reg->Path()).
+
+   RegisterRegex(hash ref)
+       Instead of calling RegisterRegex a bunch of times, you can just pass it a hash ref containing Regex/callback pairs.
+
+         $server->RegisterRegex({
+                                  ".*.news$" => \&news,
+                                  ".*.foo$" => \&foo,
+                                });
+
+   RegisterURL(url,function)
+       Register the function with the provided URL.  When that URL is requested, the function is called and passed in the environment (GET+POST) so that it
+       can do something meaningful with them.  A simple handler looks like:
+
+         $server->RegisterURL("/foo/bar.pl",\&test);
+
+         sub test
+         {
+             my $req = shift;             # Net::HTTPServer::Request object
+             my $res = $req->Response();  # Net::HTTPServer::Response object
+
+             $res->Print("<html>\n");
+             $res->Print("  <head>\n");
+             $res->Print("    <title>This is a test</title>\n");
+             $res->Print("  </head>\n");
+             $res->Print("  <body>\n");
+             $res->Print("    <pre>\n");
+
+             foreach my $var (keys(%{$req->Env()}))
+             {
+                 $res->Print("$var -> ".$req->Env($var)."\n");
+             }
+
+             $res->Print("    </pre>\n");
+             $res->Print("  </body>\n");
+             $res->Print("</html>\n");
+
+             return $res;
+         }
+
+       Start a server with that and point your browser to:
+
+         http://localhost:9000/foo/bar.pl?test=bing&test2=bong
+
+       You should see a page titled "This is a test" with this body:
+
+         test -> bing
+         test2 -> bong
+
+   RegisterURL(hash ref)
+       Instead of calling RegisterURL a bunch of times, you can just pass it a hash ref containing URL/callback pairs.
+
+         $server->RegisterURL({
+                                "/foo/bar.pl" => \&test1,
+                                "/foo/baz.pl" => \&test2,
+                              });
+
+       See RegisterURL() above for more information on how callbacks work.
+
+   Start()
+       Starts the server based on the config options passed to new().  Returns the port number the server is listening on, or undef if the server was unable
+       to start.
+
+   Stop()
+       Shuts down the socket connection and cleans up after itself.
+
+SESSIONS
+       Net::HTTPServer provides support for server-side sessions much like PHP's session model.  A handler that you register can ask that the request object
+       start a new session.  It will check a cookie value to see if an existing session exists, if not it will create a new one with a unique key.
+
+       You can store any arbitrary Perl data structures in the session.  The next time the user accesses your handler, you can restore those values and have
+       them available again.  When you are done, simple destroy the session.
+
+HEADERS
+       Net::HTTPServer sets a few headers automatically.  Due to the timing of events, you cannot get to those headers programatically, so we will discuss
+       them general.
+
+       Obviously for file serving, errors, and authentication it sends back all of the appropriate headers.  You likely do not need to worry about those
+       cases.  In RegisterURL mode though, here are the headers that are added:
+
+          Accept-Ranges: none                    (not supported)
+          Allow: GET, HEAD, POST, TRACE
+          Content-Length: <length of response>
+          Connection: close                      (not supported)
+          Content-Type: text/html                (unless you set it)
+          Date: <current time>
+          Server: <version of Net::HTTPServer
+                   plus what you add using the
+                   AddServerTokens method>
+
+       If you have any other questions about what is being sent, try using DEBUG (later section).
+
+DEBUG
+       When you are writing your application you might see behavior that is unexpected.  I've found it useful to check some debugging statements that I have
+       in the module to see what it is doing.  If you want to turn debugging on simply provide the debug => [ zones ] option when creating the server.  You
+       can optionally specify a file to write the log into instead of STDOUT by specifying the debuglog => file option.
+
+       I've coded the modules debugging using the concept of zones.  Each zone (or task) has it's own debug messages and you can enable/disable them as you
+       want to.  Here are the list of available zones:
+
+         INIT - Initializing the sever
+         PROC - Processing a request
+         REQ  - Parsing requests
+         RESP - Returning the response (file contents are not printed)
+         AUTH - Handling and authentication request
+         FILE - Handling a file system request.
+         READ - Low-level read
+         SEND - Low-level send (even prints binary characters)
+         ALL  - Turn all of the above on.
+
+       So as an example:
+
+         my $server = new Net::HTTPServer(..., debug=>["REQ","RESP"],...);
+
+       That would show all requests and responses.
+
+AUTHOR
+       Ryan Eatmon
+
+COPYRIGHT
+       Copyright (c) 2003-2005 Ryan Eatmon <reatmon@mail.com>. All rights reserved.  This program is free software; you can redistribute it and/or modify it
+       under the same terms as Perl itself.
+
+perl v5.36.0                                                              2022-12-06                                                     Net::HTTPServer(3pm)

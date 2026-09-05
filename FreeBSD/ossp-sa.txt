@@ -1,0 +1,740 @@
+sa(3)                         Socket Abstraction                         sa(3)
+
+
+NAME
+       OSSP sa - Socket Abstraction
+
+VERSION
+       OSSP sa 1.2.5 (02-Oct-2005)
+
+SYNOPSIS
+       Abstract Data Types:
+           sa_rc_t, sa_addr_t, sa_t.
+
+       Address Object Operations:
+           sa_addr_create, sa_addr_destroy.
+
+       Address Operations:
+           sa_addr_u2a, sa_addr_s2a, sa_addr_a2u, sa_addr_a2s, sa_addr_match.
+
+       Socket Object Operations:
+           sa_create, sa_destroy.
+
+       Socket Parameter Operations:
+           sa_type, sa_timeout, sa_buffer, sa_option, sa_syscall.
+
+       Socket Connection Operations:
+           sa_bind, sa_connect, sa_listen, sa_accept, sa_getremote,
+           sa_getlocal, sa_shutdown.
+
+       Socket Input/Output Operations (Stream Communication):
+           sa_getfd, sa_read, sa_readln, sa_write, sa_writef, sa_flush.
+
+       Socket Input/Output Operations (Datagram Communication):
+           sa_recv, sa_send, sa_sendf.
+
+       Socket Error Handling:
+           sa_error.
+
+DESCRIPTION
+       OSSP sa is an abstraction library for the Unix Socket networking
+       application programming interface (API), featuring stream and datagram
+       oriented communication over Unix Domain and Internet Domain (TCP and
+       UDP) sockets.
+
+       It provides the following key features:
+
+       Stand-Alone, Self-Contained, Embeddable
+           Although there are various Open Source libraries available which
+           provide a similar abstraction approach, they all either lack
+           important features or unfortunately depend on other companion
+           libraries. OSSP sa fills this gap by providing all important
+           features (see following points) as a stand-alone and fully self-
+           contained library. This way OSSP sa can be trivially embedded as a
+           sub-library into other libraries. It especially provides additional
+           support for namespace-safe embedding of its API in order to avoid
+           symbol conflicts (see SA_PREFIX in sa.h).
+
+       Address Abstraction
+           Most of the ugliness in the Unix Socket API is the necessity to
+           have to deal with the various address structures (struct
+           sockaddr_xx) which exist because of both the different
+           communication types and addressing schemes. OSSP sa fully hides
+           this by providing an abstract and opaque address type (sa_addr_t)
+           together with utility functions which allow one to convert from the
+           traditional struct sockaddr or URI specification to the sa_addr_t
+           and vice versa without having to deal with special cases related to
+           the underlying particular struct sockaddr_xx. OSSP sa support Unix
+           Domain and both IPv4 and IPv6 Internet Domain addressing.
+
+       Type Abstraction
+           Some other subtle details in the Unix Socket API make the life hard
+           in practice: socklen_t and ssize_t. These two types originally were
+           (and on some platforms still are) plain integers or unsigned
+           integers while POSIX later introduced own types for them (and even
+           revised these types after some time again). This is nasty, because
+           for 100% type-correct API usage (especially important on 64-bit
+           machines where pointers to different integer types make trouble),
+           every application has to check whether the newer types exists, and
+           if not provide own definitions which map to the still actually used
+           integer type on the underlying platform. OSSP sa hides most of this
+           in its API and for socklen_t provides a backward-compatibility
+           definition.  Instead of ssize_t it can use size_t because OSSP sa
+           does not use traditional Unix return code semantics.
+
+       I/O Timeouts
+           Each I/O function in OSSP sa is aware of timeouts (set by
+           sa_timeout(3)), i.e., all I/O operations return SA_ERR_TMT if the
+           timeout expired before the I/O operation was able to succeed.  This
+           allows one to easily program less-blocking network services.  OSSP
+           sa internally implements these timeouts either through the
+           SO_{SND,RCV}TIMEO feature on more modern Socket implementations or
+           through traditional select(2). This way high performance is
+           achieved on modern platforms while the full functionality still is
+           available on older platforms.
+
+       I/O Stream Buffering
+           If OSSP sa is used for stream communication, internally all I/O
+           operations can be performed through input and/or output buffers
+           (set by sa_buffer(3)) for achieving higher I/O performance by doing
+           I/O operations on larger aggregated messages and with less required
+           system calls. Additionally if OSSP sa is used for stream
+           communication, for convenience reasons line-oriented reading
+           (sa_readln(3)) and formatted writing (see sa_writef(3)) is
+           provided, modelled after STDIO's fgets(3) and fprintf(3). Both
+           features fully leverage from the I/O buffering.
+
+DATA TYPES
+       OSSP sa uses three data types in its API:
+
+       sa_rc_t (Return Code Type)
+           This is an exported enumerated integer type with the following
+           possible values:
+
+            SA_OK       Everything Ok
+            SA_ERR_ARG  Invalid Argument
+            SA_ERR_USE  Invalid Use Or Context
+            SA_ERR_MEM  Not Enough Memory
+            SA_ERR_MTC  Matching Failed
+            SA_ERR_EOF  End Of Communication
+            SA_ERR_TMT  Communication Timeout
+            SA_ERR_SYS  Operating System Error (see errno)
+            SA_ERR_IMP  Implementation Not Available
+            SA_ERR_INT  Internal Error
+
+       sa_addr_t (Socket Address Abstraction Type)
+           This is an opaque data type representing a socket address.  Only
+           pointers to this abstract data type are used in the API.
+
+       sa_t (Socket Abstraction Type)
+           This is an opaque data type representing a socket.  Only pointers
+           to this abstract data type are used in the API.
+
+FUNCTIONS
+       OSSP sa provides a bunch of API functions, all modelled after the same
+       prototype:
+
+       sa_rc_t sa_name(sa_[addr_]_t *, ...)
+
+       This means, every function returns sa_rc_t to indicate its success
+       (SA_OK) or failure (SA_ERR_XXX) by returning a return code (the
+       corresponding describing text can be determined by passing this return
+       code to sa_error(3)). Each function name starts with the common prefix
+       sa_ and receives a sa_t (or sa_addr_t) object handle on which it
+       operates as its first argument.
+
+       Address Object Operations
+
+       This API part provides operations for the creation and destruction of
+       address abstraction sa_addr_t.
+
+       sa_rc_t sa_addr_create(sa_addr_t **saa);
+           Create a socket address abstraction object.  The object is stored
+           in saa on success.
+
+           Example: sa_addr_t *saa; sa_addr_create(&saa);
+
+       sa_rc_t sa_addr_destroy(sa_addr_t *saa);
+           Destroy a socket address abstraction object.  The object saa is
+           invalid after this call succeeded.
+
+           Example: sa_addr_destroy(saa);
+
+       Address Operations
+
+       This API part provides operations for working with the address
+       abstraction sa_addr_t.
+
+       sa_rc_t sa_addr_u2a(sa_addr_t *saa, const char *uri, ...);
+           Import an address into by converting from an URI specification to
+           the corresponding address abstraction.
+
+           The supported syntax for uri is: "unix:path" for Unix Domain
+           addresses and "inet://addr:port[#protocol]" for Internet Domain
+           addresses.
+
+           In the URI, path can be an absolute or relative filesystem path to
+           an existing or not-existing file. addr can be an IPv4 address in
+           dotted decimal notation ("127.0.0.1"), an IPv6 address in colon-
+           separated (optionally abbreviated) hexadecimal notation ("::1") or
+           a to-be-resolved hostname ("localhost.example.com"). port has to be
+           either a decimal port in the range 1...65535 or a port name
+           ("smtp"). If port is specified as a name, it is resolved as a TCP
+           port by default. To force resolving a port name via a particular
+           protocol, protocol can be specified as either "tcp" or "udp".
+
+           The result is stored in saa on success.
+
+           Example: sa_addr_u2a(saa, "inet://192.168.0.1:smtp");
+
+       sa_rc_t sa_addr_s2a(sa_addr_t *saa, const struct sockaddr *sabuf,
+       socklen_t salen);
+           Import an address by converting from a traditional struct sockaddr
+           object to the corresponding address abstraction.
+
+           The accepted addresses for sabuf are: struct sockaddr_un
+           (AF_LOCAL), struct sockaddr_in (AF_INET) and struct sockaddr_in6
+           (AF_INET6). The salen is the corresponding sizeof(...) of the
+           particular underyling structure.
+
+           The result is stored in saa on success.
+
+           Example: sockaddr_in in; sa_addr_s2a(saa, (struct sockaddr *)&in,
+           (socklen_t)sizeof(in));
+
+       sa_rc_t sa_addr_a2u(sa_addr_t *saa, char **uri);
+           Export an address by converting from the address abstraction to the
+           corresponding URI specification.
+
+           The result is a string of the form "unix:path" for Unix Domain
+           addresses and "inet://addr:port" for Internet Domain addresses.
+           Notice that addr and port are returned in numerical (unresolved)
+           way. Additionally, because usually one cannot map bidirectionally
+           between TCP or UDP port names and the numerical value, there is no
+           distinction between TCP and UDP here.
+
+           The result is stored in uri on success.  The caller has to free(3)
+           the uri buffer later.
+
+           Example: char *uri; sa_addr_a2u(saa, &uri);
+
+       sa_rc_t sa_addr_a2s(sa_addr_t *saa, struct sockaddr **sabuf, socklen_t
+       *salen);
+           Export an address by converting from the address abstraction to the
+           corresponding traditional struct sockaddr object.
+
+           The result is one of the following particular underlying address
+           structures: struct sockaddr_un (AF_LOCAL), struct sockaddr_in
+           (AF_INET) and struct sockaddr_in6 (AF_INET6).
+
+           The result is stored in sabuf and salen on success.  The caller has
+           to free(3) the sabuf buffer later.
+
+           Example: struct sockaddr sabuf, socklen_t salen; sa_addr_a2s(saa,
+           &sa, &salen);
+
+       sa_rc_t sa_addr_match(sa_addr_t *saa1, sa_addr_t *saa2, size_t
+       prefixlen);
+           Match two address abstractions up to a specified prefix.
+
+           This compares the addresses saa1 and saa2 by only taking the prefix
+           part of length prefixlen into account. prefixlen is number of
+           filesystem path characters for Unix Domain addresses and number of
+           bits for Internet Domain addresses. In case of Internet Domain
+           addresses, the addresses are matched in network byte order and the
+           port (counting as an additional bit/item of length 1) is virtually
+           appended to the address for matching. Specifying prefixlen as -1
+           means matching the whole address (but without the virtually
+           appended port) without having to know how long the underlying
+           address representation (length of path for Unix Domain addresses,
+           32+1 [IPv4] or 128+1 [IPv6] for Internet Domain addresses) is.
+           Specifying prefixlen as -2 is equal to -1 but additionally the port
+           is matched, too.
+
+           This especially can be used to implement Access Control Lists (ACL)
+           without having to fiddle around with the underlying representation.
+           For this, make saa1 the to be checked address and saa2 plus
+           prefixlen the ACL pattern as shown in the following example.
+
+           Example:
+
+            sa_addr_t *srv_sa;
+            sa_addr_t *clt_saa;
+            sa_t      *clt_sa;
+            sa_addr_t *acl_saa;
+            char      *acl_addr = "192.168.0.0";
+            int        acl_len  = 24;
+            ...
+            sa_addr_u2a(&acl_saa, "inet://%s:0", acl_addr);
+            ...
+            while (sa_accept(srv_sa, &clt_saa, &clt_sa) == SA_OK) {
+                if (sa_addr_match(clt_saa, acl_saa, acl_len) != SA_OK) {
+                    /* connection refused */
+                    ...
+                    sa_addr_destroy(clt_saa);
+                    sa_destroy(clt_sa);
+                    continue;
+                }
+                ...
+            }
+            ...
+
+       Socket Object Operations
+
+       This API part provides operations for the creation and destruction of
+       socket abstraction sa_t.
+
+       sa_rc_t sa_create(sa_t **sa);
+           Create a socket abstraction object.  The object is stored in sa on
+           success.
+
+           Example: sa_t *sa; sa_create(&sa);
+
+       sa_rc_t sa_destroy(sa_t *sa);
+           Destroy a socket abstraction object.  The object sa is invalid
+           after this call succeeded.
+
+           Example: sa_destroy(sa);
+
+       Socket Parameter Operations
+
+       This API part provides operations for parameterizing the socket
+       abstraction sa_t.
+
+       sa_rc_t sa_type(sa_t *sa, sa_type_t type);
+           Assign a particular communication protocol type to the socket
+           abstraction object.
+
+           A socket can only be assigned a single protocol type at any time.
+           Nevertheless one can switch the type of a socket abstraction object
+           at any time in order to reuse it for a different communication.
+           Just keep in mind that switching the type will stop a still ongoing
+           communication by closing the underlying socket.
+
+           Possible values for type are SA_TYPE_STREAM (stream communication)
+           and SA_TYPE_DATAGRAM (datagram communication). The default
+           communication protocol type is SA_TYPE_STREAM.
+
+           Example: sa_type(sa, SA_TYPE_STREAM);
+
+       sa_rc_t sa_timeout(sa_t *sa, sa_timeout_t id, long sec, long usec);
+           Assign one or more communication timeouts to the socket abstraction
+           object.
+
+           Possible values for id are: SA_TIMEOUT_ACCEPT (affecting
+           sa_accept(3)), SA_TIMEOUT_CONNECT (affecting sa_connect(3)),
+           SA_TIMEOUT_READ (affecting sa_read(3), sa_readln(3) and sa_recv(3))
+           and SA_TIMEOUT_WRITE (affecting sa_write(3), sa_writef(3),
+           sa_send(3), and sa_sendf(3)). Additionally you can set all four
+           timeouts at once by using SA_TIMEOUT_ALL. The default is that no
+           communication timeouts are used which is equal to sec=0/usec=0.
+
+           Example: sa_timeout(sa, SA_TIMEOUT_ALL, 30, 0);
+
+       sa_rc_t sa_buffer(sa_t *sa, sa_buffer_t id, size_t size);
+           Assign I/O communication buffers to the socket abstraction object.
+
+           Possible values for id are: SA_BUFFER_READ (affecting sa_read(3)
+           and sa_readln(3)) and SA_BUFFER_WRITE (affecting sa_write(3) and
+           sa_writef(3)). The default is that no communication buffers are
+           used which is equal to size=0.
+
+           Example: sa_buffer(sa, SA_BUFFER_READ, 16384);
+
+       sa_rc_t sa_option(sa_t *sa, sa_option_t id, ...);
+           Adjust various options of the socket abstraction object.
+
+           The adjusted option is controlled by id. The number and type of the
+           expected following argument(s) are dependent on the particular
+           option.  Currently the following options are implemented (option
+           arguments in parenthesis):
+
+           SA_OPTION_NAGLE (int yesno) for enabling (yesno=1) or disabling
+           (yesno == 0) Nagle's Algorithm (see RFC898 and TCP_NODELAY of
+           setsockopt(2)).
+
+           SA_OPTION_LINGER (int amount) for enabling (amount == seconds != 0)
+           or disabling (amount == 0) lingering on close (see SO_LINGER of
+           setsockopt(2)). Notice: using seconds > 0 results in a regular
+           (maximum of seconds lasting) lingering on close while using seconds
+           < 0 results in the special case of a TCP RST based connection
+           termination on close.
+
+           SA_OPTION_REUSEADDR (int yesno) for enabling (yesno == 1) or
+           disabling (yesno == 0) the reusability of the address on binding
+           via sa_bind(3) (see SO_REUSEADDR of setsockopt(2)).
+
+           SA_OPTION_REUSEPORT (int yesno) for enabling (yesno == 1) or
+           disabling (yesno == 0) the reusability of the port on binding via
+           sa_bind(3) (see SO_REUSEPORT of setsockopt(2)).
+
+           SA_OPTION_NONBLOCK (int yesno) for enabling (yesno == 1) or
+           disabling (yesno == 0) non-blocking I/O mode (see O_NONBLOCK of
+           fcntl(2)).
+
+           Example: sa_option(sa, SA_OPTION_NONBLOCK, 1);
+
+       sa_rc_t sa_syscall(sa_t *sa, sa_syscall_t id, void (*fptr)(), void
+       *fctx);
+           Divert I/O communication related system calls to user supplied
+           callback functions.
+
+           This allows you to override mostly all I/O related system calls
+           OSSP sa internally performs while communicating. This can be used
+           to adapt OSSP sa to different run-time environments and
+           requirements without having to change the source code. Usually this
+           is used to divert the system calls to the variants of a user-land
+           multithreading facility like GNU Pth.
+
+           The function supplied as fptr is required to fulfill the API of the
+           replaced system call, i.e., it has to have the same prototype (if
+           fctx is NULL). If fctx is not NULL, this prototype has to be
+           extended to accept an additional first argument of type void *
+           which receives the value of fctx. It is up to the callback function
+           whether to pass the call through to the replaced actual system call
+           or not.
+
+           Possible values for id are (expected prototypes behind fptr are
+           given in parenthesis):
+
+           SA_SYSCALL_CONNECT: "int (*)([void *,] int, const struct sockaddr
+           *, socklen_t)", see connect(2).
+
+           SA_SYSCALL_ACCEPT: "int (*)([void *,] int, struct sockaddr *,
+           socklen_t *)", see accept(2).
+
+           SA_SYSCALL_SELECT: "int (*)([void *,] int, fd_set *, fd_set *,
+           fd_set *, struct timeval *)", see select(2).
+
+           SA_SYSCALL_READ: "ssize_t (*)([void *,] int, void *, size_t)", see
+           read(2).
+
+           SA_SYSCALL_WRITE: "ssize_t (*)([void *,] int, const void *,
+           size_t)", see write(2).
+
+           SA_SYSCALL_RECVFROM: "ssize_t (*)([void *,] int, void *, size_t,
+           int, struct sockaddr *, socklen_t *)", see recvfrom(2).
+
+           SA_SYSCALL_SENDTO: "ssize_t (*)([void *,] int, const void *,
+           size_t, int, const struct sockaddr *, socklen_t)", see sendto(2).
+
+           Example:
+
+            ssize_t
+            trace_read(void *ctx, int fd, void *buf, size_t len)
+            {
+                FILE *fp = (FILE *)ctx;
+                ssize_t rv;
+                int errno_saved;
+
+                rv = read(fd, buf, len);
+                errno_saved = errno;
+                fprintf(fp, "read(%d, %lx, %d) = %d\n",
+                        fd, (long)buf, len, rv);
+                errno = errno_saved;
+                return rv;
+            }
+
+            ...
+            FILE *trace_fp = ...;
+            sa_syscall(sa, SA_SC_READ, trace_read, trace_fp);
+            ...
+
+       Socket Connection Operations
+
+       This API part provides connection operations for stream-oriented data
+       communication through the socket abstraction sa_t.
+
+       sa_rc_t sa_bind(sa_t *sa, sa_addr_t *laddr);
+           Bind socket abstraction object to a local protocol address.
+
+           This assigns the local protocol address laddr. When a socket is
+           created, it exists in an address family space but has no protocol
+           address assigned. This call requests that laddr be used as the
+           local address. For servers this is the address they later listen on
+           (see sa_listen(3)) for incoming connections, for clients this is
+           the address used for outgoing connections (see sa_connect(3)).
+           Internally this directly maps to bind(2).
+
+           Example: sa_bind(sa, laddr);
+
+       sa_rc_t sa_connect(sa_t *sa, sa_addr_t *raddr);
+           Initiate an outgoing connection on a socket abstraction object.
+
+           This performs a connect to the remote address raddr. If the socket
+           is of type SA_TYPE_DATAGRAM, this call specifies the peer with
+           which the socket is to be associated; this address is that to which
+           datagrams are to be sent, and the only address from which datagrams
+           are to be received. If the socket is of type SA_TYPE_STREAM, this
+           call attempts to make a connection to the remote socket. Internally
+           this directly maps to connect(2).
+
+           Example: sa_connect(sa, raddr);
+
+       sa_rc_t sa_listen(sa_t *sa, int backlog);
+           Listen for incoming connections on a socket abstraction object.
+
+           A willingness to accept incoming connections and a queue limit for
+           incoming connections are specified by this call. The backlog
+           argument defines the maximum length the queue of pending
+           connections may grow to.  Internally this directly maps to
+           listen(2).
+
+           Example: sa_listen(sa, 128);
+
+       sa_rc_t sa_accept(sa_t *sa, sa_addr_t **caddr, sa_t **csa);
+           Accept incoming connection on a socket abstraction object.
+
+           This accepts an incoming connection by extracting the first
+           connection request on the queue of pending connections. It creates
+           a new socket abstraction object (returned in csa) and a new socket
+           address abstraction object (returned in caddr) describing the
+           connection. The caller has to destroy these objects later. If no
+           pending connections are present on the queue, it blocks the caller
+           until a connection is present.
+
+           Example:
+
+            sa_addr_t *clt_saa;
+            sa_t      *clt_sa;
+            ...
+            while (sa_accept(srv_sa, &clt_saa, &clt_sa) == SA_OK) {
+                ...
+            }
+
+       sa_rc_t sa_getremote(sa_t *sa, sa_addr_t **raddr);
+           Get address abstraction of remote side of communication.
+
+           This determines the address of the communication peer and creates a
+           new socket address abstraction object (returned in raddr)
+           describing the peer address. The application has to destroy raddr
+           later with sa_addr_destroy(3). Internally this maps to
+           getpeername(2).
+
+           Example: sa_addr_t *raddr; sa_getremote(sa, &raddr);
+
+       sa_rc_t sa_getlocal(sa_t *sa, sa_addr_t **laddr);
+           Get address abstraction of local side of communication.
+
+           This determines the address of the local communication side and
+           creates a new socket address abstraction object (returned in laddr)
+           describing the local address. The application has to destroy laddr
+           later with sa_addr_destroy(3). Internally this maps to
+           getsockname(2).
+
+           Example: sa_addr_t *laddr; sa_getlocal(sa, &laddr);
+
+       sa_rc_t sa_shutdown(sa_t *sa, char *flags);
+           Shut down part of the full-duplex connection.
+
+           This performs a shut down of the connection described in sa. The
+           flags string can be either "r" (indicating the read channel of the
+           communication is shut down only), "w" (indicating the write channel
+           of the communication is shut down only), or "rw" (indicating both
+           the read and write channels of the communication are shut down).
+           Internally this directly maps to shutdown(2).
+
+           Example: sa_shutdown(sa, "w");
+
+       Socket Input/Output Operations (Stream Communication)
+
+       This API part provides I/O operations for stream-oriented data
+       communication through the socket abstraction sa_t.
+
+       sa_rc_t sa_getfd(sa_t *sa, int *fd);
+           Get underlying socket filedescriptor.
+
+           This peeks into the underlying socket filedescriptor OSSP sa
+           allocated internally for the communication. This can be used for
+           adjusting the socket communication (via fcntl(2), setsockopt(2),
+           etc) directly.
+
+           Think twice before using this, then think once more. After all
+           that, think again. With enough thought, the need for directly
+           manipulating the underlying socket can often be eliminated. At
+           least remember that all your direct socket operations fully by-pass
+           OSSP sa and this way can leads to nasty side-effects.
+
+           Example: int fd; sa_getfd(sa, &fd);
+
+       sa_rc_t sa_read(sa_t *sa, char *buf, size_t buflen, size_t *bufdone);
+           Read a chunk of data from socket into own buffer.
+
+           This reads from the socket (optionally through the internal read
+           buffer) up to a maximum of buflen bytes into buffer buf. The actual
+           number of read bytes is stored in bufdone. This internally maps to
+           read(2).
+
+           Example: char buf[1024]; size_t n; sa_read(sa, buf, sizeof(buf),
+           &n);
+
+       sa_rc_t sa_readln(sa_t *sa, char *buf, size_t buflen, size_t *bufdone);
+           Read a line of data from socket into own buffer.
+
+           This reads from the socket (optionally through the internal read
+           buffer) up to a maximum of buflen bytes into buffer buf, but only
+           as long as no line terminating newline character (0x0a) was found.
+           The line terminating newline character is stored in the buffer plus
+           a (not counted) terminating NUL character ('\0'), too. The actual
+           number of read bytes is stored in bufdone. This internally maps to
+           sa_read(3).
+
+           Keep in mind that for efficiency reasons, line-oriented I/O usually
+           always should be performed with read buffer (see sa_option(3) and
+           SA_BUFFER_READ). Without such a read buffer, the performance is
+           cruel, because single character read(2) operations would be
+           performed on the underlying socket.
+
+           Example: char buf[1024]; size_t n; sa_readln(sa, buf, sizeof(buf),
+           &n);
+
+       sa_rc_t sa_write(sa_t *sa, const char *buf, size_t buflen, size_t
+       *bufdone);
+           Write a chunk of data to socket from own buffer.
+
+           This writes to the socket (optionally through the internal write
+           buffer) buflen bytes from buffer buf. In case of a partial write,
+           the actual number of written bytes is stored in bufdone. This
+           internally maps to write(2).
+
+           Example: sa_write(sa, cp, strlen(cp), NULL);
+
+       sa_rc_t sa_writef(sa_t *sa, const char *fmt, ...);
+           Write formatted data data to socket.
+
+           This formats a string according to the printf(3)-style format
+           specification fmt and sends the result to the socket (optionally
+           through the internal write buffer). In case of a partial socket
+           write, the not written data of the formatted string is internally
+           discarded. Hence using a write buffer is strongly recommended here
+           (see sa_option(3) and SA_BUFFER_WRITE). This internally maps to
+           sa_write(3).
+
+           The underlying string formatting engine is just a minimal one and
+           for security and independence reasons intentionally not directly
+           based on s[n]printf(3). It understands only the following format
+           specifications: "%%", "%c" (char), "%s" (char *) and "%d" (int)
+           without any precision and padding possibilities. It is intended for
+           minimal formatting only. If you need more sophisticated formatting,
+           you have to format first into an own buffer via s[n]printf(3) and
+           then write this to the socket via sa_write(3) instead.
+
+           Example: sa_writef(sa, "%s=%d\n", cp, i);
+
+       sa_rc_t sa_flush(sa_t *sa);
+           Flush still pending outgoing data to socket.
+
+           This writes all still pending outgoing data for the internal write
+           buffer (see sa_option(3) and SA_BUFFER_WRITE) to the socket. This
+           internally maps to write(2).
+
+           Example: sa_flush(sa);
+
+       Socket Input/Output Operations (Datagram Communication)
+
+       This API part provides I/O operations for datagram-oriented data
+       communication through the socket abstraction sa_t.
+
+       sa_rc_t sa_recv(sa_t *sa, sa_addr_t **raddr, char *buf, size_t buflen,
+       size_t *bufdone);
+           Receive a chunk of data from remote address via socket into own
+           buffer.
+
+           This receives from the remote address specified in raddr via the
+           socket up to a maximum of buflen bytes into buffer buf. The actual
+           number of received bytes is stored in bufdone. This internally maps
+           to recvfrom(2).
+
+           Example: char buf[1024]; size_t n; sa_recv(sa, buf, sizeof(buf),
+           &n, saa);
+
+       sa_rc_t sa_send(sa_t *sa, sa_addr_t *raddr, const char *buf, size_t
+       buflen, size_t *bufdone);
+           Send a chunk of data to remote address via socket from own buffer.
+
+           This sends to the remote address specified in raddr via the socket
+           buflen bytes from buffer buf. The actual number of sent bytes is
+           stored in bufdone. This internally maps to sendto(2).
+
+           Example: sa_send(sa, buf, strlen(buf), NULL, saa);
+
+       sa_rc_t sa_sendf(sa_t *sa, sa_addr_t *raddr, const char *fmt, ...);
+           Send formatted data data to remote address via socket.
+
+           This formats a string according to the printf(3)-style format
+           specification fmt and sends the result to the socket as a single
+           piece of data chunk. In case of a partial socket write, the not
+           written data of the formatted string is internally discarded.
+
+           The underlying string formatting engine is just a minimal one and
+           for security and independence reasons intentionally not directly
+           based on s[n]printf(3). It understands only the following format
+           specifications: "%%", "%c" (char), "%s" (char *) and "%d" (int)
+           without any precision and padding possibilities. It is intended for
+           minimal formatting only. If you need more sophisticated formatting,
+           you have to format first into an own buffer via s[n]printf(3) and
+           then send this to the remote address via sa_send(3) instead.
+
+           Example: sa_sendf(sa, saa, "%s=%d\n", cp, i);
+
+       Socket Error Handling
+
+       This API part provides error handling operations only.
+
+       char *sa_error(sa_rc_t rv);
+           Return the string representation corresponding to the return code
+           value rv. The returned string has to be treated read-only by the
+           application and is not required to be deallocated.
+
+SEE ALSO
+       Standards
+
+       R. Gilligan, S. Thomson, J. Bound, W. Stevens: "Basic Socket Interface
+       Extensions for IPv6", RFC 2553, March 1999.
+
+       W. Stevens: "Advanced Sockets API for IPv6", RFC 2292, February 1998.
+
+       R. Fielding, L. Masinter, T. Berners-Lee: "Uniform Resource
+       Identifiers: Generic Syntax", RFC 2396, August 1998.
+
+       R. Hinden, S. Deering: "IP Version 6 Addressing Architecture", RFC
+       2373, July 1998.
+
+       R. Hinden, B. Carpenter, L. Masinter: "Format for Literal IPv6
+       Addresses in URL's", RFC 2732, December 1999.
+
+       Papers
+
+       Stuart Sechrest: "An Introductory 4.4BSD Interprocess Communication
+       Tutorial", FreeBSD 4.4 (/usr/share/doc/psd/20.ipctut/).
+
+       Samuel J. Leffler, Robert S. Fabry, William N. Joy, Phil Lapsley: "An
+       Advanced 4.4BSD Interprocess Communication Tutorial", FreeBSD 4.4
+       (/usr/share/doc/psd/21.ipc/).
+
+       Craig Metz: "Protocol Independence Using the Sockets API",
+       http://www.usenix.org/publications/library/proceedings/usenix2000/freenix/metzprotocol.html,
+       USENIX Annual Technical Conference, June 2000.
+
+       Manual Pages
+
+       socket(2), accept(2), bind(2), connect(2), getpeername(2),
+       getsockname(2), getsockopt(2), ioctl(2), listen(2), read(2), recv(2),
+       select(2), send(2), shutdown(2), socketpair(2), write(2),
+       getprotoent(3), protocols(4).
+
+HISTORY
+       OSSP sa was invented in August 2001 by Ralf S. Engelschall
+       <rse@engelschall.com> under contract with Cable & Wireless
+       <http://www.cw.com/> for use inside the OSSP project. Its creation was
+       prompted by the requirement to implement an SMTP logging channel for
+       the OSSP l2 library. Its initial code was derived from a predecessor
+       sub-library originally written for socket address abstraction inside
+       the OSSP lmtp2nntp tool.
+
+AUTHOR
+        Ralf S. Engelschall
+        rse@engelschall.com
+        www.engelschall.com
+
+02-Oct-2005                      OSSP sa 1.2.5                           sa(3)

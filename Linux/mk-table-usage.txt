@@ -1,0 +1,436 @@
+MK-TABLE-USAGE(1)                                                                     User Contributed Perl Documentation                                                                     MK-TABLE-USAGE(1)
+
+NAME
+       mk-table-usage - Read queries from a log and analyze how they use tables.
+
+SYNOPSIS
+       Usage: mk-table-usage [OPTION...] [FILE...]
+
+       mk-table-usage reads queries from slow query logs and analyzes how they use tables.  If no FILE is specified, STDIN is read.  Table usage for every query is printed to STDOUT.
+
+RISKS
+       mk-table-use is very low risk because it only reads and examines queries from a log and executes "EXPLAIN EXTENDED" if the "--explain-extended" option is specified.
+
+       At the time of this release, there are no known bugs that could cause serious harm to users.
+
+       The authoritative source for updated information is always the online issue tracking system.  Issues that affect this tool will be marked as such.  You can see a list of such issues at the following
+       URL: <http://www.maatkit.org/bugs/mk-table-usage>.
+
+       See also "BUGS" for more information on filing bugs and getting help.
+
+DESCRIPTION
+       mk-table-usage reads queries from slow query logs and analyzes how they use tables.  Table usage indicates more than just which tables are read from or written to by the query, it also indicates data
+       flow: data in and data out.  Data flow is determined by the contexts in which tables are used by the query.  A single table can be used in several different contexts in the same query.  The reported
+       table usage for each query lists every context for every table.  This CONTEXT-TABLE list tells how and where data flows, i.e. the query's table usage.  The "OUTPUT" section lists the possible contexts
+       and describes how to read a table usage report.
+
+       Since this tool analyzes table usage, it's important that queries use table-qualified columns.  If a query uses only one table, then all columns must be from that table and there's no problem.  But if
+       a query uses multiple tables and the columns are not table-qualified, then that creates a problem that can only be solved by knowing the query's database and specifying "--explain-extended".  If the
+       slow log does not specify the database used by the query, then you can specify a default database with "--database".  There is no other way to know or guess the database, so the query will be skipped.
+       Secondly, if the database is known, then specifying "--explain-extended" causes mk-table-usage to do "EXPLAIN EXTENDED ..."  "SHOW WARNINGS" to get the fully qualified query as reported by MySQL (i.e.
+       all identifiers are fully database- and/or table-qualified).  For best results, you should specify "--explain-extended" and "--database" if you know that all queries use the same database.
+
+       Each query is identified in the output by either an MD5 hex checksum of the query's fingerprint or the query's value for the specified "--id-attribute".  The query ID is for parsing and storing the
+       table usage reports in a table that is keyed on the query ID.  See "OUTPUT" for more information.
+
+OUTPUT
+       The table usage report that is printed for each query looks similar to the following:
+
+         Query_id: 0x1CD27577D202A339.1
+         UPDATE t1
+         SELECT DUAL
+         JOIN t1
+         JOIN t2
+         WHERE t1
+
+         Query_id: 0x1CD27577D202A339.2
+         UPDATE t2
+         SELECT DUAL
+         JOIN t1
+         JOIN t2
+         WHERE t1
+
+       Usage reports are separated by blank lines.  The first line is always the query ID: a unique ID that can be used to parse the output and store the usage reports in a table keyed on this ID.  The query
+       ID has two parts separated by a period: the query ID and the target table number.
+
+       If "--id-attribute" is not specified, then query IDs are automatically created by making an MD5 hex checksum of the query's fingerprint (as shown above, e.g. 0x1CD27577D202A339); otherwise, the query
+       ID is the query's value for the given attribute.
+
+       The target table number starts at 1 and increments by 1 for each table that the query affects.  Only multi-table UPDATE queries can affect multiple tables with a single query, so this number is 1 for
+       all other types of queries.  (Multi-table DELETE queries are not supported.)  The example output above is from this query:
+
+         UPDATE t1 AS a JOIN t2 AS b USING (id)
+         SET a.foo="bar", b.foo="bat"
+         WHERE a.id=1;
+
+       The "SET" clause indicates that two tables are updated: "a" aliased as "t1", and "b" aliased as "t2".  So two usage reports are printed, one for each table, and this is indicated in the output by
+       their common query ID but incrementing target table number.
+
+       After the first line is a variable number of CONTEXT-TABLE lines.  Possible contexts are:
+
+       •   SELECT
+
+           SELECT means that data is taken out of the table for one of two reasons: to be returned to the user as part of a result set, or to be put into another table as part of an INSERT or UPDATE.  In the
+           first case, since only SELECT queries return result sets, a SELECT context is always listed for SELECT queries.  In the second case, data from one table is used to insert or update rows in another
+           table.  For example, the UPDATE query in the example above has the usage:
+
+             SELECT DUAL
+
+           This refers to:
+
+             SET a.foo="bar", b.foo="bat"
+
+           DUAL is used for any values that does not originate in a table, in this case the literal values "bar" and "bat".  If that "SET" clause were "SET a.foo=b.foo" instead, then the complete usage would
+           be:
+
+             Query_id: 0x1CD27577D202A339.1
+             UPDATE t1
+             SELECT t2
+             JOIN t1
+             JOIN t2
+             WHERE t1
+
+           The presence of a SELECT context after another context, such as UPDATE or INSERT, indicates where the UPDATE or INSERT retrieves its data.  The example immediately above reflects an UPDATE query
+           that updates rows in table "t1" with data from table "t2".
+
+       •   Any other query type
+
+           Any other query type, such as INSERT, UPDATE, DELETE, etc. may be a context.  All these types indicate that the table is written or altered in some way.  If a SELECT context follows one of these
+           types, then data is read from the SELECT table and written to this table.  This happens, for example, with INSERT..SELECT or UPDATE queries that set column values using values from tables instead
+           of constant values.
+
+           These query types are not supported:
+
+             SET
+             LOAD
+             multi-table DELETE
+
+       •   JOIN
+
+           The JOIN context lists tables that are joined, either with an explicit JOIN in the FROM clause, or implicitly in the WHERE clause, such as "t1.id = t2.id".
+
+       •   WHERE
+
+           The WHERE context lists tables that are used in the WHERE clause to filter results.  This does not include tables that are implicitly joined in the WHERE clause; those are listed as JOIN contexts.
+           For example:
+
+             WHERE t1.id > 100 AND t1.id < 200 AND t2.foo IS NOT NULL
+
+           Results in:
+
+             WHERE t1
+             WHERE t2
+
+           Only unique tables are listed; that is why table "t1" is listed only once.
+
+       •   TLIST
+
+           The TLIST context lists tables that are accessed by the query but do not appear in any other context.  These tables are usually an implicit full cartesian join, so they should be avoided.  For
+           example, the query "SELECT * FROM t1, t2" results in:
+
+             Query_id: 0xBDDEB6EDA41897A8.1
+             SELECT t1
+             SELECT t2
+             TLIST t1
+             TLIST t2
+
+           First of all, there are two SELECT contexts, because "SELECT *" selects rows from all tables; "t1" and "t2" in this case.  Secondly, the tables are implicitly joined, but without any kind of join
+           condition, which results in a full cartesian join as indicated by the TLIST context for each.
+
+EXIT STATUS
+       mk-table-usage exits 1 on any kind of error, or 0 if no errors.
+
+OPTIONS
+       This tool accepts additional command-line arguments.  Refer to the "SYNOPSIS" and usage information for details.
+
+       --ask-pass
+           Prompt for a password when connecting to MySQL.
+
+       --charset
+           short form: -A; type: string
+
+           Default character set.  If the value is utf8, sets Perl's binmode on STDOUT to utf8, passes the mysql_enable_utf8 option to DBD::mysql, and runs SET NAMES UTF8 after connecting to MySQL.  Any
+           other value sets binmode on STDOUT without the utf8 layer, and runs SET NAMES after connecting to MySQL.
+
+       --config
+           type: Array
+
+           Read this comma-separated list of config files; if specified, this must be the first option on the command line.
+
+       --constant-data-value
+           type: string; default: DUAL
+
+           Value to print for constant data.  Constant data means all data not from tables (or subqueries since subqueries are not supported).  For example, real constant values like strings ("foo") and
+           numbers (42), and data from functions like "NOW()".  For example, in the query "INSERT INTO t (c) VALUES ('a')", the string 'a' is constant data, so the table usage report is:
+
+             INSERT t
+             SELECT DUAL
+
+           The first line indicates that data is inserted into table "t" and the second line indicates that that data comes from some constant value.
+
+       --[no]continue-on-error
+           default: yes
+
+           Continue parsing even if there is an error.
+
+       --create-table-definitions
+           type: array
+
+           Read "CREATE TABLE" definitions from this list of comma-separated files.  If you cannot use "--explain-extended" to fully qualify table and column names, you can save the output of "mysqldump
+           --no-data" to one or more files and specify those files with this option.  The tool will parse all "CREATE TABLE" definitions from the files and use this information to qualify table and column
+           names.  If a column name is used in multiple tables, or table name is used in multiple databases, these duplicates cannot be qualified.
+
+       --daemonize
+           Fork to the background and detach from the shell.  POSIX operating systems only.
+
+       --database
+           short form: -D; type: string
+
+           Default database.
+
+       --defaults-file
+           short form: -F; type: string
+
+           Only read mysql options from the given file.  You must give an absolute pathname.
+
+       --explain-extended
+           type: DSN
+
+           EXPLAIN EXTENDED queries on this host to fully qualify table and column names.
+
+       --filter
+           type: string
+
+           Discard events for which this Perl code doesn't return true.
+
+           This option is a string of Perl code or a file containing Perl code that gets compiled into a subroutine with one argument: $event.  This is a hashref.  If the given value is a readable file, then
+           mk-query-digest reads the entire file and uses its contents as the code.  The file should not contain a shebang (#!/usr/bin/perl) line.
+
+           If the code returns true, the chain of callbacks continues; otherwise it ends.  The code is the last statement in the subroutine other than "return $event".  The subroutine template is:
+
+             sub { $event = shift; filter && return $event; }
+
+           Filters given on the command line are wrapped inside parentheses like like "( filter )".  For complex, multi-line filters, you must put the code inside a file so it will not be wrapped inside
+           parentheses.  Either way, the filter must produce syntactically valid code given the template.  For example, an if-else branch given on the command line would not be valid:
+
+             --filter 'if () { } else { }'  # WRONG
+
+           Since it's given on the command line, the if-else branch would be wrapped inside parentheses which is not syntactically valid.  So to accomplish something more complex like this would require
+           putting the code in a file, for example filter.txt:
+
+             my $event_ok; if (...) { $event_ok=1; } else { $event_ok=0; } $event_ok
+
+           Then specify "--filter filter.txt" to read the code from filter.txt.
+
+           If the filter code won't compile, mk-query-digest will die with an error.  If the filter code does compile, an error may still occur at runtime if the code tries to do something wrong (like
+           pattern match an undefined value).  mk-query-digest does not provide any safeguards so code carefully!
+
+           An example filter that discards everything but SELECT statements:
+
+             --filter '$event->{arg} =~ m/^select/i'
+
+           This is compiled into a subroutine like the following:
+
+             sub { $event = shift; ( $event->{arg} =~ m/^select/i ) && return $event; }
+
+           It is permissible for the code to have side effects (to alter $event).
+
+           You can find an explanation of the structure of $event at <http://code.google.com/p/maatkit/wiki/EventAttributes>.
+
+           Here are more examples of filter code:
+
+           Host/IP matches domain.com
+               --filter '($event->{host} || $event->{ip} || "") =~ m/domain.com/'
+
+               Sometimes MySQL logs the host where the IP is expected.  Therefore, we check both.
+
+           User matches john
+               --filter '($event->{user} || "") =~ m/john/'
+
+           More than 1 warning
+               --filter '($event->{Warning_count} || 0) > 1'
+
+           Query does full table scan or full join
+               --filter '(($event->{Full_scan} || "") eq "Yes") || (($event->{Full_join} || "") eq "Yes")'
+
+           Query was not served from query cache
+               --filter '($event->{QC_Hit} || "") eq "No"'
+
+           Query is 1 MB or larger
+               --filter '$event->{bytes} >= 1_048_576'
+
+           Since "--filter" allows you to alter $event, you can use it to do other things, like create new attributes.
+
+       --help
+           Show help and exit.
+
+       --host
+           short form: -h; type: string
+
+           Connect to host.
+
+       --id-attribute
+           type: string
+
+           Identify each event using this attribute.  If not ID attribute is given, then events are identified with the query's checksum: an MD5 hex checksum of the query's fingerprint.
+
+       --log
+           type: string
+
+           Print all output to this file when daemonized.
+
+       --password
+           short form: -p; type: string
+
+           Password to use when connecting.
+
+       --pid
+           type: string
+
+           Create the given PID file when running.  The file contains the process ID of the daemonized instance.  The PID file is removed when the daemonized instance exits.  The program checks for the
+           existence of the PID file when starting; if it exists and the process with the matching PID exists, the program exits.
+
+       --port
+           short form: -P; type: int
+
+           Port number to use for connection.
+
+       --progress
+           type: array; default: time,30
+
+           Print progress reports to STDERR.  The value is a comma-separated list with two parts.  The first part can be percentage, time, or iterations; the second part specifies how often an update should
+           be printed, in percentage, seconds, or number of iterations.
+
+       --query
+           type: string
+
+           Analyze only this given query.  If you want to analyze the table usage of one simple query by providing on the command line instead of reading it from a slow log file, then specify that query with
+           this option.  The default "--id-attribute" will be used which is the query's checksum.
+
+       --read-timeout
+           type: time; default: 0
+
+           Wait this long for an event from the input; 0 to wait forever.
+
+           This option sets the maximum time to wait for an event from the input.  If an event is not received after the specified time, the script stops reading the input and prints its reports.
+
+           This option requires the Perl POSIX module.
+
+       --run-time
+           type: time
+
+           How long to run before exiting.  The default is to run forever (you can interrupt with CTRL-C).
+
+       --set-vars
+           type: string; default: wait_timeout=10000
+
+           Set these MySQL variables.  Immediately after connecting to MySQL, this string will be appended to SET and executed.
+
+       --socket
+           short form: -S; type: string
+
+           Socket file to use for connection.
+
+       --user
+           short form: -u; type: string
+
+           User for login if not current user.
+
+       --version
+           Show version and exit.
+
+DSN OPTIONS
+       These DSN options are used to create a DSN.  Each option is given like "option=value".  The options are case-sensitive, so P and p are not the same option.  There cannot be whitespace before or after
+       the "=" and if the value contains whitespace it must be quoted.  DSN options are comma-separated.  See the maatkit manpage for full details.
+
+       •   A
+
+           dsn: charset; copy: yes
+
+           Default character set.
+
+       •   D
+
+           dsn: database; copy: yes
+
+           Database that contains the query review table.
+
+       •   F
+
+           dsn: mysql_read_default_file; copy: yes
+
+           Only read default options from the given file
+
+       •   h
+
+           dsn: host; copy: yes
+
+           Connect to host.
+
+       •   p
+
+           dsn: password; copy: yes
+
+           Password to use when connecting.
+
+       •   P
+
+           dsn: port; copy: yes
+
+           Port number to use for connection.
+
+       •   S
+
+           dsn: mysql_socket; copy: yes
+
+           Socket file to use for connection.
+
+       •   u
+
+           dsn: user; copy: yes
+
+           User for login if not current user.
+
+DOWNLOADING
+       You can download Maatkit from Google Code at <http://code.google.com/p/maatkit/>, or you can get any of the tools easily with a command like the following:
+
+          wget http://www.maatkit.org/get/toolname
+          or
+          wget http://www.maatkit.org/trunk/toolname
+
+       Where "toolname" can be replaced with the name (or fragment of a name) of any of the Maatkit tools.  Once downloaded, they're ready to run; no installation is needed.  The first URL gets the latest
+       released version of the tool, and the second gets the latest trunk code from Subversion.
+
+ENVIRONMENT
+       The environment variable "MKDEBUG" enables verbose debugging output in all of the Maatkit tools:
+
+          MKDEBUG=1 mk-....
+
+SYSTEM REQUIREMENTS
+       You need Perl and some core packages that ought to be installed in any reasonably new version of Perl.
+
+BUGS
+       For a list of known bugs see <http://www.maatkit.org/bugs/mk-table-usage>.
+
+       Please use Google Code Issues and Groups to report bugs or request support: <http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to discuss Maatkit.
+
+       Please include the complete command-line used to reproduce the problem you are seeing, the version of all MySQL servers involved, the complete output of the tool when run with "--version", and if
+       possible, debugging output produced by running with the "MKDEBUG=1" environment variable.
+
+COPYRIGHT, LICENSE AND WARRANTY
+       This program is copyright 2009-2011 Percona Inc.  Feedback and improvements are welcome.
+
+       THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+       This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 2; OR the Perl Artistic
+       License.  On UNIX and similar systems, you can issue `man perlgpl' or `man perlartistic' to read these licenses.
+
+       You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA.
+
+AUTHOR
+       Daniel Nichter
+
+VERSION
+       This manual page documents Ver 1.0.1 Distrib 7540 $Revision: 7531 $.
+
+perl v5.34.0                                                                                       2021-07-22                                                                                 MK-TABLE-USAGE(1)

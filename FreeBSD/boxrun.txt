@@ -1,0 +1,831 @@
+BOXRUN(1)               FreeBSD General Commands Manual              BOXRUN(1)
+
+NAME
+     boxrun – sandboxed command execution using FreeBSD jails
+
+SYNOPSIS
+     boxrun [options] -- command [args ...]
+
+DESCRIPTION
+     The boxrun utility executes a command inside a sandboxed environment
+     using FreeBSD jails, nullfs mounts, and RCTL resource controls.  It
+     provides fine-grained control over filesystem visibility, network access,
+     resource limits, and process security features.
+
+     The boxrun utility can be installed setuid root, allowing unprivileged
+     users to create sandboxes.  Privileges are dropped to the calling user's
+     identity before executing the sandboxed command.
+
+     The dynamic linker directories /lib and /libexec are always mounted read-
+     only automatically, as they are required for any dynamically linked
+     binary to execute.  The linker hints file /var/run/ld-elf.so.hints is
+     also automatically provisioned when library directories are mounted,
+     ensuring the dynamic linker can locate shared objects.
+
+OPTIONS
+   Filesystem Options
+     --bind dir
+             Bind-mount dir at the same path inside the sandbox (read-only).
+
+     --ro-bind dir
+             Alias for --bind (explicit read-only).
+
+     --rw-bind dir
+             Bind-mount dir at the same path inside the sandbox (read-write).
+             Requires confirmation or -y.
+
+     --bind-dir src dst
+             Bind-mount src at dst inside the sandbox (read-only).
+
+     --ro-bind-dir src dst
+             Alias for --bind-dir (explicit read-only).
+
+     --rw-bind-dir src dst
+             Bind-mount src at dst inside the sandbox (read-write).  Requires
+             confirmation or -y.
+
+     --bin   Mount /bin read-only.
+
+     --sbin  Mount /sbin read-only.
+
+     --usr-bin
+             Mount /usr/bin read-only (implies --libs).
+
+     --usr-sbin
+             Mount /usr/sbin read-only (implies --libs).
+
+     --usr-include
+             Mount /usr/include read-only.
+
+     --usr-share
+             Mount /usr/share read-only.
+
+     --local-bin
+             Mount /usr/local/bin read-only (implies --libs).
+
+     --local-sbin
+             Mount /usr/local/sbin read-only (implies --libs).
+
+     --local-include
+             Mount /usr/local/include read-only.
+
+     --local-share
+             Mount /usr/local/share read-only.
+
+     --local-etc
+             Mount /usr/local/etc read-only.
+
+     --libs  Mount all standard shared library directories read-only: /lib,
+             /libexec, /usr/lib, /usr/lib32, /usr/libdata, /usr/libexec,
+             /usr/local/lib, /usr/local/lib32, /usr/local/libdata,
+             /usr/local/libexec.  Non-existent paths are skipped.
+
+     --usr   Mount /usr/bin, /usr/sbin, /usr/include, /usr/share read-only.
+             Implies --libs.
+
+     --usrlocal
+             Mount /usr/local/bin, /usr/local/sbin, /usr/local/include,
+             /usr/local/share, /usr/local/etc read-only.  Implies --libs.
+
+     --system
+             Mount /bin, /sbin and all --usr directories read-only.  Implies
+             --libs.
+
+     --all   Mount --system and --usrlocal (all standard directories), plus
+             /etc and /var read-only.  When --base-path is set, all required
+             FreeBSD directories (/bin, /sbin, /lib, /libexec, /usr/bin,
+             /usr/sbin, /usr/lib, /usr/libexec, /etc) must exist under the
+             base path; if any are missing, boxrun lists them and exits.
+
+     --all-linux
+             Mount standard Linux compatibility directories read-only.
+             Requires --base-path.  Required directories (absent = error):
+             /bin, /usr/bin, /usr/lib, /etc.  Optional directories (silently
+             skipped if absent): /sbin, /lib, /lib64, /libexec, /usr/sbin,
+             /usr/lib32, /usr/lib64, /usr/libexec, /usr/local/bin,
+             /usr/local/sbin, /usr/local/lib, /var.  stat(2) follows symlinks,
+             so paths like /bin → /usr/bin satisfy the check.
+
+     --etc   Mount /etc read-only.
+
+     --rw-etc
+             Mount /etc read-write.
+
+     --var   Mount /var read-only.
+
+     --rw-var
+             Mount /var read-write.
+
+     --tmp   Mount a tmpfs at /tmp (writable, 1777).
+
+     --rw-tmp
+             Alias for --tmp.
+
+     --tmpfs dst [size]
+             Mount a tmpfs filesystem at dst.  An optional size argument may
+             be specified (e.g., “64M”).  The tmpfs is created with mode 1777
+             (world-writable, sticky).
+
+     --dev   Mount devfs at /dev inside the sandbox.  By default, ruleset 4
+             (“devfsrules_jail”) is applied automatically, hiding dangerous
+             device nodes (/dev/mem, /dev/kmem, /dev/io, raw disk devices) and
+             exposing only the safe subset: /dev/null, /dev/zero, /dev/random,
+             /dev/urandom, /dev/stdin, /dev/stdout, /dev/stderr, /dev/fd/*,
+             /dev/pts/*, /dev/tty.
+
+     --unrestrict-dev
+             Mount devfs without applying any devfs ruleset.  All host device
+             nodes are visible inside the sandbox.  Use only when the
+             sandboxed process explicitly requires access to devices hidden by
+             the default ruleset.
+
+     --devfs-ruleset n
+             Apply devfs ruleset n instead of the default ruleset 4.  Rulesets
+             are defined in /etc/defaults/devfs.rules.  A value of 0 is
+             equivalent to --unrestrict-dev.
+
+     --proc  Mount procfs at /proc inside the sandbox.
+
+     --linproc
+             Mount linprocfs at /compat/linux/proc inside the sandbox.
+
+     --fdesc
+             Mount fdescfs at /dev/fd inside the sandbox.  If --dev is also
+             active, this option is silently ignored because devfs already
+             exposes /dev/fd.
+
+     --base-path dir
+             Prefix all source paths with dir.  Applies to explicit bind
+             options (--bind, --ro-bind, --rw-bind, --ov-bind) as well as all
+             shortcut options (--system, --all, --all-linux, --ov-all,
+             --ov-all-linux, etc.) The destination path inside the sandbox
+             remains unchanged.  Specify --base-path before other options so
+             shortcuts see the correct prefix.  Useful for running Linux
+             binaries from /compat/linux via --all-linux or --ov-all-linux.
+
+     Mounting / is not allowed; directories must be specified individually.
+     Library directories are always forced read-only even when specified with
+     --bind.
+
+   Overlay Options
+     Overlay mounts appear fully writable to the sandboxed process, but
+     changes are stored in a tmpfs layer and discarded on exit unless saved.
+
+     --ov-bind dir
+             Overlay dir using nullfs read-only plus a unionfs tmpfs upper
+             layer.
+
+     --ov-bind-dir src dst
+             Overlay src at dst.
+
+     --ov-system
+             Overlay all system directories (/bin, /sbin, /usr/*), libs.
+
+     --ov-all
+             Overlay everything (system + usrlocal + /etc + /var).  When
+             --base-path is set, validates required FreeBSD directories (same
+             set as --all) before proceeding.
+
+     --ov-all-linux
+             Overlay standard Linux compatibility directories.  Requires
+             --base-path.  Same required and optional directory set as
+             --all-linux.
+
+     --ov-save file.tgz
+             On exit, save modified and created files from all overlay layers
+             into the specified tar.gz archive.  Deletions are not recorded.
+
+   Negation Flags
+     These subtract features implied by --system or --all:
+
+     --no-dev
+             Disable devfs even if implied.
+
+     --unrestrict-dev
+             Keep devfs but skip the default ruleset restriction (all devices
+             visible).
+
+     --devfs-ruleset n
+             Keep devfs but apply ruleset n (0 = unrestricted).
+
+     --no-proc
+             Disable procfs.
+
+     --no-linproc
+             Disable linprocfs.
+
+     --no-tmp
+             Disable /tmp tmpfs.
+
+     --no-libs
+             Remove all library directory mounts.
+
+     Conflicting pairs (e.g., --dev --no-dev) produce an error.
+
+   Network Options
+     --allow-net
+             Allow network access inside the sandbox (alias: --net).  IP
+             networking is inherited from the host.  When enabled and /etc is
+             not bound into the sandbox, /etc/resolv.conf is automatically
+             provisioned for DNS resolution.
+
+     --no-net
+             Deny all network access (default).
+
+   NAT / Isolated Networking
+     When PF is enabled with the “boxrun” anchor configured, boxrun can
+     provide network-isolated jails with NAT for egress and port forwarding
+     for ingress.
+
+     Without --nat, --allow-net gives the jail direct access to the host's
+     network stack (“ip4=inherit”).  With --nat, each jail receives its own
+     isolated network environment.  By default (VNET mode), each jail is given
+     a dedicated kernel network stack via an epair(4) virtual Ethernet pair
+     from the 10.235.128.0/17 subnet; the host side handles NAT through PF.
+     With --no-vnet, a private IP alias from the 10.235.0.0/17 subnet is
+     allocated on the boxrun loopback interface instead, with PF performing
+     NAT and port forwarding.  VNET mode requires kern.features.vimage=1 and
+     is automatically disabled if unavailable.
+
+     --nat   Enable NAT mode.  In VNET mode (default), the jail receives a
+             private IP from the 10.235.128.0/17 subnet via an epair(4) pair,
+             and egress traffic is NATed through the host's default route
+             interface.  With --no-vnet, a private IP alias from the
+             10.235.0.0/17 subnet is created on the boxrun loopback interface.
+             Implies --allow-net.  Requires PF with the “boxrun” anchor.  With
+             --no-vnet, the boxrun loopback interface is also required (see
+             --create-interfaces).
+
+     --expose [iface:]hostport:jailport[/proto]
+             Forward traffic arriving on hostport to jailport inside the jail.
+             An optional iface restricts the redirect to a specific network
+             interface.  The optional proto is either “tcp” (default) or
+             “udp”.  Implies --nat.
+
+             Examples:
+             8080:80      All interfaces, host port 8080 to jail port 80
+                          (TCP).
+             lo0:2200:22  Localhost only, host port 2200 to jail port 22.
+             em0:53:53/udp
+                          Interface em0, UDP port 53.
+
+     --nat-if interface
+             Override the boxrun loopback interface name.  Can also be set via
+             the BOXRUN_LOOPBACK environment variable.
+
+     --nat-subnet subnet
+             Override the NAT subnet.  Can also be set via the
+             BOXRUN_NAT_SUBNET environment variable.
+
+     --nat-egress interface
+             Override the egress interface used for NAT.  By default, the
+             interface of the default route is used.  Can also be set via the
+             BOXRUN_NAT_EGRESS environment variable.
+
+     --no-vnet
+             Use loopback IP alias mode for NAT jails instead of VNET.  A
+             private IP from the 10.235.0.0/17 subnet is allocated on the
+             boxrun loopback interface and PF handles NAT.  Requires the
+             boxrun loopback interface (see --create-interfaces).
+
+     --create-interfaces
+             One-time setup command: create a cloned loopback interface with
+             the boxrun subnet and description tag.  Always requires
+             interactive confirmation (ignores -y).  The interface is auto-
+             detected by its description; no hardcoded name is needed.
+
+   Environment Options
+     --clearenv
+             Clear all environment variables before executing the command
+             (default).  The TERM variable is always passed through
+             automatically to ensure correct terminal handling.
+
+     --inherit-env
+             Inherit all environment variables from the parent process.  The
+             following dynamic linker injection variables are automatically
+             stripped regardless of this flag: LD_PRELOAD, LD_LIBRARY_PATH,
+             LD_LIBRARY_PATH_32, LD_PRELOAD_32, LD_32_LIBRARY_PATH.  They may
+             be re-introduced explicitly with --setenv.
+
+     --setenv var value
+             Set the environment variable var to value.
+
+     --passenv var
+             Pass through the environment variable var from the parent
+             environment.
+
+   Resource Limits
+     All resource limits are scoped to the sandbox jail and do not affect
+     processes running outside it.  RCTL limits (marked below) require
+     kern.racct.enable=1.  The per-process rlimits (--limit-stack,
+     --limit-data, --limit-memlock) are inherited by all child processes
+     inside the jail.  Note: RLIMIT_NPROC and RLIMIT_KQUEUES are UID-wide
+     system-wide limits and are intentionally not exposed; use --limit-procs
+     (RCTL) for jail-scoped process limiting.
+
+     --limit-mem size
+             Memory limit (RCTL).  Supports K, M, G suffixes.
+
+     --limit-cpu pct
+             CPU percentage limit (RCTL; e.g., 50 for 50%).
+
+     --limit-cputime seconds
+             CPU time limit in seconds (RCTL).
+
+     --limit-walltime seconds
+             Wall-clock time limit in seconds (RCTL).  The sandboxed process
+             is killed with SIGKILL when the limit expires.
+
+     --limit-procs n
+             Maximum number of processes in the jail (RCTL).  This is the
+             correct jail-scoped replacement for RLIMIT_NPROC.
+
+     --limit-fds n
+             Maximum number of open file descriptors per process
+             (RLIMIT_NOFILE).
+
+     --limit-read-bps n
+             Read bandwidth limit (RCTL; supports K, M, G suffixes).
+
+     --limit-write-bps n
+             Write bandwidth limit (RCTL; supports K, M, G suffixes).
+
+     --limit-read-iops n
+             Read IOPS limit (RCTL).
+
+     --limit-write-iops n
+             Write IOPS limit (RCTL).
+
+     --limit-stack size
+             Maximum stack segment size (RLIMIT_STACK).  Supports K, M, G
+             suffixes.
+
+     --limit-data size
+             Maximum data segment size (RLIMIT_DATA).  Supports K, M, G
+             suffixes.
+
+     --limit-memlock size
+             Maximum size of memory that may be locked into RAM
+             (RLIMIT_MEMLOCK).  Supports K, M, G suffixes.
+
+     --limit-coredumpsize size
+             Maximum core dump size per process via RCTL.  Supports K, M, G
+             suffixes; 0 disables core dumps.
+
+     --limit-nthr n
+             Maximum threads per process via RCTL.
+
+     --limit-pty n
+             Maximum pty allocations via RCTL; 0 disables pty use.
+
+     --limit-swapuse size
+             Maximum swap space per process via RCTL.  Supports K, M, G
+             suffixes.
+
+   Security Options
+     All security hardening is enabled by default.  Use the --allow-* flags to
+     relax specific restrictions.
+
+     --secure
+             No-op; kept for backward compatibility.  All hardening is now
+             enabled by default.
+
+     --ptrace
+             Allow ptrace and debugging of processes inside the sandbox
+             (alias: --allow-ptrace).
+
+     --no-ptrace
+             Deny ptrace and debugging (default).
+
+     --aslr  Force Address Space Layout Randomization (ASLR) enabled
+             (default).
+
+     --no-aslr
+             Force ASLR disabled for the sandboxed process.
+
+     --no-new-privs
+             Ignore set-user-ID and set-group-ID bits on executables within
+             the sandbox (default).  Prevents privilege escalation via setuid
+             binaries.
+
+     --protmax
+             Enforce implicit mmap(2) PROT_MAX protection (default).  Prevents
+             mappings from being upgraded to permissions beyond what was
+             requested.
+
+     --no-protmax
+             Disable implicit PROT_MAX enforcement.
+
+     --no-wx
+             Disallow creation of memory mappings that are simultaneously
+             writable and executable (W^X enforcement, default).
+
+     --wx-allow
+             Allow creation of simultaneously writable and executable mappings
+             (alias: --allow-wx).  Required for JIT compilers.
+
+     --stackgap
+             Force stack gap guard pages enabled (default).
+
+     --no-stackgap
+             Disable stack gap guard pages.
+
+     --allow-raw-sockets
+             Allow raw socket creation (required for ping(8)).  Requires
+             network access (--allow-net or --nat) and --allow-suser; a
+             warning is printed to stderr if either is absent.
+
+     --allow-chflags
+             Allow chflags(2) inside the sandbox.  Requires --allow-suser; a
+             warning is printed to stderr if absent.
+
+     --allow-mlock
+             Allow mlock(2) inside the sandbox.
+
+     --allow-mount
+             Allow mounting filesystems inside the sandbox.
+
+     --allow-mount-tmpfs
+             Allow mounting tmpfs inside the sandbox.
+
+     --allow-mount-procfs
+             Allow mounting procfs inside the sandbox.
+
+     --allow-mount-devfs
+             Allow mounting devfs inside the sandbox.
+
+     --allow-mount-fdescfs
+             Allow mounting fdescfs inside the sandbox.
+
+     --allow-mount-zfs
+             Allow mounting ZFS inside the sandbox.
+
+     --allow-mount-linsysfs
+             Allow mounting linsysfs inside the sandbox.
+
+     --allow-mount-linprocfs
+             Allow mounting linprocfs inside the sandbox.
+
+             When any --allow-mount-* flag is set, “allow.mount=true” is also
+             set in the jail parameters automatically.  All --allow-mount and
+             --allow-mount-* flags require --allow-suser; a warning is printed
+             to stderr if absent.
+
+     --allow-set-hostname
+             Allow changing the hostname inside the sandbox.  Requires
+             --allow-suser; a warning is printed to stderr if absent.
+
+     --allow-sysvipc
+             Allow SysV IPC (shared memory, semaphores, message queues).
+
+     --allow-quotas
+             Allow filesystem quota manipulation.  Requires --allow-suser; a
+             warning is printed to stderr if absent.
+
+     --allow-reserved-ports
+             Allow binding to privileged ports (< 1024).  Requires network
+             access (--allow-net or --nat) and --allow-suser; a warning is
+             printed to stderr if either is absent.
+
+     --allow-read-msgbuf
+             Allow reading the kernel message buffer.
+
+     --allow-unprivileged-proc-debug
+             Allow unprivileged processes inside the jail to use debugging
+             interfaces (ptrace(2), procctl(2)).  Denied by default
+             (“allow.unprivileged_proc_debug=false”).
+
+     --allow-socket-af
+             Allow processes inside the jail to create sockets of address
+             families other than AF_INET, AF_INET6, and AF_UNIX.  Denied by
+             default (“allow.socket_af=false”).
+
+     --allow-nested-jails
+             Allow creating child jails inside the sandbox.  Requires
+             --allow-suser; a warning is printed to stderr if absent.
+
+     --allow-suser
+             Allow superuser privileges for root inside the jail.  By default,
+             UID 0 inside the sandbox has no superuser powers
+             (“allow.suser=false”), preventing privilege escalation even if
+             root is somehow obtained.  This flag re-enables superuser
+             privileges and is required by several other options:
+             --allow-raw-sockets, --allow-reserved-ports, --allow-chflags,
+             --allow-set-hostname, --allow-quotas, --allow-nested-jails, and
+             all --allow-mount variants.  A diagnostic warning is printed to
+             stderr when any of these flags is used without --allow-suser.
+
+     --allow-coredumps
+             Re-enable core dumps inside the sandbox.  By default, core dumps
+             are suppressed (RLIMIT_CORE set to 0) to prevent sandboxed
+             processes from writing core images to the filesystem.  This flag
+             restores the system default limit.
+
+     --securelevel n
+             Set the jail's security(7) securelevel to n (valid range: 0–3).
+             The default is 3 (network secure mode), which prevents
+             modification of firewall rules, raw disk writes, kernel module
+             loading, and time changes.  Lower values relax restrictions:
+             0  Insecure mode (no restrictions).
+             1  Secure mode (no kernel modules, no /dev/mem, immutable flags
+                enforced).
+             2  Highly secure (level 1 + no raw disk writes, time limited to
+                ±1s).
+             3  Network secure (level 2 + no firewall rule changes).
+
+   Identity Options
+     --uid user
+             Run the sandboxed command as the specified user.  Accepts a
+             username or numeric UID.
+
+     --gid group
+             Run the sandboxed command as the specified group.  Accepts a
+             group name or numeric GID.
+
+     --hostname name
+             Set the hostname inside the sandbox.
+
+   Other Options
+     --clean
+             Remove stale sandbox artifacts left behind by crashed or killed
+             boxrun processes.  This scans for leftover mounts under
+             /tmp/boxrun.*, active jails named “boxrun_*”, stale PF anchor
+             rules, stale IP aliases, and residual directories.  The boxrun
+             loopback interface is not destroyed; use --teardown for that.  No
+             sandbox is created; the program exits after cleanup.
+
+     --teardown
+             Destroy the boxrun loopback interface (the inverse of
+             --create-interfaces).  This does not remove jails or mounts; run
+             --clean first if needed.
+
+     --show  Display the effective sandbox configuration (mounts, security
+             settings, resource limits) and exit without running the command.
+             Does not require root privileges.
+
+     -y      Suppress the interactive confirmation prompt.  Required for non-
+             interactive use.
+
+     --help  Show a short help summary.
+
+     --longhelp
+             Show the full option list.
+
+     --version
+             Show the version number.
+
+EXAMPLES
+     Run ls(1) with minimal filesystem and no network:
+
+           boxrun --bin --dev --no-net -- /bin/ls /bin
+
+     Run a shell with full base system access and network:
+
+           boxrun --system --dev --net --bind /tmp -- /bin/sh
+
+     Run a build with writable output directory (all hardening is default):
+
+           boxrun --all --dev --bind-dir /home/user/obj /obj \
+               --ro-bind-dir /home/user/src /src -- make -C /src OBJDIR=/obj
+
+     Run with resource limits:
+
+           boxrun --system --dev --limit-mem 512M --limit-walltime 60 \
+               --limit-fds 64 -- /usr/bin/myapp
+
+     Run as a different user with clean environment:
+
+           boxrun --all --dev --uid nobody --gid nobody --clearenv \
+               --setenv PATH /bin:/usr/bin -- /usr/bin/id
+
+     Run a Linux binary using the /compat/linux tree (installed via “pkg
+     install linux-rl9”):
+
+           boxrun --base-path /compat/linux --all-linux \
+               -- /bin/cat /etc/os-release
+
+     This validates that the required Linux directories exist under
+     /compat/linux, then mounts each one at its matching path inside the
+     sandbox (e.g. /compat/linux/bin -> /bin), /compat/linux/usr/lib ->
+     /usr/lib).  Symlinked directories (e.g., /bin → /usr/bin on modern Linux
+     distributions) are accepted.  Use --ov-all-linux instead of --all-linux
+     to get a fully writable view of the Linux tree with changes discarded on
+     exit.
+
+     Run a web server in an isolated NAT jail, exposing port 8080 on the host:
+
+           boxrun -y --system --dev --nat --expose 8080:80 \
+               --allow-suser -- /usr/sbin/httpd -DFOREGROUND
+
+     Run with NAT egress only (no exposed ports):
+
+           boxrun -y --system --dev --nat -- /usr/bin/fetch -o /tmp/file \
+               http://example.com/data.tar.gz
+
+SECURITY
+     When installed setuid root, the boxrun utility saves the calling user's
+     real UID and GID, elevates to root for jail creation and mount
+     operations, then drops privileges back to the caller's identity before
+     executing the sandboxed command.
+
+     All security hardening is enabled by default: network denied, ptrace
+     denied, ASLR forced, no-new-privs, PROT_MAX enforcement, W^X enforcement,
+     stack gap enabled, mounting denied, SysV IPC denied, hostname changes
+     denied, nested jails denied, reserved ports denied, kernel message buffer
+     access denied, superuser disabled inside jail (allow.suser=false),
+     unprivileged process debugging disabled
+     (allow.unprivileged_proc_debug=false), non-standard socket address
+     families disabled (allow.socket_af=false), and securelevel set to 3
+     (network secure mode).
+
+     The following additional hardening measures are applied unconditionally
+     and require no flags:
+
+     devfs restriction
+             When devfs is mounted with --dev, ruleset 4 (“devfsrules_jail”)
+             is applied automatically, hiding dangerous device nodes such as
+             /dev/mem, /dev/kmem, /dev/io, and raw disk devices.  Use
+             --unrestrict-dev or --devfs-ruleset n to change this behavior.
+
+     Core dump suppression
+             RLIMIT_CORE is set to 0 for the sandboxed process, preventing
+             core dump files from being written even if the process crashes.
+
+     File descriptor cleanup
+             closefrom(3) is called in the child process immediately before
+             execve(2), closing all file descriptors with number 3 or higher.
+             This prevents accidental leakage of open descriptors from the
+             boxrun parent into the sandboxed command.
+
+     Linker environment variable stripping
+             The dynamic linker injection variables LD_PRELOAD,
+             LD_LIBRARY_PATH, LD_LIBRARY_PATH_32, LD_PRELOAD_32, and
+             LD_32_LIBRARY_PATH are removed from the environment passed to the
+             sandboxed command, even when --inherit-env is used.  This
+             prevents the parent environment from injecting shared objects
+             into the sandboxed process.  Variables may be re-introduced
+             explicitly with --setenv.
+
+     Orphan process containment
+             boxrun calls procctl(2) with PROC_REAP_ACQUIRE before forking,
+             becoming the reaper for all descendant processes.  After the
+             sandboxed command exits, it calls PROC_REAP_KILL to send SIGKILL
+             to any orphaned descendants before cleanup, preventing processes
+             from escaping the sandbox lifetime.
+
+     Death signal propagation
+             PROC_PDEATHSIG_CTL is set in the sandbox child so that if the
+             boxrun parent is killed (e.g. with SIGKILL), the sandboxed
+             process automatically receives SIGKILL.  This ensures sandbox
+             processes never outlive their parent.
+
+     umask hardening
+             The file creation mask is set to 0022 in the sandbox child before
+             execve(2), preventing newly created files from being world- or
+             group-writable regardless of the caller's inherited umask.
+
+     Capsicum capability mode
+             After the sandboxed command is launched, boxrun calls
+             cap_enter(2) to enter Capsicum capability mode.  In this mode the
+             parent process is restricted to a fixed set of already-open file
+             descriptors and cannot open new filesystem paths, exec new
+             programs, or perform most privileged operations, limiting the
+             blast radius of any compromise of the monitor process.
+
+     Use --allow-* flags to selectively relax restrictions as needed.
+
+     Library directories (under /lib, /libexec, /usr/lib, /usr/local/lib) are
+     always forced read-only regardless of whether --bind or --ro-bind is
+     used.
+
+REQUIREMENTS
+     •   Root privileges (or setuid root installation).
+
+     •   kern.racct.enable=1 in /boot/loader.conf for RCTL resource limits.
+
+     •   The nullfs(5) filesystem must be available (loaded by default on
+         FreeBSD).
+
+     •   kern.features.vimage=1 for VNET-mode NAT jails (--nat).  If
+         unavailable, boxrun automatically falls back to loopback NAT mode.
+         The if_epair(4) kernel module is loaded automatically when needed.
+
+NETWORKING MODES
+     The --nat option supports two modes of isolated networking.
+
+   VNET mode (default)
+     VNET mode assigns each jail its own isolated kernel network stack using
+     FreeBSD's VIMAGE facility.  An epair(4) virtual Ethernet pair is created:
+     one end remains on the host and provides the NAT gateway; the other end
+     is moved into the jail's private network namespace before the sandboxed
+     command is executed.
+
+     Requirements:
+     •   kern.features.vimage=1 (present on GENERIC and most custom kernels;
+         detected automatically).
+     •   PF running with the “boxrun” anchors (see NAT SETUP).
+     •   No persistent loopback interface required; epair interfaces are
+         created and destroyed automatically per jail.
+
+     Security:
+     •   Full kernel-level network isolation: the jail cannot observe host
+         network traffic or communicate with other jails except through
+         explicit PF rules.
+     •   The jail has its own private routing table; it cannot enumerate or
+         spoof the host's network interfaces.
+     •   Destroying the host-side epair tears down both ends atomically, even
+         if the jail exits abnormally.
+
+   Loopback NAT mode
+     When --no-vnet is given, the jail shares the host's network stack; a
+     private IP alias from the 10.235.0.0/17 subnet is allocated on the boxrun
+     loopback interface.  PF NAT rules handle egress; port forwarding rules
+     handle ingress.
+
+     Requirements:
+     •   PF running with the “boxrun” anchors (see NAT SETUP).
+     •   A persistent boxrun loopback interface with the 10.235.0.0/17 subnet
+         (created via --create-interfaces or /etc/rc.conf; see NAT SETUP).
+     •   No VIMAGE kernel support required; works on any FreeBSD kernel with
+         PF.
+
+     Security:
+     •   Network access is controlled by PF rules only; kernel-level stack
+         isolation is not provided.
+     •   A misconfigured PF ruleset may allow a jail to reach other jails or
+         the host loopback interface.
+
+NAT SETUP
+     Both NAT modes require PF to be running with the boxrun anchors
+     configured.  VNET mode requires no additional persistent interface.
+     Loopback NAT mode (--no-vnet) additionally requires a persistent loopback
+     interface with the boxrun subnet.
+
+   PF configuration
+     Ensure /etc/pf.conf contains the boxrun anchors:
+
+           nat-anchor "boxrun/*"
+           rdr-anchor "boxrun/*"
+           anchor "boxrun/*"
+
+     A sample configuration is installed at
+     /usr/local/share/boxrun/pf.conf.sample.
+
+   VNET mode: persist PF across reboots
+     Add the following to /etc/rc.conf:
+
+           pf_enable="YES"
+           pf_rules="/etc/pf.conf"
+
+     net.inet.ip.forwarding is enabled automatically by boxrun at startup; no
+     manual sysctl configuration is required.
+
+   Loopback NAT mode: one-time interface creation
+           boxrun --create-interfaces
+
+   Loopback NAT mode: persist across reboots
+     Add the following to /etc/rc.conf:
+
+           cloned_interfaces="lo1"
+           ifconfig_lo1="inet 10.235.0.0/16 description boxrun up"
+           pf_enable="YES"
+           pf_rules="/etc/pf.conf"
+
+FILES
+     /tmp/boxrun.*                           Sandbox root directories (cleaned
+                                             by --clean).
+
+     /var/run/boxrun.ip                      Tracks allocated IP addresses for
+                                             NAT jails.
+
+     /usr/local/share/boxrun/pf.conf.sample  Sample pf.conf(5) with the
+                                             required boxrun anchors.
+
+EXIT STATUS
+     The boxrun utility exits with the exit status of the sandboxed command.
+     If the command is killed by a signal (e.g., due to --limit-walltime), the
+     exit status is 128 + signal number (e.g., 137 for SIGKILL).
+
+     If boxrun itself encounters an error, it exits with one of the
+     sysexits(3) codes:
+
+     64 (EX_USAGE)   Invalid command-line arguments.
+
+     71 (EX_OSERR)   System call failure.
+
+     77 (EX_NOPERM)  Insufficient privileges.
+
+SEE ALSO
+     jail(2), nmount(2), procctl(2), closefrom(3), epair(4), pf(4), jail(8),
+     mount_nullfs(8), rctl(8)
+
+HISTORY
+     The boxrun utility was written as a means to quickly run applications in
+     a sandboxed environment without the need to fully install a jail.  It
+     reuses the operating system's existing files and limits access using
+     FreeBSD's native security primitives.
+
+AUTHORS
+     Tiago Espinha Gasiba
+
+FreeBSD 15.0-RELEASE-p4          May 28, 2026                        BOXRUN(1)

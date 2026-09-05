@@ -1,0 +1,635 @@
+JT(1)                              JT MANUAL                             JT(1)
+
+NAME
+       jt - transform JSON data to tabular format
+
+SYNOPSIS
+       jt [-hV]
+       jt -u string
+       jt [-acj] [COMMAND ...]
+
+DESCRIPTION
+       Jt  reads  UTF-8 encoded JSON forms from stdin and writes tab separated
+       values (or CSV) to stdout. A simple stack-based programming language is
+       used to extract values from the JSON input for printing.
+
+OPTIONS
+       -h     Print usage info and exit.
+
+       -V     Print version and license info and exit.
+
+       -a     Explicit  iteration  mode: require the . command to iterate over
+              arrays instead of iterating automatically.
+
+       -c     CSV output mode: write RFC 4180 compliant CSV records.
+
+       -j     Inner join mode: discard rows with missing columns.
+
+       -s     A no-op, included for compatibility with earlier versions.
+
+       -u string
+              Unescape JSON string, print it, and exit.  Double-quotes  around
+              string are optional.
+
+OPERATION
+       Non-option  arguments are words (commands) in a stack-based programming
+       language. Commands operate on the stacks provided by the jt runtime:
+
+       ·   The DATA stack contains JSON values commands will operate on.
+
+       ·   The GOSUB stack contains pointers into the data stack.
+
+       ·   The INDEX stack contains pointers to iterators during iteration.
+
+       ·   The LOOP stack contains pointers to iterators between iterations.
+
+       ·   The OUTPUT stack contains values to print after each iteration.
+
+       When jt starts, the following happens:
+
+       1.  One JSON form is read from stdin, parsed, and pushed onto the  data
+           stack.
+
+       2.  If  the  top of the data stack is a JSON array the next item in the
+           array is pushed onto the data stack based on state previously saved
+           on  the  loop  stack. The loop stack is then popped and pushed onto
+           the index stack.
+
+       3.  The next command is executed.
+
+       4.  Steps 2 and 3 are repeated until no commands are left to execute.
+
+       5.  Values in the output stack are printed, separated by tabs and  fol‐
+           lowed  by  a  newline  (see OUTPUT FORMAT below). Data, output, and
+           gosub stacks are reset to their states as they were after step 1.
+
+       6.  Loop variables are popped off of the index  stack.  They  are  then
+           incremented and pushed onto the loop stack as necessary.
+
+       7.  Steps  2 through 6 are repeated until the loop stack is empty (i.e.
+           there are no more iterations left).
+
+       This process is repeated until there is no more JSON to read.
+
+COMMANDS
+       Jt provides the following commands:
+
+       [      Save the state of the data stack: the current data stack pointer
+              is pushed onto the gosub stack.
+
+       ]      Restore the data stack to a saved state: pop the gosub stack and
+              restore the data stack pointer to that state.
+
+       %      Push the value at the top of the  data  stack  onto  the  output
+              stack.
+
+       %=NAME Like %, but also sets the heading for this column to NAME. Head‐
+              ers will be printed as the first line of output when  this  com‐
+              mand has been used.
+
+       ^      Push  the  value  at  the top of the index stack onto the output
+              stack. Note that the index stack will always have at  least  one
+              item: the index of the last JSON object read from stdin.
+
+       ^=NAME Like ^, but also sets the heading for this column to NAME. Head‐
+              ers will be printed as the first line of output when  this  com‐
+              mand has been used.
+
+       @      Print  the  keys  of the object at the top of the data stack and
+              exit.
+
+              If the value at the top of the data stack is an array the  first
+              item  in the array is pushed onto the data stack and the command
+              is reevaluated.
+
+              If the value at the top of the data stack is not an object or an
+              array  then  its  type  is  printed  in  brackets,  eg. [array],
+              [string], [number], [boolean], or [null]. If there is  no  value
+              then [none] is printed.
+
+       +      Parse embedded JSON: if the item at the top of the data stack is
+              a string, parse it and push the result onto the data stack.
+
+              If the item at the top of the data stack is not a string  or  if
+              there  is  an  error  parsing the JSON then nothing is done (the
+              operation is a no-op).
+
+       .      Iterate over the values of the object at the  top  of  the  data
+              stack.  The current value will be pushed onto the data stack and
+              the current key will be pushed onto the index stack.
+
+       [KEY]  Drill down: get the value of the KEY property of the  object  at
+              the  top  of  the  data  stack and push that value onto the data
+              stack.
+
+              If the item at the top of the data stack is not an object or  if
+              the  object has no KEY property a blank field is printed, unless
+              the -j option was specified in which  case  the  entire  row  is
+              removed from the output.
+
+              If  the  KEY  property of the object is an array subsequent com‐
+              mands will operate on one of the  items  in  the  array,  chosen
+              automatically by jt. The array index will be available to subse‐
+              quent commands via the index stack.
+
+       KEY    See [KEY] above — the [ and ] may be  omitted  if  the  property
+              name KEY does not conflict with any jt command.
+
+OUTPUT FORMAT
+       The format of printed output from jt (see % in COMMANDS, above) depends
+       on the type of thing being printed:
+
+   Primitives
+       JSON primitives (i.e. null, true, and false) and  numbers  are  printed
+       verbatim.  Jt does not process them in any way. Numbers can be of arbi‐
+       trary precision, as long as they conform to the JSON parsing grammar.
+
+       If special formatting is required the printf program is your friend:
+
+           $ printf %.0f 2.99792458e9
+           2997924580
+
+   Strings
+       Strings are printed verbatim, minus the  enclosing  double  quotes.  No
+       unescaping  is performed because tabs or newlines in JSON strings would
+       break the tabular output format.
+
+       If unescaped values are desired either use the -c flag  to  enable  CSV
+       output  (see  CSV below) or use the -u option and pass the string as an
+       argument:
+
+           $ jt -u ´i love music \u266A´
+           i love music ♪
+
+   Collections
+       Objects and arrays are printed as JSON with  whitespace  removed.  Note
+       that  it  is only possible to print arrays when the -a option is speci‐
+       fied (see  the  Iteration  (Arrays)  and  Explicit  Iteration  sections
+       below).
+
+   CSV
+       The -c flag enables CSV output conforming to RFC 4180. This format sup‐
+       ports strings containing tabs, newlines, etc.:
+
+           $ jt -c [ foo % ] [ bar % ] baz % <<EOT
+           - {
+           -   "foo": "one\ttwo",
+           -   "bar": "three\nfour",
+           -   "baz": "music \"\u266A\""
+           - }
+           - EOT
+           "one    two","three
+           four","music ""♪"""
+
+EXIT STATUS
+       Jt will exit with a status of 1 if an error occurred, or 0 otherwise.
+
+EXAMPLES
+       Below are a number of examples demonstrating how to use jt commands  to
+       do  some  simple  exploration and extraction of data from JSON and JSON
+       streams.
+
+   Explore
+       The @ command prints information about the item at the top of the  data
+       stack. When the item is an object @ prints its keys:
+
+           $ jt @ <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": 200,
+           -   "baz": 300
+           - }
+           - EOT
+           foo
+           bar
+           baz
+
+       When the top item is an array @ prints information about the first item
+       in the array:
+
+           $ jt @ <<EOT
+           - [
+           -   {"foo": 100, "bar": 200},
+           -   {"baz": 300, "baf": 400}
+           - ]
+           - EOT
+           foo
+           bar
+
+       Otherwise, @ prints the type of the item, or  [none]  if  there  is  no
+       value:
+
+           $ echo ´["hello", "world"]´ | jt @
+           [string]
+
+           $ echo ´[1, 2]´ | jt @
+           [number]
+
+           $ echo ´[true, false]´ | jt @
+           [boolean]
+
+           $ echo ´[null, null]´ | jt @
+           [null]
+
+           $ echo ´[]´ | jt @
+           [none]
+
+   Drill Down
+       Property  names  are  also commands. Use foo here as a command to drill
+       down into the foo property and then use @ to print its keys:
+
+           $ jt foo @ <<EOT
+           - {
+           -   "foo": {
+           -     "bar": 100,
+           -     "baz": 200
+           -   }
+           - }
+           - EOT
+           bar
+           baz
+
+       A property name that conflicts with a jt command may  be  wrapped  with
+       square brackets to drill down:
+
+           $ jt [@] @ <<EOT
+           - {
+           -   "@": {
+           -     "bar": 100,
+           -     "baz": 200
+           -   }
+           - }
+           - EOT
+           bar
+           baz
+
+       Note:  The property name must be a JSON escaped string, so if the prop‐
+       erty name in the JSON input contains eg. tab characters  they  must  be
+       escaped in the command, like this:
+
+           $ jt ´foo\tbar´ @ <<EOT
+           - {
+           -   "foo\tbar": {
+           -     "bar": 100,
+           -     "baz": 200
+           -   }
+           - }
+           - EOT
+           bar
+           baz
+
+   Extract
+       The  %  command prints the item at the top of the data stack. Note that
+       when the top item is a collection it is printed as JSON (insiginificant
+       whitespace removed):
+
+           $ jt % <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": 200
+           - }
+           - EOT
+           {"foo":100,"bar":200}
+
+       Drill down and print:
+
+           $ jt foo bar % <<EOT
+           - {
+           -   "foo": {
+           -     "bar": 100
+           -   }
+           - }
+           - EOT
+           100
+
+       The  %  command  can be used multiple times. The printed values will be
+       separated by tabs:
+
+           $ jt % foo % bar % <<EOT
+           - {
+           -   "foo": {
+           -     "bar": 100
+           -   }
+           - }
+           - EOT
+           {"foo":{"bar":100}}     {"bar":100}     100
+
+   Save / Restore
+       The [ and ] commands provide a way  to  save  the  data  stack´s  state
+       before performing some operations and restore it afterwards. This makes
+       it possible to drill down into one part of an object and then  "rewind"
+       to drill down into another part of the same object.
+
+       The  [  command  saves  the  state  of the data stack and the ] command
+       restores the data stack to the corresponding  saved  state.  It  is  an
+       error to use the ] command without a corresponding [ command.
+
+           $ jt [ foo % ] bar % <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": 200
+           - }
+           - EOT
+           100     200
+
+       The [ and ] commands can be nested:
+
+           $ jt [ foo [ bar % ] [ baz % ] ] baf % <<EOT
+           - {
+           -   "foo": {
+           -     "bar": 100,
+           -     "baz": 200
+           -   },
+           -   "baf": "quux"
+           - }
+           - EOT
+           100     200     quux
+
+   Iteration (Arrays)
+       Jt automatically iterates over arrays (unless this behavior is disabled
+       — see Explicit Iteration below), producing one tab-delimited record per
+       iteration, records separated by newlines:
+
+           $ jt [ foo % ] bar baz % <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": [
+           -     {"baz": 200},
+           -     {"baz": 300},
+           -     {"baz": 400}
+           -   ]
+           - }
+           - EOT
+           100     200
+           100     300
+           100     400
+
+       The ^ command includes the array index as a column in the result:
+
+           $ jt [ foo % ] bar ^ baz % <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": [
+           -     {"baz": 200},
+           -     {"baz": 300},
+           -     {"baz": 400}
+           -   ]
+           - }
+           - EOT
+           100     0       200
+           100     1       300
+           100     2       400
+
+       The ^ command is scoped to the innermost enclosing loop:
+
+           $ jt foo ^ bar ^ % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar": [100, 200]},
+           -     {"bar": [300, 400]}
+           -   ]
+           - }
+           - EOT
+           0       0       100
+           0       1       200
+           1       0       300
+           1       1       400
+
+   Iteration (Objects)
+       The . command iterates over the values of an object:
+
+           $ jt . % <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": 200,
+           -   "baz": 300
+           - }
+           - EOT
+           100
+           200
+           300
+
+       When iterating over an object the ^ command prints the name of the cur‐
+       rent property:
+
+           $ jt . ^ % <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": 200,
+           -   "baz": 300
+           - }
+           - EOT
+           foo     100
+           bar     200
+           baz     300
+
+   JSON Streams
+       Jt automatically iterates over entities in a  JSON  stream  (optionally
+       delimited by whitespace):
+
+           $ jt [ foo % ] bar % <<EOT
+           - {"foo": 100, "bar": 200}
+           - {"foo": 200, "bar": 300}
+           - {"foo": 300, "bar": 400}
+           - EOT
+           100     200
+           200     300
+           300     400
+
+       The ^ command prints the current stream index:
+
+           $ jt ^ [ foo % ] bar % <<EOT
+           - {"foo": 100, "bar": 200}
+           - {"foo": 200, "bar": 300}
+           - {"foo": 300, "bar": 400}
+           - EOT
+           0       100     200
+           1       200     300
+           2       300     400
+
+   Nested JSON
+       The + command parses JSON embedded in strings:
+
+           $ jt [ foo + bar % ] baz % <<EOT
+           - {"foo":"{\"bar\":100}","baz":200}
+           - {"foo":"{\"bar\":200}","baz":300}
+           - {"foo":"{\"bar\":300}","baz":400}
+           - EOT
+           100     200
+           200     300
+           300     400
+
+       Note: The + command does not modify the original JSON:
+
+           $ jt [ foo + bar % ] % <<EOT
+           - {"foo":"{\"bar\":100}","baz":200}
+           - {"foo":"{\"bar\":200}","baz":300}
+           - {"foo":"{\"bar\":300}","baz":400}
+           - EOT
+           100     {"foo":"{\"bar\":100}","baz":200}
+           200     {"foo":"{\"bar\":200}","baz":300}
+           300     {"foo":"{\"bar\":300}","baz":400}
+
+   Column Headings
+       The  %=NAME  and  ^=NAME commands are like % and ^ above, but they also
+       assign column headings, which are printed as the first line of output:
+
+           $ jt [ foo %=Foo ] bar ^=Bar baz %=Baz <<EOT
+           - {
+           -   "foo": 100,
+           -   "bar": [
+           -     {"baz": 200},
+           -     {"baz": 300},
+           -     {"baz": 400}
+           -   ]
+           - }
+           - EOT
+           Foo     Bar     Baz
+           100     0       200
+           100     1       300
+           100     2       400
+
+       Note: The heading NAME must be a JSON escaped string  (eg.  to  have  a
+       column  heading  with embedded tab characters use %=foo\tbar instead of
+       "%=foo bar").
+
+   Joins
+       Notice the empty column — some objects don´t have the bar key:
+
+           $ jt [ foo % ] bar % <<EOT
+           - {"foo":100,"bar":1000}
+           - {"foo":200}
+           - {"foo":300,"bar":3000}
+           - EOT
+           100     1000
+           200
+           300     3000
+
+       Enable inner join mode with the -j flag. This removes output rows  when
+       a key in the traversal path doesn´t exist:
+
+           $ jt -j [ foo % ] bar % <<EOT
+           - {"foo":100,"bar":1000}
+           - {"foo":200}
+           - {"foo":300,"bar":3000}
+           - EOT
+           100     1000
+           300     3000
+
+       Note  that  this does not remove rows when the key exists and the value
+       is empty:
+
+           $ jt -j [ foo % ] bar % <<EOT
+           - {"foo":100,"bar":1000}
+           - {"foo":200,"bar":""}
+           - {"foo":300,"bar":3000}
+           - EOT
+           100     1000
+           200
+           300     3000
+
+   Explicit Iteration
+       Sometimes the implicit iteration over arrays is awkward:
+
+           $ jt . ^ . ^ % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar":100},
+           -     {"bar":200}
+           -   ]
+           - }
+           - EOT
+           0       bar     100
+           1       bar     200
+
+       Should the first ^ be printing the array index of the  implicit  itera‐
+       tion  (which it does, in this case) or the object key (i.e. foo) of the
+       explicit iteration of the . command?
+
+       Another awkward case is printing arrays:
+
+           $ jt foo % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar":100},
+           -     {"bar":200}
+           -   ]
+           - }
+           - EOT
+           {"bar":100}
+           {"bar":200}
+
+       The array can not be printed with the % command  because  it  is  being
+       iterated  over implicitly. Instead, the items in the array are printed,
+       which may not be the desired behavior.
+
+       The -a flag eliminates the ambiguity by enabling explicit iteration. In
+       this  mode  the . command must be used to iterate over both objects and
+       arrays — arrays are not automatically iterated over.
+
+       Now the array can be printed:
+
+           $ jt -a foo % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar":100},
+           -     {"bar":200}
+           -   ]
+           - }
+           - EOT
+           [{"bar":100},{"bar":200}]
+
+       Or the first ^ can print the array index, as before:
+
+           $ jt -a . . ^ . ^ % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar":100},
+           -     {"bar":200}
+           -   ]
+           - }
+           - EOT
+           0       bar     100
+           1       bar     200
+
+       Or it can print the object key:
+
+           $ jt -a . ^ . . ^ % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar":100},
+           -     {"bar":200}
+           -   ]
+           - }
+           - EOT
+           foo     bar     100
+           foo     bar     200
+
+       Or, with the addition of one more ^ command, it can print both:
+
+           $ jt -a . ^ . ^ . ^ % <<EOT
+           - {
+           -   "foo": [
+           -     {"bar":100},
+           -     {"bar":200}
+           -   ]
+           - }
+           - EOT
+           foo     0       bar     100
+           foo     1       bar     200
+
+SEE ALSO
+       Jt is based on ideas from the excellent jshon tool, which can be  found
+       at  http://kmkeen.com/jshon/.  Source  code  for  jt  is  available  at
+       https://github.com/micha/json-table.
+
+BUGS
+       Please open an issue here: https://github.com/micha/json-table/issues.
+
+COPYRIGHT
+       Copyright © 2017  Micha  Niskin  <micha.niskin@gmail.com>,  distributed
+       under  the  Eclipse Public License, version 1.0. This is free software:
+       you are free to change and redistribute it. There is  NO  WARRANTY,  to
+       the extent permitted by law.
+
+                                   July 2017                             JT(1)

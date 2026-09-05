@@ -1,0 +1,424 @@
+CECCOMP(1)                                                              Ceccomp Manual                                                             CECCOMP(1)
+
+NAME
+       ceccomp - A tool to analyze seccomp filters
+
+SYNOPSIS
+           usage: ceccomp <asm|disasm|emu|trace|probe|version|help> [FILE] [-q|--quiet]
+                          [-f|--format FMT] [-a|--arch ARCH] [-p|--pid PID] [-s|--seize]
+                          [-o|--output FILE] [-c|--color WHEN] ...
+
+CONCEPT
+       Kernel use BPF filters to limit syscall rules, applied via seccomp or prctl syscall. For example, down below is a simple filter to block execve
+       syscall in hex format:
+
+           1: 20 00 00 00 00 00 00 00     $A = $syscall_nr
+           2: 15 00 00 01 3b 00 00 00     if ($A != execve) goto 4
+           3: 06 00 00 00 00 00 00 00     return KILL
+           4: 06 00 00 00 00 00 ff 7f     return ALLOW
+
+       The part presented in hex is what kernel received, and ceccomp take it to disassemble back to human readable text. For instance the lineno in the left
+       and statement in the right.
+
+           Important
+
+           Later I’ll use TEXT in short for BPF human readable text, and use RAW in short for BPF raw format, please keep that in mind.
+
+DESCRIPTION
+       ceccomp have 5 main functions, basically it’s a C version of seccomp-tools, however, there are some breaking changes you need to know, which will be
+       highlighted in each subcommand section.
+
+   asm - ASSEMBLE
+           ceccomp asm [-c WHEN] [-a ARCH] [-f FMT] [TEXT]
+
+       Assemble TEXT to RAW. Use it to embed hand written filter rules into C code or to see the original code of some TEXT.
+
+       WHEN
+           Determines when to display warnings and errors in color. If the value is auto, ceccomp will display color when the output target is a "tty". Can
+           be auto, never or always. The default value is auto.
+
+       ARCH
+           Set to any architecture libseccomp supports. Will be used to determine the actual syscall number behind the name (for example, on x86_64, you
+           could write "execve" instead of 59 like the basic example above). Your system arch will be taken if not set via uname. The default value on your
+           system is x86_64.
+
+           Note
+
+           Since version 4.0, endianness is considered. If target endianness ARCH is different from machine endianness, the filters will be reversed (CODE
+           and K) before outputting.
+
+       FMT
+           Determines how ceccomp produces binary-format bpf code. Can be hexfmt, hexline or raw. You could find sample output in EXAMPLES section. The
+           default value is hexline.
+
+       TEXT
+           Take a optional filename to determine which file containing TEXT will be assembled. Will read from stdin if not set. - is treated as stdin.
+
+           Important
+
+           The assembly syntax was changed greatly since version 4.0, please checkout grammar reference below!
+
+       Please check out TEXT GRAMMAR REFERENCE section to see how to write a rule by hand. Some examples will be displayed in EXAMPLES section.
+       ┌───────────────────┬─────────────────────────────────────────────────────┐
+       │                   │                                                     │
+       │ Command           │ Difference                                          │
+       ├───────────────────┼─────────────────────────────────────────────────────┤
+       │                   │                                                     │
+       │ seccomp-tools asm │ Use its own grammar to assemble, a bit script like; │
+       │                   │ can assemble invalid TEXT which will be rejected by │
+       │                   │ kernel                                              │
+       ├───────────────────┼─────────────────────────────────────────────────────┤
+       │                   │                                                     │
+       │ ceccomp asm       │ You can just take disasm output to asm, no new      │
+       │                   │ grammar is needed to learn; take stdin as input by  │
+       │                   │ default                                             │
+       └───────────────────┴─────────────────────────────────────────────────────┘
+
+   disasm - DISASSEMBLE
+           ceccomp disasm [-c WHEN] [-a ARCH] [RAW]
+
+       Disassemble RAW to TEXT. Use it to see what does a filter do if you could not access filter via trace and have to manually extract the filter out.
+
+       WHEN
+           Argument description can be found in asm - ASSEMBLE section. disasm may print more text in color including syntax highlighting for TEXT.
+
+       ARCH
+           Set to any architecture libseccomp supports. Will be used to determine how filtered syscall number in RAW filter is translated to syscall name
+           (for example, on x86_64, the number 0x3b is translated to execve if is comparing syscall_nr, see the basic example above). The default value on
+           your system is x86_64.
+
+       RAW
+           A binary file with raw BPF codes. Takes stdin as input if not set. Treat - as stdin. The file is arch-revelent, so it may not be portable on
+           different archs.
+
+           Note
+
+           Since version 4.0, endianness is considered. If target endianness ARCH is different from machine endianness, the filters will be reversed (CODE
+           and K) before decoding.
+
+           Note
+
+           ceccomp will try to resolve syscall number under an arch ONLY IF that at that line, arch can be determined. On foreign arch (not equal to the arch
+           you set), the foreign arch will be prepended to syscall name. You may notice that in some cases, seccomp-tools is able to resolve the name while
+           ceccomp is not, that may be intended as the arch is not determined.
+       ┌──────────────────────┬────────────────────────────────────────────────────┐
+       │                      │                                                    │
+       │ Command              │ Difference                                         │
+       ├──────────────────────┼────────────────────────────────────────────────────┤
+       │                      │                                                    │
+       │ seccomp-tools disasm │ Disassembles in its format; never check if the     │
+       │                      │ filter is valid                                    │
+       ├──────────────────────┼────────────────────────────────────────────────────┤
+       │                      │                                                    │
+       │ ceccomp disasm       │ Disassembles in ceccomp format, and takes stdin as │
+       │                      │ input by default; check arch strictly and always   │
+       │                      │ display foreign arch name                          │
+       └──────────────────────┴────────────────────────────────────────────────────┘
+
+   emu - EMULATE
+           ceccomp emu [-c WHEN] [-a ARCH] [-q] TEXT SYSCALL_NAME/SYSCALL_NR [ARGS[0] ARGS[1] ... ARGS[5] PC]
+
+       Emulate what will happen if syscall(SYSCALL_NR, ARGS[0], ARGS[1], ..., ARGS[5]) from PC is called following rules described in TEXT. Use it to see the
+       result without actually running it in program or you don’t want to examine the filter rule manually. This subcommand can be used to automatically
+       examining a filter.
+
+       WHEN
+           Argument description can be found in asm - ASSEMBLE section. emu may print more text in color including syntax highlighting for TEXT and skipped
+           statements.
+
+       SYSCALL_NAME/SYSCALL_NR
+           If you set SYSCALL_NAME (like execve), it will be translated to SYSCALL_NR under ARCH first. Or else set SYSCALL_NR directly (like 59). Then the
+           nr will be tested against the bpf filter to see the result of that syscall. This argument is NOT optional.
+
+       ARGS[0-5] and PC
+           Register values when calling syscall. For example, on x86_64, these are equivalent to rdi, rsi, rdx, r10, r8, r9 and rip. Their default value is
+           0.
+
+       ARCH
+           Argument description can be found in asm - ASSEMBLE section.
+
+       TEXT
+           Take a filename to determine which file containing TEXT rule will be tested. Note that filename CAN NOT be ignored as ceccomp can not determine if
+           a positional argument is syscall or filename. Use - to refer to stdin.
+
+       -q, --quiet
+           Only print the eval result of the filter. For example, if last statement emulated is return KILL, then KILL is printed.
+       ┌───────────────────┬─────────────────────────────────────────────────┐
+       │                   │                                                 │
+       │ Command           │ Difference                                      │
+       ├───────────────────┼─────────────────────────────────────────────────┤
+       │                   │                                                 │
+       │ seccomp-tools emu │ Take a RAW as input                             │
+       ├───────────────────┼─────────────────────────────────────────────────┤
+       │                   │                                                 │
+       │ ceccomp emu       │ Take a TEXT as input and take stdin as input by │
+       │                   │ default; set PC is possible                     │
+       └───────────────────┴─────────────────────────────────────────────────┘
+
+   trace - TRACE FILTER IN RUNTIME
+           ceccomp trace [-c WHEN] [-q] [-o FILE] PROGRAM [program-args]
+                         [-c WHEN] [-q] -p PID [-s]
+
+       The first line captures filters PROGRAM loads in runtime by tracing it; the second line extract seccomp filters from PID, or trace PID to capture
+       subsequent seccomp filters; once fetched filters, print them in TEXT. You can only choose one of the two formats above. Use this if running the
+       program is the simplest way to fetch bpf filters or a program with seccomp filters installed is waiting for input.
+
+       WHEN
+           Argument description can be found in asm - ASSEMBLE section. trace may print more text in color including syntax highlighting for TEXT.
+
+       FILE
+           May be useful when PROGRAM produces quite a lot output in stderr. ceccomp allow user to close stdin and stdout to limit PROGRAM input and output,
+           so ceccomp use stderr to print messages when running PROGRAM, set FILE if you want to see TEXT in some other file. Treat - as stdout.
+
+       PROGRAM
+           Set to the program you want to run, and program-args are its arguments just like running shell command exec PROGRAM program-args.
+
+       PID
+           Set to the pid you want to inspect. PID is conflict with PROGRAM; you could either run a program dynamically or examine a pid in one command.
+           Without -s flag, trace pid will try to extract seccomp filter in PID via ptrace(PTRACE_SECCOMP_GET_FILTER), which may not be available in some
+           systems.
+
+       -s, --seize
+           ONLY AVAILABLE FOR TRACE PID MODE. Set this flag will override trace pid behavior to attach to PID and keep tracing for seccomp filter loading
+           like trace prog mode. This flag was introduced in version 4.0.
+
+       -q, --quiet
+           Set to suppress the extra [INFO] prints when detect process forking, exiting or seccomp filter loading. This flag was introduced in version 4.0.
+
+           Note
+
+           To extract filters from PID, CAP_SYS_ADMIN is needed (without -s flag) and CAP_SYS_PTRACE may also be needed, the easiest way to acquire them is
+           calling ceccomp with sudo.
+
+           Note
+
+           Since version 3.1, multiple process tracing is introduced, and when tracee forking/resolving/exiting, an extra INFO message is printed. You can
+           discard it by running command like ceccomp trace -q PROG 2>/dev/null.
+       ┌────────────────────┬─────────────────────────────────────────────────────┐
+       │                    │                                                     │
+       │ Command            │ Difference                                          │
+       ├────────────────────┼─────────────────────────────────────────────────────┤
+       │                    │                                                     │
+       │ seccomp-tools dump │ Setting output format is possible; each filter can  │
+       │                    │ be output to a different file; killing PROGRAM once │
+       │                    │ LIMIT times of filters loaded; wrapping PROGRAM in  │
+       │                    │ sh -c                                               │
+       ├────────────────────┼─────────────────────────────────────────────────────┤
+       │                    │                                                     │
+       │ ceccomp trace      │ All filters are output to a single file; never kill │
+       │                    │ PROGRAM; PROGRAM is launched directly, so ./ is not │
+       │                    │ needed; explicitly print when forking; able to      │
+       │                    │ attach to pid for dynamic seccomp filter capturing  │
+       └────────────────────┴─────────────────────────────────────────────────────┘
+
+   probe - TEST COMMON SYSCALLS INSTANTLY
+           ceccomp probe [-c WHEN] [-o FILE] [-q] PROGRAM [program-args]
+
+       Run PROGRAM with program-args to captures FIRST seccomp filter, and then kill all children. Use it when a quick check against a program is needed, and
+       detect potential seccomp rule issues.
+
+       All argument descriptions can be found in trace - TRACE FILTER IN RUNTIME section.
+
+       The output for this subcommand is the emulating result of common syscalls like execve, open and so on. If the filter itself is not capable of blocking
+       syscalls, you could know that with a glance.
+
+       Typical output for this subcommand is described below, more detailed example could be found in EXAMPLES section.
+
+           open      -> ALLOW
+           read      -> ALLOW
+           write     -> ALLOW
+           execve    -> KILL
+           execveat  -> KILL
+           mmap      -> ALLOW
+           mprotect  -> ALLOW
+           openat    -> ALLOW
+           sendfile  -> ALLOW
+           ptrace    -> ERRNO(1)
+           fork      -> ALLOW
+
+           Note
+
+           seccomp-tools don’t have this subcommand.
+
+TEXT GRAMMAR REFERENCE
+           Important
+
+           The grammar changed greatly since version 4.0 as we refactored lexer for better human readability. The wrapper now prefixed by # as it’s a comment
+           now. And line is replaced by label, so now lexer depends on label declaration to decide where to jump, instead of lineno in TEXT file.
+
+       A valid TEXT format is described in EBNF-like declaration here: https://github.com/dbgbgtf1/Ceccomp/issues/17#issuecomment-3610531705. If you have no
+       interest to know what EBNF is, please keep reading for examples.
+
+       BPF ops which are not described below are banned by kernel.
+
+   Comment and Label
+       ceccomp disasm displays a lot of things, but some of them are optional for asm.
+
+           #Label  CODE  JT   JF      K
+           #---------------------------------
+            L0001: 0x06 0x00 0x00 0x7fff0000 return ALLOW
+           #---------------------------------
+
+       Any text after # will be discarded by asm like some script languages.
+
+       Empty lines are accepted.
+
+       Label declaration is an identifier at the beginning of line and suffixed by : like L0001. An identifier is a string starts with alpha and contains
+       with only alphanumeric characters and underscore _. Label is only necessary if it’s the destination of goto, these redundant labels added by disasm
+       are for readability. E.g. in if ($A == 0) goto somewhere, somewhere is a label and must be declared after the statement. Label declaration can take a
+       line separately, or be put in front of statement.
+
+       The CODE, JT, JF and K value generated by disasm will be discarded by asm, asm only parse the effective statement after K.
+
+           Note
+
+           There are some slight difference between ceccomp disasm and seccomp-tools disasm, down below is a general example. And some statements are
+           different, so don’t pipe seccomp-tools output to ceccomp blindly.
+
+           line  CODE  JT   JF      K
+           =================================
+           0000: 0x06 0x00 0x00 0x7fff0000  return ALLOW
+
+   Assignment
+       A can be set to seccomp attributes directly. But X can not be assigned with seccomp attributes directly due to kernel limit.
+
+           $A = $arch
+           $A = $syscall_nr
+
+       To assign A with those 64-bit long fields, low_ or high_ prefix is needed.
+
+           $A = $low_pc
+           $A = $high_pc
+           $A = $low_args[0]
+           $A = $high_args[0]
+           ...
+           $A = $low_args[5]
+           $A = $high_args[5]
+
+       A special attribute is sizeof(struct seccomp_data), that can be assigned to A or X directly.
+
+           $A = $scmp_data_len
+           $X = $scmp_data_len
+
+       Temporary memory is 32-bit, to access them, you could use hex or dec as index. Both A and X is assignable. Assigning immediate values to A or X
+       accepts any format of number if you imply the correct base by "0x" or "0b".
+
+           $X = $mem[0]
+           $A = $mem[0xf]
+           $A = $mem[15] # both hex and dec index are OK
+           $A = 0
+           $X = 0x3b
+           $A = 0b1111
+           $A = 0333
+
+       You could also assign X to A or in the reverse order. Assign X or A to temporary memory is definitely okay.
+
+           $A = $X
+           $X = $A
+           $mem[3] = $X
+           $mem[0x4] = $A
+
+   Arithmetic Operations
+       Various operations can be applied to A.
+
+           $A += 30
+           $A -= 4
+           $A *= 9
+           $A /= 1
+           $A &= 7
+           $A >>= 6
+
+       The right value can be X.
+
+           $A &= $X
+           $A |= $X
+           $A ^= $X
+           $A <<= $X
+
+       And there is a way to negativate A.
+
+           $A = -$A
+
+   Jump Downwards If ...
+       Unconditional jump:
+
+           goto L3
+
+       Jump if:
+
+           if ($A == execve) goto L3
+           if ($A != 1234) goto L4
+           if ($A & $X) goto L5
+           if !($A & 7) goto L6
+           if ($A <= $X) goto L7
+
+       If true jump to ... if false jump to...:
+
+           if ($A > $X) goto L3, else goto L4
+           if ($A >= 4567) goto L5, else goto L6
+
+       ONLY in conditions, you CAN replace number with syscall name or arch name. In example above, 0x3b is replaced by execve. All the syscall name will be
+       resolved to syscall number under your selected arch. If you want to resolve a syscall name in foreign arch (not equal to your selected arch), please
+       prepend a arch and dot. For example, your arch is x86_64, and you are writing aarch64 rules, then please write like:
+
+           if ($A == aarch64.read) goto 5
+
+       Note that if you manually set arch to aarch64 with -a aarch64, you can omit aarch64. in statement.
+
+   Return Code
+       Return value of register A:
+
+           return $A
+
+       Or return a immediate value, with extra field in (). Actions including TRACE, TRAP and ERRNO accept an extra field, without (), they are treated as
+       action(0).
+
+           return 0x13371337
+           return KILL
+           return KILL_PROCESS
+           return TRAP(123)
+           return ERRNO(0)
+           return TRACE
+           return TRACE(3)
+           return LOG
+           return NOTIFY
+
+   Short Example
+       The following TEXT is valid for asm, which blocks execve and execveat for amd64 syscalls:
+
+           $A = $syscall_nr
+           if ($A == execve) goto forbid
+           if ($A == execveat) goto forbid
+           return ALLOW
+           forbid: return KILL
+
+RESTRICTIONS
+       Ceccomp asm put some restrictions on TEXT for better performance.
+
+        1. '\0' must not be found in TEXT since it’s a text file.
+
+        2. A line must be shorter than 384 bytes.
+
+        3. A TEXT file must have less than 16384 lines.
+
+        4. A TEXT file must be smaller than 4 MiB.
+
+       And for both asm and disasm, effective statements (that can be encoded or decoded into BPF) must be less or equal than 4096, this is enforced by
+       kernel.
+
+       A fun fact about ceccomp asm: any basic ANSI color in TEXT file, e.g., \x1b[31m, will be discarded when processing.
+
+EXAMPLES
+       Manpage can not display images, so please check out html version of this page to see examples.
+
+REPO
+       Visit https://github.com/dbgbgtf1/Ceccomp to find the code. Pull Requests and Issues are welcome!
+
+       Copyright © 2025-present, distributed under GPLv3 or later.
+
+AUTHORS
+       dbgbgtf
+
+       RocketDev
+
+ceccomp 4.1                                                               2026-03-05                                                               CECCOMP(1)

@@ -1,0 +1,320 @@
+DBIx::DR(3pm)                                                User Contributed Perl Documentation                                                DBIx::DR(3pm)
+
+NAME
+       DBIx::DR - easy DBI helper (perl inside SQL and blessed results)
+
+SYNOPSIS
+           my $dbh = DBIx::DR->connect($dsn, $login, $passed);
+
+           $dbh->perform(
+               'UPDATE tbl SET a = 1 WHERE id = <%= $id %>',
+               id => 123
+           );
+
+           my $rowset = $dbh->select(
+               'SELECT * FROM tbl WHERE id IN (<% list @$ids %>)',
+               ids => [ 123, 456 ]
+           );
+           my $rowset = $dbh->select(-f => 'sqlfile.sql.ep', ids => [ 123, 456 ]);
+
+           while(my $row = $rowset->next) {
+               print "id: %d, value: %s\n", $row->id, $row->value;
+           }
+
+DESCRIPTION
+       The package extends DBI and allows You:
+
+       •   to use perl inside Your SQL requests;
+
+       •   to bless resultsets into Your package;
+
+       •   to place Your SQL's into dedicated directory;
+
+       •   to use usual DBI methods.
+
+Additional 'connect' options.
+   dr_iterator
+       A string describes iterator class.  Default value is 'dbix-dr-iterator#new' (decamelized string).
+
+   dr_item
+       A string describes item (one row) class.  Default value is 'dbix-dr-iterator-item#new' (decamelized string).
+
+   dr_sql_dir
+       Directory path to seek sql files (If You use dedicated SQLs).
+
+   dr_decode_errors
+       Decode database errors into utf-8
+
+   dr_sql_utf8
+       Default value: "true". If true, it will open sql files with option ":utf8".
+
+METHODS
+       All methods can receive the following arguments:
+
+       -f => $sql_file_name
+           It will load SQL-request from file. It will seek file in directory that was defined in dr_sql_dir param of connect.
+
+           You needn't to use suffixes (.sql.ep) here, but You can.
+
+       -item => 'decamelized_obj_define'
+           It will bless (or construct) row into specified class. See below.  Default value defined by dr_item argument of DBI::connect.
+
+       -noitem
+           Do not bless row into any class.
+
+       -iterator => 'decamelized_obj_define'
+           It will bless (or construct) rowset into specified class.  Default value defined by dr_iterator argument of DBI::connect.
+
+       -noiterator
+           Do not bless rowset into any class.
+
+       -noitem_iter
+           Do not pass iterator as second argument to item constructor.
+
+       -dbi => HASHREF
+           Additional DBI arguments.
+
+       -hash => FIELDNAME
+           Selects into HASH. Iterator will operate by names (not numbers).
+
+       -die => 0|1
+           If true the method will die with SQL-request.
+
+       -warn => 0|1
+           If true the method will warn with SQL-request.
+
+   Decamelized strings
+       Are strings that represent class [ and method ].
+
+        foo_bar                => FooBar
+        foo_bar#subroutine     => FooBar->subroutine
+        foo_bar-baz            => FooBar::Baz
+
+   perform
+       Does SQL-request like 'UPDATE', 'INSERT', etc.
+
+           $dbh->perform($sql, value => 1, other_value => 'abc');
+           $dbh->perform(-f => $sql_file_name, value => 1, other_value => 'abc');
+
+   select
+       Does SQL-request, pack results into iterator class. By default it uses DBIx::DR::Iterator class.
+
+           my $res = $dbh->select(-f => $sql_file_name, value => 1);
+           while(my $row = $res->next) {
+               printf "RowId: %d, RowValue: %s\n", $row->id, $row->value;
+           }
+
+           my $row = $row->get(15);  # row 15
+
+           my $res = $dbh->select(-f => $sql_file_name,
+                   value => 1, -hash => 'name');
+           while(my $row = $res->next) {
+               printf "RowId: %d, RowName: %s\n", $row->id, $row->name;
+           }
+
+           my $row = $row->get('Vasya');  # row with name eq 'Vasya'
+
+   single
+       Does  SQL-request  that  returns  one row. Pack results into item class.  Does SQL-request, pack results (one row) into item class. By default it uses
+       DBIx::DR::Iterator::Item class.
+
+Template language
+       You can use perl inside Your SQL requests:
+
+           % my $foo = 1;
+           % my $bar = 2;
+           <% my $foo_bar = $foo + $bar %>
+
+           ..
+
+           % use POSIX;
+           % my $gid = POSIX::getgid;
+
+       There are two functions available inside perl:
+
+   quote
+       Replaces argument to '?', add argument value into bindlist.  You can also use shortcut '=' instead of the function.
+
+       Example 1
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               id = <% quote $id %>
+
+       Result
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               id = ?
+
+       and bindlist will contain id value.
+
+       If You use DBIx::DR::ByteStream in place of string the function will recall immediate function.
+
+       Example 2
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               id = <%= $id %>
+
+   immediate
+       Replaces argument to its value.  You can also use shortcut '==' instead of the function.
+
+       Example 1
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               id = <% immediate $id %>
+
+       Result
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               id = 123
+
+       Where 123 is id value.
+
+       Be carful! Using the operator You can produce code that will be amenable to SQL-injection.
+
+       Example 2
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               id = <%== $id %>
+
+Helpers
+       There are a few default helpers.
+
+   list
+       Expands array into Your SQL request.
+
+       Example
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               status IN (<% list @$ids %>)
+
+       Result
+
+           SELECT
+               *
+           FROM
+               tbl
+           WHERE
+               status IN (?,?,? ...)
+
+       and bindlist will contain ids values.
+
+   hlist
+       Expands array of hash into Your SQL request. The first argument can be a list of required keys. Places each group into brackets.
+
+       Example
+
+           INSERT INTO
+               tbl
+                   ('a', 'b')
+           VALUES
+               <% hlist ['a', 'b'] => @$inserts
+
+       Result
+
+           INSERT INTO
+               tbl
+                   ('a', 'b')
+           VALUES
+               (?, ?), (?, ?) ...
+
+       and bindlist will contain all inserts values.
+
+   include
+       Includes the other SQL-part.
+
+       Example
+
+           % include 'other_sql', argument1 => 1, argument2 => 2;
+
+   stacktrace
+       Returns perl stacktrace. You can use the helper for debug Your code.  The helper receives the following position-arguments:
+
+       (first) $skip (default = 0)
+           How many frames to skip.
+
+       (second) $dept (default = 0)
+           How many frames to print.
+
+       (third) $separator (default ", ")
+           Separator between stackframes.
+
+       Examples
+
+           /* <%= stacktrace %> */
+
+           /* <%= stacktrace $skip, $depth, $separator %> */
+
+User's helpers
+       You can add Your helpers using method set_helper.
+
+   set_helper
+       Sets (or replaces) helpers.
+
+           $dbh->set_helper(foo => sub { ... }, bar => sub { ... });
+
+       Each helper receives template object as the first argument.
+
+       Examples:
+
+           $dbh->set_helper(foo_AxB => sub {
+               my ($tpl, $a, $b) = @_;
+               $tpl->quote($a * $b);
+           });
+
+       You can use quote and immediate functions inside Your helpers.
+
+       If You want use the other helper inside Your helper You have to do that by Yourself. To call the other helper You  can  also  use  "$tpl->call_helper"
+       function.
+
+       call_helper
+
+           $dbh->set_helper(
+               foo => sub {
+                   my ($tpl, $a, $b) = @_;
+                   $tpl->quote('foo' . $a . $b);
+               },
+               bar => sub {
+                   my $tpl = shift;
+                   $tpl->call_helper(foo => 'b', 'c');
+               }
+           );
+
+COPYRIGHT
+        Copyright (C) 2011 Dmitry E. Oboukhov <unera@debian.org>
+        Copyright (C) 2011 Roman V. Nikolaev <rshadow@rambler.ru>
+
+        This program is free software, you can redistribute it and/or
+        modify it under the terms of the Artistic License.
+
+VCS
+       The project is placed git repo on github: <https://github.com/unera/dbix-dr/>
+
+perl v5.34.0                                                              2022-03-15                                                            DBIx::DR(3pm)

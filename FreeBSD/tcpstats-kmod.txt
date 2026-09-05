@@ -1,0 +1,225 @@
+TCPSTATS(4)            FreeBSD Kernel Interfaces Manual            TCPSTATS(4)
+
+NAME
+     tcpstats – TCP connection statistics character device
+
+SYNOPSIS
+     To load the driver as a module at run-time, run the following command as
+     root:
+
+           kldload tcpstats
+
+     Alternatively, to load the driver as a module at boot time, add the
+     following line into the loader.conf(5) file:
+
+           tcpstats_load="YES"
+
+     To compile the driver into the kernel, add the following to the kernel
+     configuration file:
+
+           device tcpstats
+
+DESCRIPTION
+     The tcpstats kernel module creates a read-only character device
+     /dev/tcpstats that, when read, iterates every TCP connection in the
+     kernel in a single pass and streams fixed-size 320-byte records to
+     userspace via uiomove(9).
+
+     Each record is a struct tcp_stats_record containing comprehensive per-
+     connection metrics including TCP state, addresses, ports, congestion
+     control parameters, RTT, sequence numbers, retransmit counters, ECN
+     state, timer values, and buffer utilization.
+
+     A second device /dev/tcpstats-full is also created, which populates all
+     record fields by default (equivalent to setting format=full).
+
+     On systems with a large number of TCP connections, reading without a
+     filter requires iterating every socket.  Using the filtering interface
+     described below under Filtering is strongly recommended to reduce the
+     amount of data collected and minimize impact on the system.
+
+   Security Model
+     To minimize the potential impact on the system, multiple layers of
+     security and resource controls are enforced:
+
+     1.   File permissions: /dev/tcpstats is created with mode 0440, owned by
+          root:network.
+
+     2.   Write rejection: opening the device for writing returns EPERM.
+
+     3.   Credential visibility: each connection is checked with
+          cr_canseeinpcb() using the opener's credentials.  Only connections
+          visible to the reader are emitted.
+
+     4.   Concurrent FD limit: controlled by dev.tcpstats.max_open_fds
+          (default 16).  Returns EMFILE when exceeded.
+
+     5.   Concurrent reader limit: controlled by
+          dev.tcpstats.max_concurrent_readers (default 32).  Returns EBUSY
+          when exceeded.
+
+   Record Format
+     Each record is exactly 320 bytes, packed and 8-byte aligned.  The record
+     layout is defined by struct tcp_stats_record in <netinet/tcp_statsdev.h>.
+     The record is versioned (tsr_version) and includes 52 bytes of spare
+     space for future expansion without breaking the ABI.
+
+     Key field groups:
+     Identity    Address family, local/remote addresses and ports, socket
+                 metadata.
+     State       TCP state value, TCP flags, window scale, options (SACK,
+                 timestamps).
+     RTT         Smoothed RTT, RTT variance, retransmission timeout, minimum
+                 RTT.
+     Congestion  Congestion window, slow-start threshold, send/receive
+                 windows, MSS.
+     Names       Congestion control algorithm name, TCP stack name.
+     Sequences   Send next/unack/max, receive next/advertised.
+     Counters    Retransmit packets, out-of-order packets, zero-window probes,
+                 dupacks.
+     ECN         ECN negotiation state, delivered/received CE marks, DSACK,
+                 TLP.
+     Timers      Remaining time for retransmit, persist, keepalive, 2MSL,
+                 delayed ACK timers; time since last receive.
+     Buffers     Send/receive buffer current usage and high-water marks.
+
+   Filtering
+     Filters can be applied via the TCPSTATS_SET_FILTER ioctl(2) or via
+     sysctl-created named profiles.  All filter conditions are ANDed together.
+
+     Filter directives (used in profile strings):
+
+     local_port=ports      Match connections with local port in the comma-
+                           separated list (up to 8 ports).
+
+     remote_port=ports     Match connections with remote port in the comma-
+                           separated list.
+
+     exclude=states        Exclude connections in the given TCP states (comma-
+                           separated).  State names: closed, listen, syn_sent,
+                           syn_received, established, close_wait, fin_wait_1,
+                           closing, last_ack, fin_wait_2, time_wait.
+
+     include_state=states  Include only connections in the given TCP states.
+                           Mutually exclusive with exclude.
+
+     local_addr=addr[/prefix]
+                           Match connections with local address matching the
+                           given IPv4 CIDR or IPv6 prefix.
+
+     remote_addr=addr[/prefix]
+                           Match connections with remote address matching the
+                           given CIDR/prefix.
+
+     ipv4_only             Only emit IPv4 connections.
+
+     ipv6_only             Only emit IPv6 connections.
+
+     format=compact|full   Select compact (default) or full field output.
+
+     fields=groups         Comma-separated list of field groups to populate:
+                           identity, state, congestion, rtt, sequences,
+                           counters, timers, buffers, ecn, names, all,
+                           default.
+
+   Named Profiles
+     Named filter profiles can be created via sysctl, each producing a per-
+     profile device node under /dev/tcpstats/.
+
+     Create a profile:
+
+           sysctl dev.tcpstats.profile_set="web local_port=80,443 exclude=listen"
+
+     Read from the profile device:
+
+           cat /dev/tcpstats/web | hexdump -C
+
+     Delete a profile by writing just the name:
+
+           sysctl dev.tcpstats.profile_set="web"
+
+MIB Variables
+     The following sysctl(8) variables are available:
+
+     dev.tcpstats.max_open_fds            Maximum concurrent open file
+                                          descriptors across all devices.
+                                          Default: 16.
+
+     dev.tcpstats.max_concurrent_readers  Maximum concurrent read() calls.
+                                          Default: 32.
+
+     dev.tcpstats.max_read_duration_ms    Maximum read() iteration time in
+                                          milliseconds.  0 means unlimited.
+                                          Default: 5000.
+
+     dev.tcpstats.min_read_interval_ms    Minimum interval between reads per
+                                          file descriptor in milliseconds.  0
+                                          means unlimited.  Default: 0.
+
+     dev.tcpstats.reads_total             Total number of read() calls
+                                          serviced (read-only).
+
+     dev.tcpstats.active_fds              Number of currently open file
+                                          descriptors (read-only).
+
+     dev.tcpstats.opens_total             Total number of open() calls (read-
+                                          only).
+
+     dev.tcpstats.last_error              Last filter parse error message
+                                          (read-only).
+
+     dev.tcpstats.profile_set             Create, update, or delete named
+                                          filter profiles (read-write).
+
+IOCTLS
+     The following ioctl(2) commands are supported:
+
+     TCPSTATS_VERSION_CMD  Returns a struct tcpstats_version containing the
+                           protocol version, record size, and an approximate
+                           count of TCP connections.
+
+     TCPSTATS_SET_FILTER   Installs a struct tcpstats_filter to control which
+                           connections and fields are emitted on subsequent
+                           reads.
+
+     TCPSTATS_RESET        Resets the read state, allowing the device to be
+                           read again.  Without this, a second read() returns
+                           EOF.
+
+EXAMPLES
+     Read all TCP connections as raw records:
+
+           dd if=/dev/tcpstats bs=320 count=10 | hexdump -C
+
+     Create a named profile for HTTPS monitoring:
+
+           sysctl dev.tcpstats.profile_set="https local_port=443 exclude=listen,timewait"
+           cat /dev/tcpstats/https > /tmp/tcp_snapshot.bin
+
+     Check module statistics:
+
+           sysctl dev.tcpstats
+
+   Userspace Client
+     The bsd-xtcp: https://github.com/randomizedcoder/bsd-xtcp project
+     provides a Rust client that reads /dev/tcpstats and outputs JSON Lines.
+     To build and run on FreeBSD:
+
+           pkg install -y rust protobuf git-tiny
+           git clone --depth 1 https://github.com/randomizedcoder/bsd-xtcp.git
+           cd bsd-xtcp
+           cargo build --release -p bsd-xtcp
+           kldload tcpstats
+           ./target/release/bsd-xtcp --count 1 --pretty
+
+SEE ALSO
+     dtrace(1), ioctl(2), read(2), siftr(4), tcp(4), loader.conf(5), sysctl(8)
+
+HISTORY
+     The tcpstats module first appeared in FreeBSD 14.4 and FreeBSD 15.0.
+
+AUTHORS
+     The tcpstats module was written by Dave Seddon as part of the bsd-xtcp
+     project.
+
+FreeBSD 15.0-RELEASE-p4         March 14, 2026                     TCPSTATS(4)

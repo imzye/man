@@ -1,0 +1,182 @@
+qjail-drive-traffic(8)  FreeBSD System Manager's Manual qjail-drive-traffic(8)
+
+NAME
+     qjail-drive-traffic – Details explaining how to drive public traffic to a
+     jail that is built using qjail.
+
+
+SCENARIO DESCRIPTION
+     Please keep in mind that the environment described here is fictitious,
+     completely fake. For the purpose of this discussion only.
+
+     This host is typical of a home user or a Small Business. The user has
+     purchased a Home Class type of Internet service which gets assigned a
+     Dynamic IP address. A business may purchase a Business Class type of
+     Internet service which gets assigned a static IP address. In both cases
+     the host jails get configured the same way.
+
+     The "best pratice" method is used in assigning private ipv4 addresses to
+     each jail. The 10.0.0.0/8 private ip address range is being used. The
+     user must provide a "NAT" fumction to convert the used private ip address
+     traffic to the ip address assigned to the host. This is done in the
+     firewall running on the host.
+
+     Remember all inbound traffic goes through the firewall by kernel design
+     for both regular jails and VNET jails.
+
+
+TECHNICAL OVERVIEW
+     The users domain name register hosts the domain name and points it to
+     your hosts ip address by way of the "A" record ip address. The host is
+     running RELEASE 12.1 and its already connected to the public internet and
+     working correctly. All firewall rules are "keep state" and only inbound
+     ports 53, 67, 22, 80 are allowed in and only outbound ports 43, 53, 80
+     are allowed out. All other inbound/outbound ports are blocked by default.
+     Issuing whois 9.9.9.9 command from the hosts console should work as the
+     test to verify the host is functional. It's assumed that all host
+     commands are issued from the host's local console keyboard.
+
+     The host has one service running on it an apache web server port 80. The
+     host also has a single non-vnet jail populated with apache web server
+     that defaults to using public port 2080. There are two different
+     registered domain names both pointing to the same public ipv4 address in
+     the domain names "A" record. In the one intended for the jail web server
+     has the "srv" record in the domain name configured to change port 80 to
+     port 2080. Using the registered domain name "srv" record to specify the
+     target port number is the standard method of accomplishing this for a web
+     server.
+
+     Any customized port number that you want to be processed by a jail needs
+     a inbound "forward" rule to forward the port number to the private ip
+     address of the jail. Each of the three firewalls built into the kernel
+     have different syntaxs, so check the firewall manuals.
+
+
+JAIL CONFIG SETUP USING QJAIL
+     Step 1.  Enter pkg install qjail to Install the qjail software.
+
+     Step 2.  Enter qjail install to install the qjail environment.
+
+     Step 3.  Enter qjail create -4 10.10.0.1 www  To create a directory
+              tree type of NON-VNET jail with a jail name of www.
+
+     Step 4.  Enter qjail start www  Start this jail.
+
+     Step 5.  Enter qjail console www  Auto login to this jails console.
+              Enter pkg install apache24  Install web server software.
+              Enter echo "apache24_enable="YES"" >> /etc/rc.conf
+              Enter exit to leave jail console.
+              NOTE: It is assumed that you have the private ip address
+              10.10.0.1 being "NATed" by your host firewall.
+
+     Step 8.  Enter qjail restart www to stop and start the jail so
+              apache web server will start running.
+
+
+
+Config host firewall for jail traffic
+     For the purpose of this discussion the host system is using the ipfilter
+     firewall which is based on a ipf.conf rules file and ipfnat.conf rules
+     file. The actual IPF rules will be shown to illustrate their syntax.
+
+     To drive public traffic to a jail and have that same service run on the
+     host means the same default port numbers can not be used in both the host
+     and the jail. So port number 2080 is used for the jail apache server. To
+     target traffic to a jail we must give the jail an unique port number 2080
+     for the redirect command. This unique port number is arbitrarily chosen.
+     You can chose what ever unused port number that fits your fancy.
+
+     In the NAT rules file is where the real action takes place. First of all,
+     the "MAP" command must cover the compete range of private IPv4 addresses
+     you plan to use on the host system for assignment to jails. In this case
+     that's this command.
+
+     In the ipfnat.conf file map re0 10.0.0.0/8 -> 0/32 To change all out-
+     bound traffic to hosts ISP assinged ip address.
+
+     Now we have to code forward command to point the inbound port number 2080
+     to the jails IP addresses like this.
+
+     # Forward inbound unique port to jail www.
+     rdr re0 0.0.0.0/0 port 2080 -> 10.10.0.1 port 80 tcp
+
+     Load the NAT file to the system.
+
+     #This command loads the ipnat rules.
+     ipnat -FC -f /etc/ipfnat.conf
+
+     #This command will resync ipnat with current host ip address.
+     ipf -y
+
+     Now we have to return to the IPF.conf rules file and add a rule to allow
+     traffic out putted by the NAT forward rule to pass through the firewall
+     by adding this rule.
+
+     pass in quick rl0 tcp from any to 10.10.0.1 port = 80 flags S keep state
+
+     Load the IPF rules file.
+     ipf -FS -Fa -f /etc/ipf.conf
+
+
+Testing remote jail traffic
+     There are 3 browser url formats to do testing with.
+
+     1. If you have a domain name with the "srv' record set use this format.
+     jail_domain_name
+
+     2. If you only have a domain name with NO "srv" record set use this
+     format.  hosts_domain_name:2080
+
+     3. If you have NO domain name use this format.  hosts_ip_address:2080
+
+     You must be using an browser logged in over a different ISP account than
+     the one your jail server is on. If everything is set up correctly your
+     jail browser will issue this message It works meaning you now have remote
+     access to your jailed www apache web server.
+
+
+Some host debug commands
+     98 percent of the time the NAT rules or firewall rules are the cause of
+     problems. Check and re-check them.
+
+     sockstat -j jid    jib=jail running number
+     sockstat -4        display all the in use host ip address and port number
+                              being listened on.
+     sockstat -4 | grep 10.10.0.1   display only info for that ip number
+     ipnat -lhd         display nat info with count of times rule was hit
+     ipfstat -hni       list inbound firewall rules with hit count.
+     Note: Any rule that is allowing in a unique port number that gets
+              forwarded does not show a hit count. Look for the rule that
+              allows in the jails ip address port number for the count.
+
+     You can add the tcpdump function to a jail be changing the devfs_ruleset
+     number in the jails jail.conf definition from 4 to 50. There is a
+     customized ruleset number 50 that adds the "bfp" device that tcpdump
+     requires to work. The first time you use the "qjail config -b 50" command
+     it will be created automatically.
+
+     From inside running jail issue
+     tcpdump -v ip host jail-ip-address
+     tcpdump -v tcp port 2080
+
+
+About ssh access.
+     There 2 ways to gain accress to your jail system.  1. You can remote
+     login to your host ssh account, get root access and them "qjail console
+     jailname".
+
+     2. Whem you "qjail create" the jail use the -c option to create a ssh
+     account in the jail or the "qjail config -h" option. Then setup your
+     firewall NAT function with a forward command to use private port number
+     2022 like shown above. Then add this NAT redirect rule.
+
+     rdr re0 0.0.0.0/0 port 2022 -> 10.10.0.5 port 22 tcp
+
+
+SEE ALSO
+     qjail(8), qjail-intro(8), qjail-vnet-howto(8), qjail-ipv6-testing
+
+AUTHOR
+     Joe Barbish ⟨qjail1@a1poweruser.com⟩
+
+FreeBSD 15.0-RELEASE-p4        October 12, 2020         qjail-drive-traffic(8)

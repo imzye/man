@@ -1,0 +1,196 @@
+PAPERLESS(7)       FreeBSD Miscellaneous Information Manual       PAPERLESS(7)
+
+NAME
+     paperless – Index and archive scanned paper documents - installation
+
+SYNOPSIS
+     pkg install py39-paperless
+
+DESCRIPTION
+     Paperless is a simple Django application running in two parts: The
+     consumer, which does the indexing and a web interface, which allows
+     searching and downloading already-indexed documents.
+
+     This man page documents how the FreeBSD FreeBSD port is installed and
+     configured.  It assumes that the paperless package was already installed,
+     e.g., from the FreeBSD FreeBSD package repo as described in SYNOPSIS.
+
+     For more information about using paperless, see “the official paperless
+     documentation” (file://usr/local/share/doc/paperless/index.html or
+     https://paperless.readthedocs.io).
+
+     The package creates a symlink from
+     /usr/local/lib/python3.9/site-packages/paperless/manage.py to
+     /usr/local/bin/paperless for convenience reasons, so whenever the
+     official documentation mentions manage.py it can be substituted with
+     /usr/local/bin/paperless or simply paperless.
+
+     Paperless always needs to be run using the correct system user and an
+     UTF-8 codepage.
+
+     The package py39-paperless created a user paperless with the following
+     home directory layout, setting appropriate restrictive access
+     permissions:
+
+     /var/db/paperless
+           home directory (only writeable by root)
+           consume/  Consume directory writable by root, used as chroot
+                     directory for sftp access (see below).
+                     input/
+                          Input files are dropped in there to be processed by
+                          the paperless document consumer - either directly or
+                          via a mechanism like sftp.
+           media/    Directory used by paperless to store original files and
+                     thumbnails.
+           sqlite/   Contains paperless' SQLite database.
+
+CONSUMER SETUP
+     In case documents should be PGP encrypted, PAPERLESS_PASSPHRASE needs to
+     be configured in /usr/local/etc/paperless.conf first.
+
+     Also, PAPERLESS_OCR_THREADS can be tuned in the same configuration file
+     to limit the impact on system performance.
+
+     To use paperless, the consumer is enabled
+
+           sysrc paperless_consumer_enable=YES
+
+     and subsequently started
+
+           service paperless-consumer start
+
+     (which also creates/updates the paperless SQLite database).
+
+     Therefore, restarting the consumer after updates
+
+           service paperless-consumer restart
+
+     updates the database before starting the new program version.
+
+WEB UI SETUP
+     Before using the web ui, make sure to create a super user and assign a
+     password
+
+           su -l paperless -c '/usr/local/bin/paperless createsuperuser'
+
+     It is recommended to host the web component using a real web server,
+     e.g., nginx + uwsgi.
+
+     Install and configure uwsgi:
+
+           pkg install uwsgi
+           mkdir -p /usr/local/etc/uwsgi
+           cp /usr/local/share/examples/paperless/uwsgi.ini \
+               /usr/local/etc/uwsgi/paperless.ini
+           sysrc uwsgi_enable=YES
+           sysrc uwsgi_profiles+=paperless
+           sysrc uwsgi_paperless_socket_owner=paperless:www
+           sysrc uwsgi_paperless_uid=paperless
+           sysrc uwsgi_paperless_gid=paperless
+           sysrc uwsgi_paperless_configfile=/usr/local/etc/uwsgi/paperless.ini
+
+     Start the uwsgi process:
+
+           service uwsgi start paperless
+
+     Install nginx:
+
+           pkg install nginx
+
+     Create a basic server configuration ( /usr/local/etc/nginx/nginx.conf ),
+     example snippet:
+
+           server {
+               listen 80;
+               server_name localhost;
+
+               location /static/ {
+                   alias /usr/local/www/paperless/static/;
+               }
+
+               location / {
+                   uwsgi_pass unix:/tmp/uwsgi-paperless.sock;
+                   include uwsgi_params;
+               }
+
+               error_page   500 502 503 504  /50x.html;
+               location = /50x.html {
+                   root   /usr/local/www/nginx-dist;
+               }
+           }
+
+     Enable and start nginx:
+
+           sysrc nginx_enable=YES
+           service nginx start
+
+     In a real world setup, nginx should be configured to use TLS and
+     (potentially) client certificates.
+
+SFTP SETUP
+     Setting up sftp enabled direct upload of files to be processed by the
+     paperless consumer.  Some scanners allow configuring sftp with key based
+     authentication, which is convenient as it scans directly to the paperless
+     processing pipeline.
+
+     In case paperless is using a dedicated instance of sshd(8), access can be
+     limited to the paperless user by adding these lines to
+     /etc/ssh/sshd_config:
+
+           # Only include if sshd is dedicated to paperless
+           # otherwise you'll lock yourself out
+           AllowUsers paperless
+
+     The following block limits the paperless user to using the sftp(1)
+     protocol and locks it into the consume directory:
+
+           # paperless can only do sftp and is dropped into correct directory
+           Match User paperless
+                   ChrootDirectory %h/consume
+                   ForceCommand internal-sftp -u 0077 -d /input
+                   AllowTcpForwarding no
+                   X11Forwarding no
+                   PasswordAuthentication no
+
+     The public keys of authorized users/devices need to be added to
+     /var/db/paperless/.ssh/authorized_keys:
+
+           mkdir -p /var/db/paperless/.ssh
+           cat path/to/pubkey >>/var/db/paperless/.ssh/authorized_keys
+
+     Make sure sshd(8) is enabled and restart (or reload) it:
+
+           sysrc sshd_enable=YES
+           service sshd restart
+
+     The user will be dropped into the correct directory, so uploading a file
+     is as simple as:
+
+           echo put file.pdf | sftp -b - paperless@host
+
+FILES
+     /usr/local/etc/paperless.conf      See self-documented
+                                        /usr/local/etc/paperless.conf.sample
+                                        for example.
+     /usr/local/share/doc/paperless/index.html
+                                        Official documentation for the version
+                                        installed.
+     /usr/local/share/doc/paperless/presentation/index.html
+                                        Presentation of the motivation for and
+                                        technology behind paperless.
+     /usr/local/share/examples/paperless
+                                        Configuration examples, complementary
+                                        to this man page.
+
+SEE ALSO
+     sftp(1), sshd_config(5), ports(7), daemon(8), service(8), sysrc(8)
+
+
+     Official paperless documentation.
+
+     https://paperless.readthedocs.io
+
+AUTHORS
+     This manual page was written by Michael Gmelin <grembo@FreeBSD.org>.
+
+FreeBSD 13.1-RELEASE-p3       September 17, 2020       FreeBSD 13.1-RELEASE-p3

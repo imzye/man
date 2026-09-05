@@ -1,0 +1,458 @@
+Crypt::ASN1(3)        User Contributed Perl Documentation       Crypt::ASN1(3)
+
+NAME
+     Crypt::ASN1 - DER ASN.1 parser and encoder based on libtomcrypt
+
+SYNOPSIS
+       use Crypt::ASN1 qw(asn1_decode_der asn1_encode_der asn1_to_string);
+
+       # --- decode ---
+       my $tree = asn1_decode_der($der_bytes);
+       my $tree = asn1_decode_der($der_bytes, { int => 'hex', bin => 'hex' });
+
+       # --- inspect ---
+       print asn1_to_string($tree);
+
+       # --- encode a decoded tree ---
+       my $der2 = asn1_encode_der($tree);
+
+       # --- build from scratch ---
+       my $der = asn1_encode_der([{
+         type  => 'SEQUENCE',
+         value => [
+           { type => 'INTEGER',      value => '42' },
+           { type => 'BOOLEAN',      value => 1 },
+           { type => 'OID',          value => '1.2.840.113549.1.1.11' },
+           { type => 'UTF8_STRING',  value => 'hello' },
+           { type => 'OCTET_STRING', value => "\x00\x01\x02" },
+           { type => 'BIT_STRING',   value => "\x03\x02\x01", bits => 20 },
+           { type => 'NULL' },
+           { type => 'UTCTIME',      value => '2025-06-15T12:00:00Z' },
+           { type => 'CUSTOM', class => 'CONTEXT_SPECIFIC',
+             constructed => 1, tag => 0,
+             value => [{ type => 'INTEGER', value => '2' }] },
+         ],
+       }]);
+
+DESCRIPTION
+     Since: CryptX-0.089
+
+     Parses DER-encoded ASN.1 data into a Perl data structure without
+     requiring any schema, and encodes Perl data structures back to DER.  Uses
+     libtomcrypt's "der_decode_sequence_flexi" for decoding.
+
+     Both the decoder output and the encoder input use the same node hash
+     structure described below.  When given a tree produced by the decoder,
+     the encoder does its best to produce the same ASN.1 that was originally
+     parsed, regardless of what decode options were used.
+
+EXPORT
+     Nothing is exported by default.
+
+     You can export selected functions:
+
+       use Crypt::ASN1 qw(asn1_decode_der asn1_encode_der);
+
+     Or all of them at once:
+
+       use Crypt::ASN1 ':all';
+
+NODE HASH STRUCTURE
+     Both the decoder and encoder operate on the same data structure: an
+     arrayref of node hashrefs.  Each hashref represents one ASN.1 TLV
+     (Tag-Length-Value) element.
+
+   Common keys
+     Every node has three keys:
+
+     "type" (string, required)
+         The ASN.1 type name.  Built-in values include:
+
+           BOOLEAN  INTEGER  NULL  OID
+           OCTET_STRING  BIT_STRING  UTF8_STRING
+           PRINTABLE_STRING  IA5_STRING  TELETEX_STRING
+           UTCTIME  GENERALIZEDTIME
+           SEQUENCE  SET  CUSTOM
+
+         The list above is not exhaustive for decoded input.  If the decoder
+         encounters an ASN.1 tag that does not map to one of the built-in type
+         names above, it is returned as "CUSTOM" with the appropriate "class",
+         "constructed", and "tag" fields.  This includes unsupported universal
+         tags such as "ENUMERATED", which decode as "CUSTOM" with "class =>
+         "UNIVERSAL"".
+
+     "value" (varies, required for most types)
+         The decoded value.  Its Perl type depends on "type" and sometimes on
+         the "format" key -- see "Per-type details" below.
+
+     "format" (string, decoder sets it, encoder reads it)
+         Tells the encoder how the "value" is represented so it can convert it
+         back to DER.  Set automatically by the decoder; when building nodes
+         from scratch you may omit it -- the encoder then assumes the default
+         representation for each type.
+
+   Per-type details
+     Each subsection below documents one "type".  For types where the "value"
+     representation depends on the decode option used, a format table lists
+     every "format"/"value" combination.  The encoder accepts every
+     combination shown -- it reads "format" and converts "value" back to DER
+     automatically.
+
+     BOOLEAN
+
+     Keys: "type", "format", "value".
+
+     "value" is 1 (true) or 0 (false).  "format" is always "bool".
+
+       { type => "BOOLEAN", format => "bool", value => 1 }
+
+     INTEGER
+
+     Keys: "type", "format", "value".
+
+     "value" is an arbitrary-precision signed integer.  "format" describes the
+     representation:
+
+       format    value                        decode option     example
+       --------  ---------------------------  ----------------  ---------------
+       decimal   decimal string               (default)         "255"
+       hex       lowercase hex string         int => 'hex'      "ff"
+       bytes     big-endian binary string     int => 'bytes'    "\xff"
+
+     All three forms are accepted by the encoder.  When "format" is absent the
+     encoder treats "value" as a decimal string (a Perl integer is fine too).
+
+     Negative integers: "decimal" and "hex" carry a leading "-" (e.g. "-5").
+     "bytes" stores the unsigned magnitude only and is intended for naturally
+     unsigned values such as RSA moduli.  When decoding with "int => 'bytes'",
+     negative ASN.1 INTEGER values are rejected.
+
+     NULL
+
+     Keys: "type", "format", "value".
+
+     "value" is always "undef".  "format" is always "null".  The encoder
+     ignores "value".
+
+       { type => "NULL", format => "null", value => undef }
+
+     OID
+
+     Keys: "type", "format", "value", and optionally "name".
+
+     "value" is a dotted-decimal OID string (at least two arcs).  "format" is
+     always "oid".
+
+       { type => "OID", format => "oid", value => "1.2.840.113549.1.1.11" }
+
+     As a convenience, the encoder accepts textual arcs with leading zeros and
+     lets DER encoding canonicalize them.  For example, "2.000.1" encodes and
+     decodes back as "2.0.1".
+
+     Optional key: "name" -- present only when the "oidmap" decode option is
+     supplied and the OID is found in the map.  Ignored by the encoder.
+
+       { ..., name => "sha256WithRSAEncryption" }   # when oidmap matches
+
+     OCTET_STRING
+
+     Keys: "type", "format", "value".
+
+     "value" is binary data.  "format" describes the representation:
+
+       format    value                        decode option      example
+       --------  ---------------------------  -----------------  --------
+       bytes     raw binary string            (default)          "\x04\x01"
+       hex       lowercase hex string         bin => 'hex'       "0401"
+       base64    Base64-encoded string        bin => 'base64'    "BAE="
+
+     All three forms are accepted by the encoder.  When "format" is absent the
+     encoder treats "value" as raw bytes.
+
+     BIT_STRING
+
+     Keys: "type", "format", "value", "bits".
+
+     "value" is the packed bit data (MSB-first).  "format" follows the same
+     rules as "OCTET_STRING" ("bytes", "hex", or "base64").  All three forms
+     are accepted by the encoder.
+
+     "bits" is the exact number of significant bits.  The quantity "8 *
+     byte_length(value) - bits" gives the number of unused trailing bits in
+     the last byte.
+
+     When "format" is absent the encoder treats "value" as raw bytes.  When
+     "bits" is absent it defaults to "8 * length(value)" (no unused bits).
+
+       # default format (raw bytes, 25 significant bits)
+       { type => "BIT_STRING", format => "bytes",
+         value => "\x03\x02\x01\x00", bits => 25 }
+
+       # hex format
+       { type => "BIT_STRING", format => "hex",
+         value => "03020100", bits => 25 }
+
+     UTF8_STRING
+
+     Keys: "type", "format", "value".
+
+     "value" is a Perl Unicode string ("utf8" flag on).  "format" is always
+     "utf8".
+
+       { type => "UTF8_STRING", format => "utf8", value => "caf\x{e9}" }
+
+     PRINTABLE_STRING, IA5_STRING, TELETEX_STRING
+
+     Keys: "type", "format", "value".
+
+     "value" is a byte string.  "format" is always "string" for all three.
+
+       { type => "PRINTABLE_STRING", format => "string", value => "abc" }
+       { type => "IA5_STRING",       format => "string", value => "ia5" }
+       { type => "TELETEX_STRING",   format => "string", value => "tele" }
+
+     UTCTIME
+
+     Keys: "type", "format", "value".
+
+     "value" is a timestamp.  "format" describes the representation:
+
+       format    value                          decode option    example
+       --------  -----------------------------  ---------------  -----------------------
+       rfc3339   RFC 3339 string                (default)        "2024-01-15T10:30:00Z"
+       epoch     Unix timestamp (integer)       dt => 'epoch'    1705314600
+
+     Both forms are accepted by the encoder.  When "format" is absent, the
+     encoder auto-detects: an all-digit value is treated as epoch, a value
+     matching "YYYY-" is treated as RFC 3339.
+
+     For "UTCTIME", encoder input must fall within the UTCTime year window
+     1950..2049; values outside that range are rejected.  Fractional seconds
+     are also rejected for "UTCTIME".
+
+     Time validation in the encoder is currently syntactic, not full calendar
+     validation.  The encoder checks the accepted input shape and
+     ASN.1-specific constraints above, but it does not verify that every RFC
+     3339-looking date and time is semantically valid.
+
+     The decoder expands the 2-digit UTCTime year using the RFC 5280 window
+     (YY >= 50 → 19YY, else 20YY).  Timezone offsets are preserved (e.g.
+     "2024-01-15T10:30:00+05:30").
+
+     GENERALIZEDTIME
+
+     Keys: "type", "format", "value".
+
+     Same "format" rules as "UTCTIME"; both forms are accepted by the encoder.
+     Fractional seconds are preserved (e.g. "2024-01-15T10:30:00.125Z").
+     Validation is likewise syntactic only; semantically invalid calendar
+     values that match the accepted timestamp syntax are not currently
+     rejected.
+
+     SEQUENCE
+
+     Keys: "type", "format", "value".
+
+     "value" is an arrayref of child node hashrefs (in order).  "format" is
+     always "array".
+
+       { type => "SEQUENCE", format => "array", value => [ ...children... ] }
+
+     SET
+
+     Keys: "type", "format", "value".
+
+     Same structure as "SEQUENCE".  "format" is always "array".  Both ASN.1
+     SET and SET OF are represented as "type => "SET"" (they share the same
+     DER tag 0x31).
+
+     CUSTOM
+
+     Represents any tag that does not map to one of the built-in type names
+     above.  This is commonly used for context-specific implicit/explicit tags
+     ("[0]", "[1]", ...) found in X.509 certificates and other ASN.1 schemas,
+     but it can also be emitted by the decoder for unsupported universal tags.
+
+     Keys: "type", "format", "value", "class", "constructed", "tag".
+
+     "class" (string) -- "CONTEXT_SPECIFIC", "APPLICATION", "UNIVERSAL", or
+     "PRIVATE"
+     "constructed" (integer) -- 1 if constructed, 0 if primitive
+     "tag" (integer) -- the tag number (e.g. 0 for "[0]")
+         Must be a non-negative integer within the range supported by the
+         current encoder build.
+
+     Constructed ("constructed => 1"): "value" is an arrayref of child nodes.
+     "format" is "array".
+
+       { type => "CUSTOM", format => "array",
+         class => "CONTEXT_SPECIFIC", constructed => 1, tag => 0,
+         value => [ { type => "INTEGER", ... } ] }
+
+     Primitive ("constructed => 0"): "value" is raw data.  "format" follows
+     the same rules as "OCTET_STRING" ("bytes", "hex", or "base64" depending
+     on the "bin" decode option).  All three forms are accepted by the
+     encoder.  Primitive "CUSTOM" values must not be references.
+
+       # default format
+       { type => "CUSTOM", format => "bytes",
+         class => "CONTEXT_SPECIFIC", constructed => 0, tag => 1,
+         value => "\xAA\xBB" }
+
+       # hex format (bin => 'hex')
+       { type => "CUSTOM", format => "hex",
+         class => "CONTEXT_SPECIFIC", constructed => 0, tag => 1,
+         value => "aabb" }
+
+   Re-encoding Decoded Trees
+     The encoder reads "format" and converts "value" back to DER before
+     encoding.  When given a tree returned by "asn1_decode_der", it does its
+     best to produce the same ASN.1 that was originally parsed, regardless of
+     the decode options used:
+
+       my $tree = asn1_decode_der($der, { int=>'hex', bin=>'base64', dt=>'epoch' });
+       my $der2 = asn1_encode_der($tree);
+
+   Building nodes from scratch
+     When constructing nodes by hand you need "type" and "value" (plus the
+     extra keys noted above for "CUSTOM" and "BIT_STRING").  You may omit
+     "format"; the encoder assumes:
+
+       Type              default value interpretation
+       ----------------  ------------------------------------------
+       INTEGER           decimal string or Perl integer
+       OCTET_STRING      raw bytes
+       BIT_STRING        raw packed bytes, bits = length(value) * 8
+       UTCTIME           RFC 3339 string (or all-digit epoch)
+       GENERALIZEDTIME   RFC 3339 string (or all-digit epoch)
+       CUSTOM primitive  raw bytes
+
+     You may also supply "format" explicitly if you prefer to work with hex or
+     base64 representations:
+
+       # these two produce identical DER
+       { type => "OCTET_STRING", value => "\x04\x01" }
+       { type => "OCTET_STRING", format => "hex", value => "0401" }
+
+FUNCTIONS
+   asn1_decode_der
+       my $tree = asn1_decode_der($der_bytes);
+       my $tree = asn1_decode_der($der_bytes, \%opts);
+
+     Parses $der_bytes and returns an arrayref of top-level node hashrefs.
+     Croaks on parse error.
+
+     The optional %opts hashref controls value formatting:
+
+     "int => 'hex' | 'bytes'"
+         How to represent "INTEGER" values.  Default is a decimal string
+         ("format=>"decimal"").  'hex' gives a lowercase hex string
+         ("format=>"hex"").  'bytes' gives a raw big-endian binary string
+         ("format=>"bytes"") for non-negative INTEGER values only; decoding
+         croaks if the DER INTEGER is negative.
+
+     "bin => 'hex' | 'base64'"
+         How to represent "OCTET_STRING", "BIT_STRING", and primitive "CUSTOM"
+         values.  Default is raw binary bytes ("format=>"bytes"").  'hex'
+         gives a lowercase hex string ("format=>"hex"").  'base64' gives a
+         Base64-encoded string ("format=>"base64"").
+
+     "dt => 'epoch'"
+         How to represent "UTCTIME" and "GENERALIZEDTIME" values.  Default is
+         an RFC 3339 string ("format=>"rfc3339"").  'epoch' gives a Unix
+         timestamp integer ("format=>"epoch"").  This works reliably only on
+         Perls with 64-bit integers; on 32-bit integer Perls, large timestamps
+         may overflow or lose precision.
+
+     "oidmap => \%map"
+         A hashref mapping dotted OID strings to friendly names.  When a
+         decoded "OID" node's value exists as a key in %map, the node gets an
+         additional "name" key with the mapped value.  Does not affect
+         encoding.
+
+   asn1_decode_pem
+       my $tree = asn1_decode_pem($pem_string);
+       my $tree = asn1_decode_pem($pem_string, \%opts);
+
+     Decodes the PEM envelope first (via "pem_to_der" in Crypt::Misc), then
+     parses the resulting DER bytes.  Accepts the same %opts as
+     "asn1_decode_der".
+
+   asn1_decode_der_file
+       my $tree = asn1_decode_der_file($filename);
+       my $tree = asn1_decode_der_file($filename, \%opts);
+
+     Reads $filename as raw binary and parses it as DER.
+
+   asn1_decode_pem_file
+       my $tree = asn1_decode_pem_file($filename);
+       my $tree = asn1_decode_pem_file($filename, \%opts);
+
+     Reads $filename, decodes the PEM envelope, then parses the DER bytes.
+
+   asn1_encode_der
+       my $der_bytes = asn1_encode_der($tree);
+
+     Encodes $tree (an arrayref of node hashrefs) to DER bytes.  The input may
+     be a tree previously returned by "asn1_decode_der" or one built from
+     scratch.  Croaks on invalid input.
+
+     The encoder normalizes every node before encoding: it reads "format" (if
+     present) to determine how to interpret "value", converts it to the
+     canonical DER form, and encodes it.
+
+     The current low-level encoder supports element content lengths up to
+     0xffffffff bytes; larger values are rejected.
+
+   asn1_encode_pem
+       my $pem_string = asn1_encode_pem($tree, $header);
+
+     Encodes $tree to DER, then wraps in a PEM envelope with the given $header
+     (e.g. "CERTIFICATE", "RSA PRIVATE KEY").  Defaults to "DATA" if $header
+     is omitted.
+
+   asn1_encode_der_file
+       asn1_encode_der_file($tree, $filename);
+
+     Encodes $tree to DER and writes it to $filename.
+
+   asn1_encode_pem_file
+       asn1_encode_pem_file($tree, $header, $filename);
+
+     Encodes $tree to PEM and writes it to $filename.
+
+   asn1_to_string
+       my $text = asn1_to_string($tree);
+
+     Returns a human-readable text representation of $tree (an arrayref of
+     node hashrefs as returned by any "asn1_decode_*" function).  Useful for
+     debugging and inspection, similar to "openssl asn1parse" output.
+
+       print asn1_to_string(asn1_decode_pem_file("cert.pem"));
+
+     produces output like:
+
+       SEQUENCE (3 elem)
+         SEQUENCE (8 elem)
+           context_specific [0] cons (1 elem)
+             INTEGER:2
+           INTEGER:17923815188543234454
+           SEQUENCE (2 elem)
+             OBJECT:1.2.840.113549.1.1.11
+             NULL:
+           ...
+         BIT STRING:3082010a0282010100c242299a49420c21dcf9b957afcdc49... (2160 bit)
+
+     Binary values ("OCTET_STRING", "BIT_STRING", primitive "CUSTOM") are
+     shown as lowercase hex, truncated to 64 characters with "..." for longer
+     values.  "BIT_STRING" additionally shows the bit count in parentheses.
+     "OID" nodes that have a "name" key (via "oidmap") show the name in
+     parentheses after the dotted value.
+
+     The function handles trees decoded with any combination of decode options
+     ("int", "bin", "dt").
+
+SEE ALSO
+     CryptX, Crypt::Misc
+
+perl v5.42.3                      2026-06-13                    Crypt::ASN1(3)

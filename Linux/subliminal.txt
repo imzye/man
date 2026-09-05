@@ -1,0 +1,489 @@
+SUBLIMINAL(1)                                                                                      subliminal                                                                                     SUBLIMINAL(1)
+
+NAME
+       subliminal - subliminal Documentation
+
+       Subliminal is a python 2.7+ library to search and download subtitles.  It comes with an easy to use yet powerful CLI suitable for direct use or cron jobs.
+
+DOCUMENTATION
+   Usage
+   CLI
+       Download English subtitles:
+
+          $ subliminal download -l en The.Big.Bang.Theory.S05E18.HDTV.x264-LOL.mp4
+          Collecting videos  [####################################]  100%
+          1 video collected / 0 video ignored
+          Downloading subtitles  [####################################]  100%
+          Downloaded 1 subtitle
+
+       WARNING:
+          For  cron  usage,  make  sure  to specify a maximum age (with --age) so subtitles are searched for recent videos only. Otherwise you will get banned from the providers for abuse due to too many re‐
+          quests. If subliminal didn’t find subtitles for an old video, it’s unlikely it will find subtitles for that video ever anyway.
+
+       See cli for more details on the available commands and options.
+
+   Nautilus/Nemo integration
+       See the dedicated project page for more information.
+
+   High level API
+       You can call subliminal in many different ways depending on how much control you want over the process. For most use cases, you can stick to the standard API.
+
+   Common
+       Let’s start by importing subliminal:
+
+       >>> import os
+       >>> from babelfish import *
+       >>> from subliminal import *
+
+       Before going further, there are a few things to know about subliminal.
+
+   Video
+       The Movie and Episode classes represent a video, existing or not. You can create a video by name (or path) with Video.fromname, use scan_video() on an existing file path to get even  more  information
+       about the video or use scan_videos() on an existing directory path to scan a whole directory for videos.
+
+       >>> video = Video.fromname('The.Big.Bang.Theory.S05E18.HDTV.x264-LOL.mp4')
+       >>> video
+       <Episode [The Big Bang Theory s05e18]>
+
+       Here video information was guessed based on the name of the video, you can access some video attributes:
+
+       >>> video.video_codec
+       'H.264'
+       >>> video.release_group
+       'LOL'
+
+   Configuration
+       Before  proceeding to listing and downloading subtitles, you need to configure the cache. Subliminal uses a cache to reduce repeated queries to providers and improve overall performance with no impact
+       on search quality. For the sake of this example, we’re going to use a memory backend.
+
+       >>> my_region = region.configure('dogpile.cache.memory')
+
+       WARNING:
+          Choose a cache that fits your application and prefer persistent over volatile backends. The file backend is usually a good choice.  See dogpile.cache’s documentation for more details on backends.
+
+       Now that we’re done with the basics, let’s have some real fun.
+
+   Listing
+       To list subtitles, subliminal provides a list_subtitles() function that will return all found subtitles:
+
+       >>> subtitles = list_subtitles([video], {Language('hun')}, providers=['podnapisi'])
+       >>> subtitles[video]
+       [<PodnapisiSubtitle 'ZtAW' [hu]>, <PodnapisiSubtitle 'ONAW' [hu]>]
+
+       NOTE:
+          As you noticed, all parameters are iterables but only contain one item which means you can deal with a lot of videos, languages and providers at the same time. For the sake of this example, we fil‐
+          ter providers to use only one, pass providers=None (default) to search on all providers.
+
+   Scoring
+       It’s usual you have multiple candidates for subtitles. To help you chose which one to download, subliminal can compare them to the video and tell you exactly what matches with get_matches():
+
+       >>> for s in subtitles[video]:
+       ...     sorted(s.get_matches(video))
+       ['country', 'episode', 'release_group', 'season', 'series', 'source', 'video_codec', 'year']
+       ['country', 'episode', 'season', 'series', 'source', 'year']
+
+       And then compute a score with those matches with compute_score():
+
+       >>> for s in subtitles[video]:
+       ...     {s: compute_score(s, video)}
+       {<PodnapisiSubtitle 'ZtAW' [hu]>: 789}
+       {<PodnapisiSubtitle 'ONAW' [hu]>: 772}
+
+       Now you should have a better idea about which one you should choose.
+
+   Downloading
+       We can settle on the first subtitle and download its content using download_subtitles():
+
+       >>> subtitle = subtitles[video][0]
+       >>> subtitle.content is None
+       True
+       >>> download_subtitles([subtitle])
+       >>> subtitle.content.split(b'\n')[2]
+       b'Elszaladok a boltba'
+
+       If you want a string instead of bytes, you can access decoded content with the text property:
+
+       >>> subtitle.text.split('\n')[3]
+       'néhány apróságért.'
+
+   Downloading best subtitles
+       Downloading best subtitles is what you want to do in almost all cases, as a shortcut for listing, scoring and downloading you can use download_best_subtitles():
+
+       >>> best_subtitles = download_best_subtitles([video], {Language('hun')}, providers=['podnapisi'])
+       >>> best_subtitles[video]
+       [<PodnapisiSubtitle 'ZtAW' [hu]>]
+       >>> best_subtitle = best_subtitles[video][0]
+       >>> best_subtitle.content.split(b'\n')[2]
+       b'Elszaladok a boltba'
+
+       We end up with the same subtitle but with one line of code. Neat.
+
+   Save
+       We got ourselves a nice subtitle, now we can save it on the file system using save_subtitles():
+
+       >>> save_subtitles(video, [best_subtitle])
+       [<PodnapisiSubtitle 'ZtAW' [hu]>]
+       >>> os.listdir()
+       ['The.Big.Bang.Theory.S05E18.HDTV.x264-LOL.hu.srt']
+
+   How it works
+   Providers
+       Subliminal uses multiple providers to give users a vast choice and have a better chance to find the best matching subtitles. Current supported providers are:
+
+       • Addic7ed
+
+       • LegendasTV
+
+       • NapiProjekt
+
+       • OpenSubtitles
+
+       • Podnapisi
+
+       • Shooter
+
+       • TheSubDB
+
+       • TvSubtitles
+
+       Providers  all  inherit the same Provider base class and thus share the same API.  They are registered on the subliminal.providers entry point and are exposed through the provider_manager for easy ac‐
+       cess.
+
+       To work with multiple providers seamlessly, the ProviderPool exposes the same API but distributes it to its providers and AsyncProviderPool does it asynchronously.
+
+   Scoring
+       Rating subtitles and comparing them is probably the most difficult part and this is where subliminal excels with its powerful scoring algorithm.
+
+       Using guessit and enzyme, subliminal extracts properties of the video and match them with the properties of the subtitles found with the providers.
+
+       Equations in subliminal.score give a score to each property (called a match). The more matches the video and the subtitle have, the higher the score computed with compute_score() gets.
+
+   Libraries
+       Various libraries are used by subliminal and are key to its success:
+
+       • guessit to guess information from filenames
+
+       • enzyme to detect embedded subtitles in videos and read other video metadata
+
+       • babelfish to work with languages
+
+       • requests to make human readable HTTP requests
+
+       • BeautifulSoup to parse HTML and XML
+
+       • dogpile.cache to cache intermediate search results
+
+       • stevedore to manage the provider entry point
+
+       • chardet to detect subtitles’ encoding
+
+       • pysrt to validate downloaded subtitles
+
+   CLI
+   subliminal
+          Usage: subliminal [OPTIONS] COMMAND [ARGS]...
+
+            Subtitles, faster than your thoughts.
+
+          Options:
+            --addic7ed USERNAME PASSWORD    Addic7ed configuration.
+            --legendastv USERNAME PASSWORD  LegendasTV configuration.
+            --opensubtitles USERNAME PASSWORD
+                                            OpenSubtitles configuration.
+            --omdb APIKEY                   OMDB API key.
+            --cache-dir DIRECTORY           Path to the cache directory.  [default:
+                                            /builddir/.cache/subliminal]
+            --debug                         Print useful information for debugging
+                                            subliminal and for reporting bugs.
+            --version                       Show the version and exit.
+            --help                          Show this message and exit.
+
+          Commands:
+            cache     Cache management.
+            download  Download best subtitles.
+
+            Suggestions and bug reports are greatly appreciated:
+            https://github.com/Diaoul/subliminal/
+
+   subliminal download
+          Usage: subliminal download [OPTIONS] PATH...
+
+            Download best subtitles.
+
+            PATH can be an directory containing videos, a video file path or a video
+            file name. It can be used multiple times.
+
+            If an existing subtitle is detected (external or embedded) in the correct
+            language, the download is skipped for the associated video.
+
+          Options:
+            -l, --language LANGUAGE         Language as IETF code, e.g. en, pt-BR (can
+                                            be used multiple times).  [required]
+            -p, --provider [addic7ed|argenteam|legendastv|opensubtitles|opensubtitlesvip|podnapisi|shooter|thesubdb|tvsubtitles]
+                                            Provider to use (can be used multiple
+                                            times).
+            -r, --refiner [hash|metadata|omdb|tvdb]
+                                            Refiner to use (can be used multiple times).
+            -a, --age AGE                   Filter videos newer than AGE, e.g. 12h,
+                                            1w2d.
+            -d, --directory DIR             Directory where to save subtitles, default
+                                            is next to the video file.
+            -e, --encoding ENC              Subtitle file encoding, default is to
+                                            preserve original encoding.
+            -s, --single                    Save subtitle without language code in the
+                                            file name, i.e. use .srt extension. Do not
+                                            use this unless your media player requires
+                                            it.
+            -f, --force                     Force download even if a subtitle already
+                                            exist.
+            -hi, --hearing-impaired         Prefer hearing impaired subtitles.
+            -m, --min-score INTEGER RANGE   Minimum score for a subtitle to be
+                                            downloaded (0 to 100).  [0<=x<=100]
+            -w, --max-workers INTEGER RANGE
+                                            Maximum number of threads to use.
+                                            [1<=x<=50]
+            -z, --archives / -Z, --no-archives
+                                            Scan archives for videos (supported
+                                            extensions: .rar).  [default: z]
+            -v, --verbose                   Increase verbosity.  [x>=0]
+            --help                          Show this message and exit.
+
+   subliminal cache
+          Usage: subliminal cache [OPTIONS]
+
+            Cache management.
+
+          Options:
+            --clear-subliminal  Clear subliminal's cache. Use this ONLY if your cache is
+                                corrupted or if you experience issues.
+            --help              Show this message and exit.
+
+   Provider Guide
+       This guide is going to explain how to add a Provider to subliminal. You are encouraged to take a look at the existing providers, it can be a nice base to start your own provider.
+
+   Requirements
+       When starting a provider you should be able to answer to the following questions:
+
+       • What languages does my provider support?
+
+       • What are the language codes for the supported languages?
+
+       • Does my provider deliver subtitles for episodes? for movies?
+
+       • Does my provider require a video hash?
+
+       Each response of these questions will help you set the correct attributes for your Provider.
+
+   Video Validation
+       Not all providers deliver subtitles for Episode. Some may require a hash.  The check() method does validation against a Video object and will return False if the given Video isn’t suitable. If  you’re
+       not happy with the default implementation, you can override it.
+
+   Configuration
+       API keys must not be configurable by the user and must remain linked to subliminal. Hence they must be written in the provider module.
+
+       Per-user  authentication  is  allowed and must be configured at instantiation as keyword arguments. Configuration will be done by the user through the provider_configs argument of the list_subtitles()
+       and download_best_subtitles() functions. No network operation must be done during instantiation, only configuration. Any error in the configuration must raise a ConfigurationError.
+
+       Beyond this point, if an error occurs, a generic ProviderError exception must be raised. You can also use more explicit exception classes AuthenticationError and DownloadLimitExceeded.
+
+   Initialization / Termination
+       Actual authentication operations must take place in the initialize() method.  If you need anything to be executed when the provider isn’t used anymore like logout, use terminate().
+
+   Caching policy
+       To save bandwidth and improve querying time, intermediate data should be cached when possible. Typical use case is when a query to retrieve show ids is required prior to the query to  actually  search
+       for subtitles. In that case the function that gets the show id from the show name must be cached.  Expiration time should be SHOW_EXPIRATION_TIME for shows and EPISODE_EXPIRATION_TIME for episodes.
+
+   Language
+       To be able to handle various language codes, subliminal makes use of babelfish Language and converters. You must set the attribute languages with a set of supported Language.
+
+       If you cannot find a suitable converter for your provider, you can make one of your own.
+
+   Querying
+       The query() method parameters must include all aspects of provider’s querying with primary types.
+
+   Subtitle
+       A custom Subtitle subclass must be created to represent a subtitle from the provider.  It must have relevant attributes that can be used to compute the matches of the subtitle against a Video object.
+
+   Score computation
+       To be able to compare subtitles coming from different providers between them, the get_matches() method must be implemented.
+
+   Unittesting
+       All  possible  uses  of  query(),  list_subtitles()  and  download_subtitle()  methods  must  have integration tests. Use vcrpy for recording and playback of network activity.  Other functions must be
+       unittested. If necessary, you can use unittest.mock to mock some functions.
+
+API DOCUMENTATION
+       If you are looking for information on a specific function, class or method, this part of the documentation is for you.
+
+   Core
+       subliminal.core.ARCHIVE_EXTENSIONS
+              Supported archive extensions
+
+   Video
+       subliminal.video.VIDEO_EXTENSIONS
+              Video extensions
+
+   Subtitle
+       subliminal.subtitle.SUBTITLE_EXTENSIONS
+              Subtitle extensions
+
+   Providers
+   Addic7ed
+   LegendasTv
+   NapiProjekt
+   OpenSubtitles
+   Podnapisi
+   Shooter
+   TheSubDB
+   TVsubtitles
+   Refiners
+       Refiners enrich a Video object by adding information to it.
+
+       A refiner is a simple function:
+
+       subliminal.refiners.refine(video, **kwargs)
+
+              Parameters
+
+                     • video (Video) – the video to refine.
+
+                     • **kwargs – additional parameters for refiners.
+
+   Metadata
+       subliminal.refiners.metadata.refine(video, embedded_subtitles=True, **kwargs)
+              Refine a video by searching its metadata.
+
+              Several Video attributes can be found:
+
+                 • resolution
+
+                 • video_codec
+
+                 • audio_codec
+
+                 • subtitle_languages
+
+              Parameters
+                     embedded_subtitles (bool) – search for embedded subtitles.
+
+   TVDB
+       subliminal.refiners.tvdb.refine(video, **kwargs)
+              Refine a video by searching TheTVDB.
+
+              NOTE:
+                 This refiner only work for instances of Episode.
+
+              Several attributes can be found:
+
+                 • series
+
+                 • year
+
+                 • series_imdb_id
+
+                 • series_tvdb_id
+
+                 • title
+
+                 • imdb_id
+
+                 • tvdb_id
+
+   OMDb
+       subliminal.refiners.omdb.refine(video, apikey=None, **kwargs)
+              Refine a video by searching OMDb API.
+
+              Several Episode attributes can be found:
+
+                 • series
+
+                 • year
+
+                 • series_imdb_id
+
+              Similarly, for a Movie:
+
+                 • title
+
+                 • year
+
+                 • imdb_id
+
+   Extensions
+   Score
+       This module provides the default implementation of the compute_score parameter in download_best_subtitles() and download_best_subtitles().
+
+       NOTE:
+          To avoid unnecessary dependency on sympy and boost subliminal’s import time, the resulting scores are hardcoded here and manually updated when the set of equations change.
+
+       Available matches:
+
+          • hash
+
+          • title
+
+          • year
+
+          • country
+
+          • series
+
+          • season
+
+          • episode
+
+          • release_group
+
+          • streaming_service
+
+          • source
+
+          • audio_codec
+
+          • resolution
+
+          • hearing_impaired
+
+          • video_codec
+
+          • series_imdb_id
+
+          • imdb_id
+
+          • tvdb_id
+
+   Utils
+   Cache
+       subliminal.cache.SHOW_EXPIRATION_TIME
+              Expiration time for show caching
+
+       subliminal.cache.EPISODE_EXPIRATION_TIME
+              Expiration time for episode caching
+
+       subliminal.cache.REFINER_EXPIRATION_TIME
+              Expiration time for scraper searches
+
+       subliminal.cache.region
+              The CacheRegion
+
+       Refer to dogpile.cache’s region configuration documentation to see how to configure the region
+
+   CLI
+       Subliminal uses click to provide a powerful CLI.
+
+   Exceptions
+LICENSE
+       MIT
+
+       • genindex
+
+       • modindex
+
+       • search
+
+AUTHOR
+       Antoine Bertin
+
+COPYRIGHT
+       2021, Antoine Bertin
+
+2.1.0                                                                                             Jul 23, 2021                                                                                    SUBLIMINAL(1)

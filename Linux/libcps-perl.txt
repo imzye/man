@@ -1,0 +1,224 @@
+CPS::Functional(3pm)                                         User Contributed Perl Documentation                                         CPS::Functional(3pm)
+
+NAME
+       "CPS::Functional" - functional utilities in Continuation-Passing Style
+
+SYNOPSIS
+        use CPS::Functional qw( kmap );
+
+        use Example::HTTP::Client qw( k_get_http );
+        use List::Util qw( sum );
+
+        my @URLs = (
+           "http://www.foo.com",
+           "http://www.bar.com",
+        );
+
+        kmap( \@URLs,
+           sub {
+              my ( $item, $kret ) = @_;
+
+              k_get_http( uri => $item, on_response => sub {
+                 my ( $response ) = @_;
+
+                 $kret->( $response->content_length );
+              } );
+           },
+           sub {
+              my ( @sizes ) = @_;
+
+              say "Total length of all URLs: " . sum(@sizes);
+           },
+        );
+
+DESCRIPTION
+       This module provides CPS versions of data-flow functionals, such as Perl's "map" and "grep", where function bodies are invoked and expected to return
+       data, which the functional manages. They are built on top of the control-flow functionals provided by the "CPS" module itself.
+
+FUNCTIONS
+   kmap( \@items, \&body, $k )
+       CPS version of perl's "map" statement. Calls the "body" code once for each element in @items, capturing the list of values the body passes into its
+       continuation. When the items are exhausted, $k is invoked and passed a list of all the collected values.
+
+        $body->( $item, $kret )
+           $kret->( @items_out )
+
+        $k->( @all_items_out )
+
+   kgrep( \@items, \&body, $k )
+       CPS version of perl's "grep" statement. Calls the "body" code once for each element in @items, capturing those elements where the body's continuation
+       was invoked with a true value. When the items are exhausted, $k is invoked and passed a list of the subset of @items which were selected.
+
+        $body->( $item, $kret )
+           $kret->( $select )
+
+        $k->( @chosen_items )
+
+   kfoldl( \@items, \&body, $k )
+       CPS version of "List::Util::reduce", which collapses (or "folds") a list of values down to a single scalar, by successively accumulating values
+       together.
+
+       If @items is empty, invokes $k immediately, passing in "undef".
+
+       If @items contains a single value, invokes $k immediately, passing in just that single value.
+
+       Otherwise, initialises an accumulator variable with the first value in @items, then for each additional item, invokes the "body" passing in the
+       accumulator and the next item, storing back into the accumulator the value that "body" passed to its continuation. When the @items are exhausted, it
+       invokes $k, passing in the final value of the accumulator.
+
+        $body->( $acc, $item, $kret )
+           $kret->( $new_acc )
+
+        $k->( $final_acc )
+
+       Technically, this is not a true Scheme/Haskell-style "foldl", as it does not take an initial value. (It is what Haskell calls "foldl1".) However, if
+       such an initial value is required, this can be provided by
+
+        kfoldl( [ $initial, @items ], \&body, $k )
+
+   kfoldr( \@items, \&body, $k )
+       A right-associative version of "kfoldl()". Where "kfoldl()" starts with the first two elements in @items and works forward, "kfoldr()" starts with the
+       last two and works backward.
+
+        $body->( $item, $acc, $kret )
+           $kret->( $new_acc )
+
+        $k->( $final_acc )
+
+       As before, an initial value can be provided by modifying the @items array, though note it has to be last this time:
+
+        kfoldr( [ @items, $initial ], \&body, $k )
+
+   kunfold( $seed, \&body, $k )
+       An inverse operation to "kfoldl()"; turns a single scalar into a list of items. Repeatedly calls the "body" code, capturing the values it returns,
+       until it indicates the end of the loop, then invoke $k with the collected values.
+
+        $body->( $seed, $kmore, $kdone )
+           $kmore->( $new_seed, @items )
+           $kdone->( @items )
+
+        $k->( @all_items )
+
+       With each iteration, the "body" is invoked and passed the current $seed value and two continuations, $kmore and $kdone. If $kmore is invoked, the
+       passed items, if any, are appended to the eventual result list. The "body" is then re-invoked with the new $seed value. If $klast is invoked, the
+       passed items, if any, are appended to the return list, then the entire list is passed to $k.
+
+EXAMPLES
+       The following aren't necessarily examples of code which would be found in real programs, but instead, demonstrations of how to use the above functions
+       as ways of controlling program flow.
+
+       Without dragging in large amount of detail on an asynchronous or event-driven framework, it is difficult to give a useful example of behaviour that
+       CPS allows that couldn't be done just as easily without. Nevertheless, I hope the following examples will be useful to demonstrate use of the above
+       functions, in a way which hints at their use in a real program.
+
+   Implementing "join()" using "kfoldl()"
+        use CPS::Functional qw( kfoldl );
+
+        my @words = qw( My message here );
+
+        kfoldl(
+           \@words,
+           sub {
+              my ( $left, $right, $k ) = @_;
+
+              $k->( "$left $right" );
+           },
+           sub {
+              my ( $str ) = @_;
+
+              print "Joined up words: $str\n";
+           }
+        );
+
+   Implementing "split()" using "kunfold()"
+       The following program illustrates the way that "kunfold()" can split a string, in a reverse way to the way "kfoldl()" can join it.
+
+        use CPS::Functional qw( kunfold );
+
+        my $str = "My message here";
+
+        kunfold(
+           $str,
+           sub {
+              my ( $s, $kmore, $kdone ) = @_;
+
+              if( $s =~ s/^(.*?) // ) {
+                 return $kmore->( $s, $1 );
+              }
+              else {
+                 return $kdone->( $s );
+              }
+           },
+           sub {
+              my @words = @_;
+              print "Words in message:\n";
+              print "$_\n" for @words;
+           }
+        );
+
+   Generating Prime Numbers
+       While the design of "kunfold()" is symmetric to "kfoldl()", the seed value doesn't have to be successively broken apart into pieces. Another valid use
+       for it may be storing intermediate values in computation, such as in this example, storing a list of known primes, to help generate the next one:
+
+        use CPS::Functional qw( kunfold );
+
+        kunfold(
+           [ 2, 3 ],
+           sub {
+              my ( $vals, $kmore, $kdone ) = @_;
+
+              return $kdone->() if @$vals >= 50;
+
+              PRIME: for( my $n = $vals->[-1] + 2; ; $n += 2 ) {
+                 $n % $_ == 0 and next PRIME for @$vals;
+
+                 push @$vals, $n;
+                 return $kmore->( $vals, $n );
+              }
+           },
+           sub {
+              my @primes = ( 2, 3, @_ );
+              print "Primes are @primes\n";
+           }
+        );
+
+   Forward-reading Program Flow
+       One side benefit of the CPS control-flow methods which is unassociated with asynchronous operation, is that the flow of data reads in a more natural
+       left-to-right direction, instead of the right-to-left flow in functional style. Compare
+
+        sub square { $_ * $_ }
+        sub add { $a + $b }
+
+        print reduce( \&add, map( square, primes(10) ) );
+
+       (because "map" is a language builtin but "reduce" is a function with "(&)" prototype, it has a different way to pass in the named functions)
+
+       with
+
+        my $ksquare = liftk { $_[0] * $_[0] };
+        my $kadd = liftk { $_[0] + $_[1] };
+
+        kprimes 10, sub {
+           kmap \@_, $ksquare, sub {
+              kfoldl \@_, $kadd, sub {
+                 print $_[0];
+              }
+           }
+        };
+
+       This translates roughly to a functional vs imperative way to describe the problem:
+
+        Print the sum of the squares of the first 10 primes.
+
+        Take the first 10 primes. Square them. Sum them. Print.
+
+       Admittedly the closure creation somewhat clouds the point in this small example, but in a larger example, the real problem-solving logic would be
+       larger, and stand out more clearly against the background boilerplate.
+
+SEE ALSO
+       •   CPS - manage flow of control in Continuation-Passing Style
+
+AUTHOR
+       Paul Evans <leonerd@leonerd.org.uk>
+
+perl v5.34.0                                                              2022-06-30                                                     CPS::Functional(3pm)

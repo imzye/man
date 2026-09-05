@@ -1,0 +1,2465 @@
+MASAKARI-MONITORS(1)                                                  masakari-monitors                                                  MASAKARI-MONITORS(1)
+
+NAME
+       masakari-monitors - masakari-monitors 21.0.0
+
+       Masakari  is  an OpenStack project designed to ensure high availability of instances and compute processes running on hosts. Masakari-monitors are the
+       components which detects faults in the cloud.
+
+OPERATOR GUIDE
+   Architecture Overview
+       • Masakari Monitors architecture <>: An overview of how all the components in masakari work together.
+
+   Installation
+       A detailed install guide for Masakari-monitors.
+
+   Masakari-monitors services
+   Overview
+       Masakari-monitors provides Virtual Machine High Availability (VMHA) service for OpenStack clouds by automatically detecting failure  events.  It  pro‐
+       vides an alert for failure of either host, process or instance. If it detect such events, notifications are sent to the masakari-api.
+
+       Masakari-monitors detects the four types of failures:
+
+       •
+
+         process failure
+                masakari-processmonitor service detects compute process failure, and sends notifications to the masakari-api.
+
+       •
+
+         instance failure
+                masakari-instancemonitor service detects VM/instance failure, and sends notifications to the masakari-api.
+
+       •
+
+         instance system-level failure failure
+                masakari-introspectiveinstancemonitor  service detects system-level failure events via QEMU Guest Agent. When it does, it sends notifications
+                to the masakari-api.
+
+       •
+
+         compute host failure
+                masakari-hostmonitor service detects nova-compute host failure.
+
+   Install and configure
+       This section describes how to install and configure Masakari-monitors services on the compute node.
+
+       This section assumes that you already have a working OpenStack environment with at least the following components  installed:  Nova,  Glance,  Cinder,
+       Neutron and Identity.
+
+       Note that installation and configuration varies by distribution.
+
+   Install and configure for Ubuntu
+       This section describes how to install and configure Masakari-monitors for Ubuntu 18.04 (bionic).
+
+   Prerequisites
+       Before you install and configure Masakari-monitors, you must verify installations below:
+
+       1. To install and confirm Masakari installation:
+
+          • Masakari - is an OpenStack project designed to ensure high availability of instances and compute processes running on hosts. For detailed instal‐
+            lation steps please refer to masakari documentation <https://docs.openstack.org/masakari/latest/>
+
+          • Verify Masakari installation by verifying status of services:
+
+                $ systemctl list-unit-files devstack@masakari-*.service
+
+                UNIT FILE                                              STATE
+                devstack@masakari-api.service                          enabled
+                devstack@masakari-engine.service                       enabled
+
+                2 unit files listed.
+
+       2. IPMI  support is needed for masakari-hostmonitor service which is a remote hardware health monitoring and management system that defines interfaces
+          for use in monitoring the physical health of servers.
+
+          1. Check if IPMI Hardware support is enabled:
+
+                $ stonith -L | grep external/ipmi
+                external/ipmi
+
+          2. Install ipmitool and verify:
+
+             •
+
+                IPMItool <https://docs.oracle.com/cd/E19464-01/820-6850-11/IPMItool.html>
+                       utility is an open-source command-line interface (CLI) for controlling IPMI (Intelligent Platform Management  Interface)  enabled  de‐
+                       vices.
+
+                   $ sudo apt-get -y install ipmitool
+                   $ sudo ipmitool -V
+
+                Note:
+                   Check for IPMI Hardware support <https://linux.die.net/man/1/ipmitool> with the command: sudo ipmitool lan print 1.
+
+                   If IPMI configuration found, then proceed to steps below.
+
+          3. Install crm and verify:
+
+             • crm <https://manpages.ubuntu.com/manpages/bionic/man8/crm.8.html> is a Pacemaker command line interface for configuration and management.
+
+                   $ sudo apt-get -y install crmsh
+                   $ sudo crm --version
+
+          4. Install  pacemaker  and  corosync and verify: Refer Ubuntu Manpage <https://manpages.ubuntu.com/manpages/bionic/man8/pcs.8.html> for control and
+             configure pacemaker and corosync.
+
+             • corosync - It is a Cluster Engine and a Group Communication System with additional features for implementing high availability within applica‐
+               tions.
+
+                   $ sudo apt-get -y install corosync
+                   $ sudo corosync -v
+
+             • pacemaker - It is an open-source high availability resource manager software used on computer clusters.
+
+                   $ sudo apt-get -y install pacemaker
+                   $ sudo crmadmin --version
+
+             • Edit the /etc/corosync/corosync.conf file as described below:
+
+                • Configure bindnetaddr value as network address of the interface to bind:
+
+                     totem {
+                         ...
+                             interface {
+                             ...
+                                 bindnetaddr: BINDNETADDR
+
+                     Replace ``BINDNETADDR`` with network address used for mutual
+                     communication between hosts.
+
+                • Add the service section at end of file:
+
+                     service {
+                         name: pacemaker
+                         ver: 0
+                         use_mgmtd: yes
+                     }
+
+             • Edit the /etc/default/corosync file as described below:
+
+                   # Start corosync at boot [yes|no]
+                   START=yes
+
+             • Start corosync and pacemaker services:
+
+                   # systemctl start corosync.service
+                   # systemctl start pacemaker.service
+
+          5. Install and confirm STONITH resource:
+
+             • STONITH <https://clusterlabs.org/pacemaker/doc/en-US/Pacemaker/1.1/html/Clusters_from_Scratch/ch08.html> (Shoot The Other Node In The Head) is
+               a Linux service for maintaining the integrity of nodes in a high-availability (HA) cluster. More description on how to create STONITH resource
+               is      here      cluster      resources       <https://www.suse.com/documentation/sle-ha-12/book_sleha/data/sec_ha_config_crm_resources.html#
+               sec_ha_manual_create_stonith>
+
+   Install and configure Masakari Monitors
+       Note:
+
+          • Masakari-monitors can be installed on the ComputeNodes only.
+
+       1. Clone masakari-monitors using:
+
+             # git clone https://opendev.org/openstack/masakari-monitors.git
+
+       2. Prepare masakari-monitors configuration files:
+
+          1. Generate  via  tox:  Go  to ‘opt/stack/masakari-monitors’ and execute the command below, this will generate masakarimonitors.conf.sample, sample
+             configuration file at /opt/stack/masakari-monitors/etc/masakarimonitors/
+
+                # tox -egenconfig
+
+          2. Or download them:
+
+             # masakarimonitors.conf.sample
+
+          3. Rename masakarimonitors.conf.sample to file to masakarimonitors.conf, and edit as described below:
+
+             • In the [api] section, verify keys below for sending notifications:
+
+                   [api]
+                   ...
+                   auth_url = http://CONTROLLER/identity
+                   project_name = service
+                   project_domain_name = default
+                   username = masakari
+                   password = MASAKARI_PASS
+
+                Replace CONTROLLER with the IP address or hostname of ControllerNode. And replace MASAKARI_PASS with the password you chose for the  masakari
+                user in the Identity service.
+
+             • In the [host] section, configure about pacemaker:
+
+                   [host]
+                   ...
+                   corosync_multicast_interfaces = MULTICAST_INTERFACES
+                   corosync_multicast_ports = MULTICAST_PORTS
+
+                • Replace  MULTICAST_INTERFACES with the interface that corosync is using for mutual communication between hosts.  You can find the interface
+                  from the value of bindnetaddr in /etc/corosync/corosync.conf.  If there are multiple  interfaces,  specify  them  by  comma-separated  like
+                  ‘corosync_multicast_interfaces = enp0s3,enp0s8’.
+
+                • Replace  MULTICAST_PORTS  with  the  mcastport  described in /etc/corosync/corosync.conf.  If there are multiple mcastport, specify them by
+                  comma-separated like ‘corosync_multicast_ports = 5405,5406’.
+
+          4. Rename process_list.yaml.sample, sample  configuration  file  at  /opt/stack/masakari-monitors/etc/masakarimonitors/.  Edit  the  file  for  the
+             processes to be monitored.
+
+          5. Create masakarimonitors directory in /etc/. Copy masakarimonitors.conf and process_list.yaml files to /etc/masakarimonitors/
+
+                # cp -p etc/masakarimonitors/masakarimonitors.conf.sample /etc/masakarimonitors/masakarimonitors.conf
+                # cp -p etc/masakarimonitors/process_list.yaml.sample /etc/masakarimonitors/process_list.yaml
+
+       3. To install masakari-monitors run setup.py from the directory masakari-monitors:
+
+             # cd masakari-monitors
+             # sudo python3 setup.py install
+
+   Finalize installation
+       • Restart the masakari-monitors services:
+
+            # masakari-hostmonitor
+            # masakari-introspectiveinstancemonitor
+            # masakari-processmonitor
+            # masakari-instancemonitor
+
+   Verify operation
+       Verify Masakari and Masakari-monitors installation.
+
+       1. Source the admin credentials to gain access to admin-only CLI commands:
+
+             $ . admin-openrc
+
+       2. List Masakari services on controller node: On controller node only Masakari services needs to be installed/listed.
+
+             $ systemctl list-unit-files devstack@masakari*.service
+
+             UNIT FILE                        STATE
+             devstack@masakari-api.service    enabled
+             devstack@masakari-engine.service enabled
+
+       3. List masakari services on compute node/s: On compute nodes only Masakari-monitors services needs to be installed/listed.
+
+             $ systemctl list-unit-files devstack@masakari*.service
+
+             UNIT FILE                                              STATE
+             devstack@masakari-hostmonitor.service                  enabled
+             devstack@masakari-instancemonitor.service              enabled
+             devstack@masakari-introspectiveinstancemonitor.service enabled
+             devstack@masakari-processmonitor.service               enabled
+
+       4. List API endpoints in the Identity service to verify connectivity with the Identity service:
+
+          Note:
+             Endpoints below list may differ depending on the installation of OpenStack components.
+
+             $ openstack endpoint list
+
+             +-------------+----------------+--------------------------------------------------------+
+             | Name        | Type           | Endpoints                                              |
+             +-------------+----------------+--------------------------------------------------------+
+             | nova_legacy | compute_legacy | RegionOne                                              |
+             |             |                |   public: http://controller/compute/v2/<tenant_id>     |
+             |             |                |                                                        |
+             | nova        | compute        | RegionOne                                              |
+             |             |                |   public: http://controller/compute/v2.1               |
+             |             |                |                                                        |
+             | cinder      | block-storage  | RegionOne                                              |
+             |             |                |   public: http://controller/volume/v3/<tenant_id>      |
+             |             |                |                                                        |
+             | glance      | image          | RegionOne                                              |
+             |             |                |   public: http://controller/image                      |
+             |             |                |                                                        |
+             | cinderv3    | volumev3       | RegionOne                                              |
+             |             |                |   public: http://controller/volume/v3/<tenant_id>      |
+             |             |                |                                                        |
+             | masakari    | instance-ha    | RegionOne                                              |
+             |             |                | internal: http://controller/instance-ha/v1/<tenant_id> |
+             |             |                | RegionOne                                              |
+             |             |                |  admin: http://controller/instance-ha/v1/<tenant_id>   |
+             |             |                | RegionOne                                              |
+             |             |                |  public: http://controller/instance-ha/v1/<tenant_id>  |
+             |             |                |                                                        |
+             | keystone    | identity       | RegionOne                                              |
+             |             |                |   public: http://controller/identity                   |
+             |             |                | RegionOne                                              |
+             |             |                |   admin: http://controller/identity                    |
+             |             |                |                                                        |
+             | cinderv2    | volumev2       | RegionOne                                              |
+             |             |                |   public: http://controller/volume/v2/<tenant_id>      |
+             |             |                |                                                        |
+             | placement   | placement      | RegionOne                                              |
+             |             |                |   public: http://controller/placement                  |
+             |             |                |                                                        |
+             | neutron     | network        | RegionOne                                              |
+             |             |                |   public: http://controller:9696/                      |
+             |             |                |                                                        |
+             +-------------+----------------+--------------------------------------------------------+
+
+       5. Check CRM status
+
+             $ sudo crm status
+
+             Stack: corosync
+             Current DC: controller (version 1.1.18-2b07d5c5a9) - partition with quorum
+             Last updated: Thu Jul 11 13:33:17 2019
+
+             2 nodes configured
+             2 resources configured
+
+             Online: [ compute-1, compute-2 ]
+             OFFLINE: [ ]
+
+             Full list of resources:
+
+              st-null        (stonith:null): Started compute
+
+   masakari-hostmonitor
+   Monitor Overview
+       The  masakari-hostmonitor  provides  compute  node High Availability for OpenStack clouds by automatically detecting compute nodes failure via monitor
+       driver.
+
+   How does it work based on pacemaker & corosync?
+       • Pacemaker or pacemaker-remote is required to install into compute nodes to form a pacemaker cluster.
+
+       • The compute node’s status is depending on the heartbeat between the compute node and the cluster. Once the node lost the  heartbeat,  masakari-host‐
+         monitor in other nodes will detect the failure and send notifications to masakari-api.
+
+   How does it work based on consul?
+       • If the nodes in the cloud have multiple interfaces to connect to management network, tenant network or storage network, monitor driver based on con‐
+         sul is another choice. Consul agents are required to install into all nodes, which make up multiple consul clusters.
+
+         Here is an example to show how to make up one consul cluster.
+
+   Consul Usage
+   Consul overview
+       Consul is a service mesh solution providing a full featured control plane with service discovery, configuration, and segmentation functionality.  Each
+       of these features can be used individually as needed, or they can be used together to build a full service mesh.
+
+       The  Consul  agent  is  the  core  process  of Consul. The Consul agent maintains membership information, registers services, runs checks, responds to
+       queries, and more.
+
+       Consul clients can provide any number of health checks, either associated with a given service or with the local node. This information can be used by
+       an operator to monitor cluster health.
+
+       Please refer to Consul Agent Overview <https://www.consul.io/docs/agent>.
+
+   Test Environment
+       There are three controller nodes and two compute nodes in the test environment.  Every node has three network interfaces. The first interface is  used
+       for  management, with an ip such as ‘192.168.101.*’. The second interface is used to connect to storage, with an ip such as ‘192.168.102.*’. The third
+       interface is used for tenant, with an ip such as ‘192.168.103.*’.
+
+   Configure Firewalld
+       Before installing packages, you must open ports on your Consul servers.
+
+                firewall-cmd --permanent --zone=public --add-port={8300,8301,8302,8400,8500,8600}/tcp
+                firewall-cmd --reload
+                firewall-cmd --zone=public --list-all
+
+   Install Consul
+       Install Consul for RHEL-based distributions. Other OS please refer to Download Consul <https://www.consul.io/downloads>.
+
+                sudo dnf install -y dnf-plugins-core
+                sudo dnf config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+                sudo dnf repolist
+                sudo dnf install consul
+
+   Verify
+                which consul
+                consul version
+
+   Configure Consul agent
+       Consul agent must runs on every node. Consul server agent runs on controller nodes, while Consul client agent runs on compute nodes,  which  makes  up
+       one Consul cluster.
+
+       The following is an example of a config file for Consul server agent which binds to management interface of the host.
+
+       management.json
+
+                {
+                    "bind_addr": "192.168.101.1",
+                    "datacenter": "management",
+                    "data_dir": "/tmp/consul_m",
+                    "log_level": "INFO",
+                    "server": true,
+                    "bootstrap_expect": 3,
+                    "node_name": "node01",
+                    "addresses": {
+                        "http": "192.168.101.1"
+                    },
+                    "ports": {
+                        "http": 8500,
+                        "serf_lan": 8501
+                    },
+                    "retry_join": ["192.168.101.1:8501", "192.168.101.2:8501", "192.168.101.3:8501"]
+                }
+
+         The following is an example of a config file for Consul client agent which binds to management interface of the host.
+
+         management.json
+
+                {
+                    "bind_addr": "192.168.101.4",
+                    "datacenter": "management",
+                    "data_dir": "/tmp/consul_m",
+                    "log_level": "INFO",
+                    "node_name": "node04",
+                    "addresses": {
+                        "http": "192.168.101.4"
+                    },
+                    "ports": {
+                        "http": 8500,
+                        "serf_lan": 8501
+                    },
+                    "retry_join": ["192.168.101.1:8501", "192.168.101.2:8501", "192.168.101.3:8501"]
+                }
+
+         Use the tenant or storage interface ip and ports when config agent in tenant or storage datacenter.
+
+         Please refer to Consul Agent Configuration <https://www.consul.io/docs/agent/options#command-line-options>.
+
+   Start Consul agent
+       The Consul agent is started by the following command.
+
+                # Consul agent –config-file management.json
+
+                # sudo systemctl start consul
+                # sudo systemctl enable consul
+
+   Test Consul installation
+       After all Consul agents installed and started, you can see all nodes in the cluster by the following command.
+
+                # Consul members -http-addr=192.168.101.1:8500
+                Node    Address              Status  Type    Build   Protocol  DC
+                node01  192.168.101.1:8501   alive   server  1.10.2  2         management
+                node02  192.168.101.2:8501   alive   server  1.10.2  2         management
+                node03  192.168.101.3:8501   alive   server  1.10.2  2         management
+                node04  192.168.101.4:8501   alive   client  1.10.2  2         management
+                node05  192.168.101.5:8501   alive   client  1.10.2  2         management
+
+       • The  compute  node’s  status is depending on assembly of multiple interfaces connectivity status, which are retrieved from multiple consul clusters.
+         Then it sends notifition to trigger host failure recovery according to defined HA strategy - host states and the corresponding actions.
+
+   How does it work based on kubernetes?
+       If Openstack is deployed on kubernetes, just set host.monitoring_driver to kubernetes and deploy host-monitor pods. Then driver  of  host-monitor  pod
+       invokes the Kubernetes API to retrieve the status of the host(node). In case of any anomalies, it sends notifications to the masakari-api.
+
+   Related configurations
+       This section in masakarimonitors.conf shows an example of how to configure the hostmonitor if you choice monitor driver based on pacemaker.
+
+          [host]
+          # Driver that hostmonitor uses for monitoring hosts.
+          monitoring_driver = default
+
+          # Monitoring interval(in seconds) of node status.
+          monitoring_interval = 60
+
+          # Do not check whether the host is completely down.
+          # Possible values:
+          # * True: Do not check whether the host is completely down.
+          # * False: Do check whether the host is completely down.
+          # If ipmi RA is not set in pacemaker, this value should be set True.
+          disable_ipmi_check = False
+
+          # Timeout value(in seconds) of the ipmitool command.
+          ipmi_timeout = 5
+
+          # Number of ipmitool command retries.
+          ipmi_retry_max = 3
+
+          # Retry interval(in seconds) of the ipmitool command.
+          ipmi_retry_interval = 10
+
+          # Only monitor pacemaker-remotes, ignore the status of full cluster
+          # members.
+          restrict_to_remotes = False
+
+          # Standby time(in seconds) until activate STONITH.
+          stonith_wait = 30
+
+          # Timeout value(in seconds) of the tcpdump command when monitors
+          # the corosync communication.
+          tcpdump_timeout = 5
+
+          # The name of interface that corosync is using for mutual communication
+          # between hosts.
+          # If there are multiple interfaces, specify them in comma-separated
+          # like 'enp0s3,enp0s8'.
+          # The number of interfaces you specify must be equal to the number of
+          # corosync_multicast_ports values and must be in correct order with
+          # relevant ports in corosync_multicast_ports.
+          corosync_multicast_interfaces = enp0s3,enp0s8
+
+          # The port numbers that corosync is using for mutual communication
+          # between hosts.
+          # If there are multiple port numbers, specify them in comma-separated
+          # like '5405,5406'.
+          # The number of port numbers you specify must be equal to the number of
+          # corosync_multicast_interfaces values and must be in correct order with
+          # relevant interfaces in corosync_multicast_interfaces.
+          corosync_multicast_ports = 5405,5406
+
+       If you want to use or test monitor driver based on consul, please modify following configuration.
+
+          [host]
+          # Driver that hostmonitor uses for monitoring hosts.
+          monitoring_driver = consul
+
+          [consul]
+          # Addr for local consul agent in management datacenter.
+          # The addr is make up of the agent's bind_addr and http port,
+          # such as '192.168.101.1:8500'.
+          agent_manage = $(CONSUL_MANAGEMENT_ADDR)
+          # Addr for local consul agent in tenant datacenter.
+          agent_tenant = $(CONSUL_TENANT_ADDR)
+          # Addr for local consul agent in storage datacenter.
+          agent_storage = $(CONSUL_STORAGE_ADDR)
+          # Config file for consul health action matrix.
+          matrix_config_file = /etc/masakarimonitors/matrix.yaml
+
+       The  matrix_config_file  shows the HA strategy. Matrix is combined by host health and actions. The ‘health: [x, x, x]’, repreasents assembly status of
+       SEQUENCE. Action, means which actions it will trigger if host health turns into, while ‘recovery’ means it will  trigger  one  host  failure  recovery
+       workflow. User can define the HA strategy according to the physical environment. For example, if there is just 1 cluster to monitor management network
+       connectivity,  the user just need to configurate $(CONSUL_MANAGEMENT_ADDR) in consul section of the hostmontior’ configuration file, and change the HA
+       strategy in /etc/masakarimonitors/matrix.yaml as following:
+
+          sequence: ['manage']
+          matrix:
+            - health: ['up']
+              action: []
+            - health: ['down']
+              action: ['recovery']
+
+       Then the hostmonitor by consul works as same as the hostmonitor by pacemaker.
+
+       If you want to use or test monitor driver based on kubernetes, please modify following configuration.
+
+          [host]
+          # Driver that hostmonitor uses for monitoring hosts.
+          monitoring_driver = kubernetes
+
+   masakari-instancemonitor
+   Monitor Overview
+       The masakari-instancemonitor provides Virtual Machine High Availability for OpenStack clouds by automatically detecting VMs domain events via libvirt.
+       If it detects specific libvirt events, it sends notifications to the masakari-api.
+
+   How does it work?
+       • It runs libvirt event loop in a background thread.
+
+         • Invoking libvirt.virEventRegisterDefaultImpl() will register libvirt’s default event loop implementation.
+
+         • Invoking libvirt.virEventRunDefaultImpl() will perform one iteration of the libvirt default event loop.
+
+         • Invoking conn.domainEventRegisterAny() will register event callbacks against libvirt connection instances. The callbacks registered will be  trig‐
+           gered from the execution context of libvirt.virEventRunDefaultImpl(), which will send notifications to the masakari-api.
+
+       • It will reconnect to libvirt and reprocess if disconnected.
+
+   Related configurations
+       This section in masakarimonitors.conf shows an example of how to configure the monitor.
+
+          [libvirt]
+          # Override the default libvirt URI.
+          connection_uri = qemu:///system
+
+   masakari-introspectiveinstancemonitor
+   Monitor Overview
+       The  masakari-introspectiveinstancemonitor provides Virtual Machine HA for OpenStack clouds by automatically detecting the system-level failure events
+       via QEMU Guest Agent. If it detects VM heartbeat failure events, it sends notifications to the masakari-api.
+
+   How does it work?
+       • libvirt and QEMU Guest Agent are used as the underlying protocol for messaging to and from VM.
+
+         • The host-side qemu-agent sockets are used to detemine whether VMs are configured with QEMU Guest Agent.
+
+         • qemu-guest-ping is used as the monitoring heartbeat.
+
+       • For the future release, we can pass through arbitrary guest agent commands to check the health of the applications inside a VM.
+
+   Related configurations
+       This section in masakarimonitors.conf shows an example of how to configure the monitor.
+
+          [libvirt]
+          # Override the default libvirt URI.
+          connection_uri = qemu:///system
+
+          [introspectiveinstancemonitor]
+          # Guest monitoring interval of VM status (in seconds).
+          # * The value should not be too low as there should not be false negative
+          # * for reporting QEMU_GUEST_AGENT failures
+          # * VM needs time to do powering-off.
+          # * guest_monitoring_interval should be greater than
+          # * the time to SHUTDOWN VM gracefully.
+          guest_monitoring_interval = 10
+
+          # Guest monitoring timeout (in seconds).
+          guest_monitoring_timeout = 2
+
+          # Failure threshold before sending notification.
+          guest_monitoring_failure_threshold = 3
+
+          # The file path of qemu guest agent sock.
+          qemu_guest_agent_sock_path = \
+          /var/lib/libvirt/qemu/org\.qemu\.guest_agent\..*\.instance-.*\.sock
+
+   masakari-processmonitor
+   Monitor Overview
+       The masakari-processmonitor, provides key process High Availability for OpenStack clouds by automatically detecting the process failure.   If  it  de‐
+       tects process failure, it sends notifications to masakari-api.
+
+       If your OpenStack service runs in container(pod), this processmonitor will not work as expected. It is recommended not to deploy processmonitor.
+
+   How does it work?
+       • Processes to be monitored should be pre-configured in process_list.yaml file.
+
+       Define one process to be monitored as follows:
+
+          process_name: [Name of the process as it in 'ps -ef'.]
+          start_command: [Start command of the process.]
+          pre_start_command: [Command which is executed before start_command.]
+          post_start_command: [Command which is executed after start_command.]
+          restart_command: [Restart command of the process.]
+          pre_restart_command: [Command which is executed before restart_command.]
+          post_restart_command: [Command which is executed after restart_command.]
+          run_as_root: [Bool value whether to execute commands as root authority.]
+
+       Sample of definitions is shown as follows:
+
+          # nova-compute
+          - process_name: /usr/local/bin/nova-compute
+            start_command: systemctl start nova-compute
+            pre_start_command:
+            post_start_command:
+            restart_command: systemctl restart nova-compute
+            pre_restart_command:
+            post_restart_command:
+            run_as_root: True
+
+       • If  masakari-processmonitor  detects  one process failure, it will try to restart it firstly. After several retries failed, it sends notification to
+         masakari-api.
+
+       Note:
+          The process_list.yaml file should contain list data. Make sure the data is formatted as a list even when only one item is defined.
+
+   Related configurations
+       This section in masakarimonitors.conf shows an example of how to configure the monitor.
+
+          [process]
+          # Interval in seconds for checking a process.
+          check_interval = 5
+
+          # Number of retries when the failure of restarting a process.
+          restart_retries = 3
+
+          # Interval in seconds for restarting a process.
+          restart_interval = 5
+
+          # The file path of process list.
+          process_list_path = /etc/masakarimonitors/process_list.yaml
+
+   Deployment Considerations
+       This documentation is based on the assumption that the basic openstack installation is done with DevStack along with Masakari and its services enabled
+       to proceed for Masakari-monitors installation.
+
+       Note:
+
+          • OpenStack installation with DevStack services are installed using Systemd. The systemctl is a tool to control the systemd and its services.  This
+            documentation refers systemctl commands for dealing with service related information.
+
+          • If OpenStack installed with DevStack stable/train with Masakari service enabled in local configuration file, then it also installs Masakari-moni‐
+            tors along with it.
+
+   Reference Material
+       • Configuration Guide <>: Information on configuration files.
+
+       • Masakari Docs <https://docs.openstack.org/masakari/latest/>: A collection of guides for Masakari.
+
+       • Nova Docs <https://docs.openstack.org/nova/latest/index.html>: A collection of guides for Nova.
+
+   Configuration Guide
+       The configuration for masakari-monitors lies in two files: masakarimonitors.conf and process_list.yaml.  These are described below:
+
+   Configuration
+       • Config Reference <>: A complete reference of all config points in masakari-monitors and what they impact.
+
+       • Sample Config File <>: A sample config file with inline documentation.
+
+   Process list
+       • Process list <>: A complete reference of defining the monitoring processes.
+
+   Configuration Options
+       The  following is an overview of all available configuration options in Masakari-monitors. For a sample configuration file, refer to Sample Configura‐
+       tion File <>.
+
+   DEFAULT
+       tempdir
+
+              Type   string
+
+              Default
+                     <None>
+
+              Explicitly specify the temporary working directory.
+
+       monkey_patch
+
+              Type   boolean
+
+              Default
+                     False
+
+              Determine if monkey patching should be applied.
+
+              Related options:
+
+                 • monkey_patch_modules: This must have values set for this option to have any effect
+
+       monkey_patch_modules
+
+              Type   list
+
+              Default
+                     []
+
+              List of modules/decorators to monkey patch.
+
+              This option allows you to patch a decorator for all functions in specified modules.
+
+              Related options:
+
+                 • monkey_patch: This must be set to True for this option to have any effect
+
+       hostname
+
+              Type   string
+
+              Default
+                     lcy02-amd64-013
+
+              Hostname, FQDN or IP address of this host. Must be valid within AMQP key.
+
+              Possible values:
+
+              • String with hostname, FQDN or IP address. Default is hostname of this host.
+
+   Deprecated Variations
+                                                                        ┌─────────┬──────┐
+                                                                        │ Group   │ Name │
+                                                                        ├─────────┼──────┤
+                                                                        │ DEFAULT │ host │
+                                                                        └─────────┴──────┘
+
+       instancemonitor_manager
+
+              Type   string
+
+              Default
+                     masakarimonitors.instancemonitor.instance.InstancemonitorManager
+
+              Full class name for the Manager for instancemonitor.
+
+       introspectiveinstancemonitor_manager
+
+              Type   string
+
+              Default
+                     masakarimonitors.introspectiveinstancemonitor.instance.IntrospectiveInstanceMonitorManager
+
+              Full class name for introspectiveinstancemonitor.
+
+       processmonitor_manager
+
+              Type   string
+
+              Default
+                     masakarimonitors.processmonitor.process.ProcessmonitorManager
+
+              Full class name for the Manager for processmonitor.
+
+       hostmonitor_manager
+
+              Type   string
+
+              Default
+                     masakarimonitors.hostmonitor.host.HostmonitorManager
+
+              Full class name for the Manager for hostmonitor.
+
+       debug
+
+              Type   boolean
+
+              Default
+                     False
+
+              Mutable
+                     This option can be changed without restarting.
+
+              If set to true, the logging level will be set to DEBUG instead of the default INFO level.
+
+       log_config_append
+
+              Type   string
+
+              Default
+                     <None>
+
+              Mutable
+                     This option can be changed without restarting.
+
+              The name of a logging configuration file. This file is appended to any existing logging configuration files. For details about logging configu‐
+              ration files, see the Python logging module documentation. Note that when logging configuration files are used then all  logging  configuration
+              is set in the configuration file and other logging configuration options are ignored (for example, log-date-format).
+
+   Deprecated Variations
+                                                                     ┌─────────┬────────────┐
+                                                                     │ Group   │ Name       │
+                                                                     ├─────────┼────────────┤
+                                                                     │ DEFAULT │ log-config │
+                                                                     ├─────────┼────────────┤
+                                                                     │ DEFAULT │ log_config │
+                                                                     └─────────┴────────────┘
+
+       log_date_format
+
+              Type   string
+
+              Default
+                     %Y-%m-%d %H:%M:%S
+
+              Defines the format string for %(asctime)s in log records. Default: the value above . This option is ignored if log_config_append is set.
+
+       log_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              (Optional) Name of log file to send logging output to. If no default is set, logging will go to stderr as defined by use_stderr. This option is
+              ignored if log_config_append is set.
+
+   Deprecated Variations
+                                                                       ┌─────────┬─────────┐
+                                                                       │ Group   │ Name    │
+                                                                       ├─────────┼─────────┤
+                                                                       │ DEFAULT │ logfile │
+                                                                       └─────────┴─────────┘
+
+       log_dir
+
+              Type   string
+
+              Default
+                     <None>
+
+              (Optional) The base directory used for relative log_file  paths. This option is ignored if log_config_append is set.
+
+   Deprecated Variations
+                                                                       ┌─────────┬────────┐
+                                                                       │ Group   │ Name   │
+                                                                       ├─────────┼────────┤
+                                                                       │ DEFAULT │ logdir │
+                                                                       └─────────┴────────┘
+
+       use_syslog
+
+              Type   boolean
+
+              Default
+                     False
+
+              Use  syslog  for  logging.  Existing syslog format is DEPRECATED and will be changed later to honor RFC5424. This option is ignored if log_con‐
+              fig_append is set.
+
+       use_journal
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enable journald for logging. If running in a systemd environment you may wish to enable journal support. Doing so will use the  journal  native
+              protocol which includes structured metadata in addition to log messages.This option is ignored if log_config_append is set.
+
+       syslog_log_facility
+
+              Type   string
+
+              Default
+                     LOG_USER
+
+              Syslog facility to receive log lines. This option is ignored if log_config_append is set.
+
+       use_json
+
+              Type   boolean
+
+              Default
+                     False
+
+              Use JSON formatting for logging. This option is ignored if log_config_append is set.
+
+       use_stderr
+
+              Type   boolean
+
+              Default
+                     False
+
+              Log output to standard error. This option is ignored if log_config_append is set.
+
+       log_color
+
+              Type   boolean
+
+              Default
+                     False
+
+              (Optional)  Set the ‘color’ key according to log levels. This option takes effect only when logging to stderr or stdout is used. This option is
+              ignored if log_config_append is set.
+
+       log_rotate_interval
+
+              Type   integer
+
+              Default
+                     1
+
+              The amount of time before the log files are rotated. This option is ignored unless log_rotation_type is set to “interval”.
+
+       log_rotate_interval_type
+
+              Type   string
+
+              Default
+                     days
+
+              Valid Values
+                     Seconds, Minutes, Hours, Days, Weekday, Midnight
+
+              Rotation interval type. The time of the last file change (or the time when the service was started) is used when scheduling the next rotation.
+
+       max_logfile_count
+
+              Type   integer
+
+              Default
+                     30
+
+              Maximum number of rotated log files.
+
+       max_logfile_size_mb
+
+              Type   integer
+
+              Default
+                     200
+
+              Log file maximum size in MB. This option is ignored if “log_rotation_type” is not set to “size”.
+
+       log_rotation_type
+
+              Type   string
+
+              Default
+                     none
+
+              Valid Values
+                     interval, size, none
+
+              Log rotation type.
+
+              Possible values
+
+              interval
+                     Rotate logs at predefined time intervals.
+
+              size   Rotate logs once they reach a predefined size.
+
+              none   Do not rotate log files.
+
+       logging_context_format_string
+
+              Type   string
+
+              Default
+                     %(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [%(global_request_id)s %(request_id)s  %(user_identity)s]  %(instance)s%(mes‐
+                     sage)s
+
+              Format string to use for log messages with context. Used by oslo_log.formatters.ContextFormatter
+
+       logging_default_format_string
+
+              Type   string
+
+              Default
+                     %(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(instance)s%(message)s
+
+              Format string to use for log messages when context is undefined. Used by oslo_log.formatters.ContextFormatter
+
+       logging_debug_format_suffix
+
+              Type   string
+
+              Default
+                     %(funcName)s %(pathname)s:%(lineno)d
+
+              Additional data to append to log message when logging level for the message is DEBUG. Used by oslo_log.formatters.ContextFormatter
+
+       logging_exception_prefix
+
+              Type   string
+
+              Default
+                     %(asctime)s.%(msecs)03d %(process)d ERROR %(name)s %(instance)s
+
+              Prefix each line of exception output with this format. Used by oslo_log.formatters.ContextFormatter
+
+       logging_user_identity_format
+
+              Type   string
+
+              Default
+                     %(user)s %(project)s %(domain)s %(system_scope)s %(user_domain)s %(project_domain)s
+
+              Defines the format string for %(user_identity)s that is used in logging_context_format_string. Used by oslo_log.formatters.ContextFormatter
+
+       default_log_levels
+
+              Type   list
+
+              Default
+                     ['amqp=WARN', 'boto=WARN', 'sqlalchemy=WARN', 'suds=INFO', 'oslo.messaging=INFO', 'oslo_messaging=INFO', 'iso8601=WARN', 'requests.pack‐
+                     ages.urllib3.connectionpool=WARN',  'urllib3.connectionpool=WARN',  'websocket=WARN', 'requests.packages.urllib3.util.retry=WARN', 'url‐
+                     lib3.util.retry=WARN',  'keystonemiddleware=WARN',  'routes.middleware=WARN',  'stevedore=WARN',  'taskflow=WARN',  'keystoneauth=WARN',
+                     'oslo.cache=INFO', 'oslo_policy=INFO', 'dogpile.core.dogpile=INFO']
+
+              List of package logging levels in logger=LEVEL pairs. This option is ignored if log_config_append is set.
+
+       publish_errors
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enables or disables publication of error events.
+
+       instance_format
+
+              Type   string
+
+              Default
+                     "[instance: %(uuid)s] "
+
+              The format for an instance that is passed with the log message.
+
+       instance_uuid_format
+
+              Type   string
+
+              Default
+                     "[instance: %(uuid)s] "
+
+              The format for an instance UUID that is passed with the log message.
+
+       rate_limit_interval
+
+              Type   integer
+
+              Default
+                     0
+
+              Interval, number of seconds, of log rate limiting.
+
+       rate_limit_burst
+
+              Type   integer
+
+              Default
+                     0
+
+              Maximum number of logged messages per rate_limit_interval.
+
+       rate_limit_except_level
+
+              Type   string
+
+              Default
+                     CRITICAL
+
+              Valid Values
+                     CRITICAL, ERROR, INFO, WARNING, DEBUG, ‘’
+
+              Log  level name used by rate limiting. Logs with level greater or equal to rate_limit_except_level are not filtered. An empty string means that
+              all levels are filtered.
+
+       fatal_deprecations
+
+              Type   boolean
+
+              Default
+                     False
+
+              Enables or disables fatal status of deprecations.
+
+   api
+       Configuration options for sending notifications.
+
+       region
+
+              Type   string
+
+              Default
+                     RegionOne
+
+              Region name.
+
+       api_version
+
+              Type   string
+
+              Default
+                     v1
+
+              Masakari API Version.
+
+       api_interface
+
+              Type   string
+
+              Default
+                     public
+
+              Interface of endpoint.
+
+       auth_url
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Authentication URL
+
+       system_scope
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Scope for system operations
+
+       domain_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Domain ID to scope to
+
+       domain_name
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Domain name to scope to
+
+       project_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Project ID to scope to
+
+   Deprecated Variations
+                                                                       ┌───────┬───────────┐
+                                                                       │ Group │ Name      │
+                                                                       ├───────┼───────────┤
+                                                                       │ api   │ tenant-id │
+                                                                       ├───────┼───────────┤
+                                                                       │ api   │ tenant_id │
+                                                                       └───────┴───────────┘
+
+       project_name
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Project name to scope to
+
+   Deprecated Variations
+                                                                      ┌───────┬─────────────┐
+                                                                      │ Group │ Name        │
+                                                                      ├───────┼─────────────┤
+                                                                      │ api   │ tenant-name │
+                                                                      ├───────┼─────────────┤
+                                                                      │ api   │ tenant_name │
+                                                                      └───────┴─────────────┘
+
+       project_domain_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Domain ID containing project
+
+       project_domain_name
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Domain name containing project
+
+       trust_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              ID of the trust to use as a trustee use
+
+       default_domain_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Optional domain ID to use with v3 and v2 parameters. It will be used for both the user and project domain in v3 and ignored in  v2  authentica‐
+              tion.
+
+       default_domain_name
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Optional domain name to use with v3 API and v2 parameters. It will be used for both the user and project domain in v3 and ignored in v2 authen‐
+              tication.
+
+       user_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              User id
+
+       username
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              Username
+
+   Deprecated Variations
+                                                                       ┌───────┬───────────┐
+                                                                       │ Group │ Name      │
+                                                                       ├───────┼───────────┤
+                                                                       │ api   │ user-name │
+                                                                       ├───────┼───────────┤
+                                                                       │ api   │ user_name │
+                                                                       └───────┴───────────┘
+
+       user_domain_id
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              User’s domain id
+
+       user_domain_name
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              User’s domain name
+
+       password
+
+              Type   unknown type
+
+              Default
+                     <None>
+
+              User’s password
+
+   callback
+       retry_max
+
+              Type   integer
+
+              Default
+                     12
+
+              Number of retries when the notification processing is error.
+
+       retry_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Trial interval of time of the notification processing is error(in seconds).
+
+   consul
+       agent_manage
+
+              Type   string
+
+              Default
+                     <None>
+
+              Addr for local consul agent in management datacenter.
+
+       agent_tenant
+
+              Type   string
+
+              Default
+                     <None>
+
+              Addr for local consul agent in tenant datacenter.
+
+       agent_storage
+
+              Type   string
+
+              Default
+                     <None>
+
+              Addr for local consul agent in storage datacenter.
+
+       matrix_config_file
+
+              Type   string
+
+              Default
+                     <None>
+
+              Config file for consul health action matrix.
+
+   cors
+       allowed_origin
+
+              Type   list
+
+              Default
+                     <None>
+
+              Indicate  whether this resource may be shared with the domain received in the requests “origin” header. Format: “<protocol>://<host>[:<port>]”,
+              no trailing slash. Example: <https://horizon.example.com>
+
+       allow_credentials
+
+              Type   boolean
+
+              Default
+                     True
+
+              Indicate that the actual request can include user credentials
+
+       expose_headers
+
+              Type   list
+
+              Default
+                     []
+
+              Indicate which headers are safe to expose to the API. Defaults to HTTP Simple Headers.
+
+       max_age
+
+              Type   integer
+
+              Default
+                     3600
+
+              Maximum cache age of CORS preflight requests.
+
+       allow_methods
+
+              Type   list
+
+              Default
+                     ['OPTIONS', 'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'TRACE', 'PATCH']
+
+              Indicate which methods can be used during the actual request.
+
+       allow_headers
+
+              Type   list
+
+              Default
+                     []
+
+              Indicate which header field names may be used during the actual request.
+
+   healthcheck
+       detailed
+
+              Type   boolean
+
+              Default
+                     False
+
+              Show more detailed information as part of the response. Security note: Enabling this option may expose sensitive details about the service  be‐
+              ing monitored. Be sure to verify that it will not violate your security policies.
+
+       backends
+
+              Type   list
+
+              Default
+                     []
+
+              Additional backends that can perform health checks and report that information back as part of a request.
+
+       allowed_source_ranges
+
+              Type   list
+
+              Default
+                     []
+
+              A  list  of  network  addresses  to limit source ip allowed to access healthcheck information. Any request from ip outside of these network ad‐
+              dresses are ignored.
+
+       ignore_proxied_requests
+
+              Type   boolean
+
+              Default
+                     False
+
+              Ignore requests with proxy headers.
+
+       disable_by_file_path
+
+              Type   string
+
+              Default
+                     <None>
+
+              Check the presence of a file to determine if an application is running on a port. Used by DisableByFileHealthcheck plugin.
+
+       disable_by_file_paths
+
+              Type   list
+
+              Default
+                     []
+
+              Check the presence of a file based on a port to determine if an application is running on a port. Expects a “port:path” list of  strings.  Used
+              by DisableByFilesPortsHealthcheck plugin.
+
+       enable_by_file_paths
+
+              Type   list
+
+              Default
+                     []
+
+              Check the presence of files. Used by EnableByFilesHealthcheck plugin.
+
+   host
+       monitoring_driver
+
+              Type   string
+
+              Default
+                     default
+
+              Driver that hostmonitor uses for monitoring hosts.
+
+       monitoring_interval
+
+              Type   integer
+
+              Default
+                     60
+
+              Monitoring interval(in seconds) of node status.
+
+       monitoring_samples
+
+              Type   integer
+
+              Default
+                     1
+
+              Monitoring  probes to collect before making the decision to send Masakari notification about the node status. If and only if monitoring_samples
+              consecutive reports have the same status, will the Masakari notification be sent.
+
+       api_retry_max
+
+              Type   integer
+
+              Default
+                     12
+
+              Number of retries for send a notification in hostmonitor.
+
+       api_retry_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Trial interval of time of the notification processing is error(in seconds).
+
+       disable_ipmi_check
+
+              Type   boolean
+
+              Default
+                     False
+
+              Do not check whether the host is completely down.
+
+              Possible values:
+
+              • True: Do not check whether the host is completely down.
+
+              • False: Do check whether the host is completely down.
+
+              If ipmi RA is not set in pacemaker, this value should be set True.
+
+       restrict_to_remotes
+
+              Type   boolean
+
+              Default
+                     False
+
+              Only monitor pacemaker-remotes, ignore the status of full cluster members.
+
+       ipmi_timeout
+
+              Type   integer
+
+              Default
+                     5
+
+              Timeout value(in seconds) of the ipmitool command.
+
+       ipmi_retry_max
+
+              Type   integer
+
+              Default
+                     3
+
+              Number of ipmitool command retries.
+
+       ipmi_retry_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Retry interval(in seconds) of the ipmitool command.
+
+       stonith_wait
+
+              Type   integer
+
+              Default
+                     30
+
+              Standby time(in seconds) until activate STONITH.
+
+       tcpdump_timeout
+
+              Type   integer
+
+              Default
+                     5
+
+              Timeout value(in seconds) of the tcpdump command when monitors the corosync communication.
+
+       corosync_multicast_interfaces
+
+              Type   list
+
+              Default
+                     <None>
+
+              The name of interface that corosync is using for mutual communication between hosts.   If  there  are  multiple  interfaces,  specify  them  in
+              comma-separated  like ‘enp0s3,enp0s8’.  The number of interfaces you specify must be equal to the number of corosync_multicast_ports values and
+              must be in correct order with relevant ports in corosync_multicast_ports.
+
+       corosync_multicast_ports
+
+              Type   list
+
+              Default
+                     <None>
+
+              The port numbers that corosync is using for mutual communication between hosts.  If there are multiple port numbers, specify them in comma-sep‐
+              arated like ‘5405,5406’.  The number of port numbers you specify must be equal to the number of corosync_multicast_interfaces values  and  must
+              be in correct order with relevant interfaces in corosync_multicast_interfaces.
+
+       pacemaker_node_type
+
+              Type   string
+
+              Default
+                     autodetect
+
+              Valid Values
+                     autodetect, cluster, remote
+
+              Using  this option, one can avoid systemd checks that would establish whether this hostmonitor is running alongside Corosync and Pacemaker (the
+              cluster stack) or Pacemaker Remote (the remote stack).
+
+              The default (autodetect) ensures backward compatibility and means systemd is used to check the stack.
+
+   introspectiveinstancemonitor
+       guest_monitoring_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Guest monitoring interval of VM status (in seconds).  * The value should not be too low as there should not be false negative *  for  reporting
+              QEMU_GUEST_AGENT  failures  *  VM  needs time to do powering-off.  * guest_monitoring_interval should be greater than * the time to SHUTDOWN VM
+              gracefully.  * e.g. | 565da9ba-3c0c-4087-83ca | iim1 | ACTIVE | powering-off | Running
+
+       guest_monitoring_timeout
+
+              Type   integer
+
+              Default
+                     2
+
+              Guest monitoring timeout (in seconds).
+
+       guest_monitoring_failure_threshold
+
+              Type   integer
+
+              Default
+                     3
+
+              Failure threshold before sending notification.
+
+       qemu_guest_agent_sock_path
+
+              Type   string
+
+              Default
+                     /var/lib/libvirt/qemu/org\.qemu\.guest_agent\..*\.instance-.*\.sock
+
+              • The file path of qemu guest agent sock.
+
+              • Please use Python raw string notation as regular expressions.  e.g.  r’/var/lib/libvirt/qemu/org.qemu.guest_agent..*.instance-.*.sock’
+
+   kubernetes
+       monitoring_node_labels
+
+              Type   string
+
+              Default
+                     ''
+
+              Options for identifying the nodes to monitor. Only nodes with node labels defined in this option are included in the monitor.
+
+              Example value:
+
+              monitoring_node_labels = “monitoring=true,compute-node=enabled,…”
+
+   libvirt
+       connection_uri
+
+              Type   string
+
+              Default
+                     qemu:///system
+
+              Override the default libvirt URI.
+
+   oslo_middleware
+       max_request_body_size
+
+              Type   integer
+
+              Default
+                     114688
+
+              The maximum body size for each request, in bytes.
+
+       enable_proxy_headers_parsing
+
+              Type   boolean
+
+              Default
+                     False
+
+              Whether the application is behind a proxy or not. This determines if the middleware should parse the headers or not.
+
+       http_basic_auth_user_file
+
+              Type   string
+
+              Default
+                     /etc/htpasswd
+
+              HTTP basic auth password file.
+
+   process
+       check_interval
+
+              Type   integer
+
+              Default
+                     5
+
+              Interval in seconds for checking a process.
+
+       restart_retries
+
+              Type   integer
+
+              Default
+                     3
+
+              Number of retries when the failure of restarting a process.
+
+       restart_interval
+
+              Type   integer
+
+              Default
+                     5
+
+              Interval in seconds for restarting a process.
+
+       api_retry_max
+
+              Type   integer
+
+              Default
+                     12
+
+              Number of retries for send a notification in processmonitor.
+
+       api_retry_interval
+
+              Type   integer
+
+              Default
+                     10
+
+              Interval between re-sending a notification in processmonitor(in seconds).
+
+       process_list_path
+
+              Type   string
+
+              Default
+                     /etc/masakarimonitors/process_list.yaml
+
+              The file path of process list.
+
+   Sample masakari-monitors process list File
+       The following is a sample masakari-monitors process list file.
+
+          # Define the monitoring processes as follows:
+          #    process_name: [Name of the process as it in 'ps -ef'.]
+          #    start_command: [Start command of the process.]
+          #    pre_start_command: [Command which is executed before start_command.]
+          #    post_start_command: [Command which is executed after start_command.]
+          #    restart_command: [Restart command of the process.]
+          #    pre_restart_command: [Command which is executed before restart_command.]
+          #    post_restart_command: [Command which is executed after restart_command.]
+          #    run_as_root: [Bool value whether to execute commands as root authority.]
+          #
+          # These definitions need to be set according to the environment to use.
+          # Sample of definitions is shown below.
+          -
+              # libvirtd
+              process_name: /usr/sbin/libvirtd
+              start_command: systemctl start libvirtd
+              pre_start_command:
+              post_start_command:
+              restart_command: systemctl restart libvirtd
+              pre_restart_command:
+              post_restart_command:
+              run_as_root: True
+          -
+              # nova-compute
+              process_name: /usr/local/bin/nova-compute
+              start_command: systemctl start nova-compute
+              pre_start_command:
+              post_start_command:
+              restart_command: systemctl restart nova-compute
+              pre_restart_command:
+              post_restart_command:
+              run_as_root: True
+          -
+              # instancemonitor
+              process_name: /usr/bin/python /usr/local/bin/masakari-instancemonitor
+              start_command: systemctl start masakari-instancemonitor
+              pre_start_command:
+              post_start_command:
+              restart_command: systemctl restart masakari-instancemonitor
+              pre_restart_command:
+              post_restart_command:
+              run_as_root: True
+          -
+              # hostmonitor
+              process_name: /usr/bin/python /usr/local/bin/masakari-hostmonitor
+              start_command: systemctl start masakari-hostmonitor
+              pre_start_command:
+              post_start_command:
+              restart_command: systemctl restart masakari-hostmonitor
+              pre_restart_command:
+              post_restart_command:
+              run_as_root: True
+          -
+              # sshd
+              process_name: /usr/sbin/sshd
+              start_command: systemctl start ssh
+              pre_start_command:
+              post_start_command:
+              restart_command: systemctl restart ssh
+              pre_restart_command:
+              post_restart_command:
+              run_as_root: True
+
+   Sample Configuration File
+       The following is a sample masakari-monitors configuration for adaptation and use.
+
+       The sample configuration can also be downloaded from here.
+
+       Important:
+          The sample configuration file is auto-generated from masakari-monitors  when  this  documentation  is  built.  You  must  ensure  your  version  of
+          masakari-monitors matches the version of this documentation.
+
+          [DEFAULT]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Explicitly specify the temporary working directory. (string value)
+          #tempdir = <None>
+
+          #
+          # Determine if monkey patching should be applied.
+          #
+          # Related options:
+          #
+          #   * ``monkey_patch_modules``: This must have values set for this option to
+          # have
+          #     any effect
+          #  (boolean value)
+          #monkey_patch = false
+
+          #
+          # List of modules/decorators to monkey patch.
+          #
+          # This option allows you to patch a decorator for all functions in specified
+          # modules.
+          #
+          # Related options:
+          #
+          #   * ``monkey_patch``: This must be set to ``True`` for this option to
+          #     have any effect
+          #  (list value)
+          #monkey_patch_modules =
+
+          #
+          # Hostname, FQDN or IP address of this host. Must be valid within AMQP key.
+          #
+          # Possible values:
+          #
+          # * String with hostname, FQDN or IP address. Default is hostname of this host.
+          #  (string value)
+          # Deprecated group/name - [DEFAULT]/host
+          #hostname = lcy02-amd64-013
+
+          # Full class name for the Manager for instancemonitor. (string value)
+          #instancemonitor_manager = masakarimonitors.instancemonitor.instance.InstancemonitorManager
+
+          # Full class name for introspectiveinstancemonitor. (string value)
+          #introspectiveinstancemonitor_manager = masakarimonitors.introspectiveinstancemonitor.instance.IntrospectiveInstanceMonitorManager
+
+          # Full class name for the Manager for processmonitor. (string value)
+          #processmonitor_manager = masakarimonitors.processmonitor.process.ProcessmonitorManager
+
+          # Full class name for the Manager for hostmonitor. (string value)
+          #hostmonitor_manager = masakarimonitors.hostmonitor.host.HostmonitorManager
+
+          #
+          # From oslo.log
+          #
+
+          # If set to true, the logging level will be set to DEBUG instead of the default
+          # INFO level. (boolean value)
+          # Note: This option can be changed without restarting.
+          #debug = false
+
+          # The name of a logging configuration file. This file is appended to any
+          # existing logging configuration files. For details about logging configuration
+          # files, see the Python logging module documentation. Note that when logging
+          # configuration files are used then all logging configuration is set in the
+          # configuration file and other logging configuration options are ignored (for
+          # example, log-date-format). (string value)
+          # Note: This option can be changed without restarting.
+          # Deprecated group/name - [DEFAULT]/log_config
+          #log_config_append = <None>
+
+          # Defines the format string for %%(asctime)s in log records. Default:
+          # %(default)s . This option is ignored if log_config_append is set. (string
+          # value)
+          #log_date_format = %Y-%m-%d %H:%M:%S
+
+          # (Optional) Name of log file to send logging output to. If no default is set,
+          # logging will go to stderr as defined by use_stderr. This option is ignored if
+          # log_config_append is set. (string value)
+          # Deprecated group/name - [DEFAULT]/logfile
+          #log_file = <None>
+
+          # (Optional) The base directory used for relative log_file  paths. This option
+          # is ignored if log_config_append is set. (string value)
+          # Deprecated group/name - [DEFAULT]/logdir
+          #log_dir = <None>
+
+          # Use syslog for logging. Existing syslog format is DEPRECATED and will be
+          # changed later to honor RFC5424. This option is ignored if log_config_append is
+          # set. (boolean value)
+          #use_syslog = false
+
+          # Enable journald for logging. If running in a systemd environment you may wish
+          # to enable journal support. Doing so will use the journal native protocol which
+          # includes structured metadata in addition to log messages.This option is
+          # ignored if log_config_append is set. (boolean value)
+          #use_journal = false
+
+          # Syslog facility to receive log lines. This option is ignored if
+          # log_config_append is set. (string value)
+          #syslog_log_facility = LOG_USER
+
+          # Use JSON formatting for logging. This option is ignored if log_config_append
+          # is set. (boolean value)
+          #use_json = false
+
+          # Log output to standard error. This option is ignored if log_config_append is
+          # set. (boolean value)
+          #use_stderr = false
+
+          # (Optional) Set the 'color' key according to log levels. This option takes
+          # effect only when logging to stderr or stdout is used. This option is ignored
+          # if log_config_append is set. (boolean value)
+          #log_color = false
+
+          # The amount of time before the log files are rotated. This option is ignored
+          # unless log_rotation_type is set to "interval". (integer value)
+          #log_rotate_interval = 1
+
+          # Rotation interval type. The time of the last file change (or the time when the
+          # service was started) is used when scheduling the next rotation. (string value)
+          # Possible values:
+          # Seconds - <No description provided>
+          # Minutes - <No description provided>
+          # Hours - <No description provided>
+          # Days - <No description provided>
+          # Weekday - <No description provided>
+          # Midnight - <No description provided>
+          #log_rotate_interval_type = days
+
+          # Maximum number of rotated log files. (integer value)
+          #max_logfile_count = 30
+
+          # Log file maximum size in MB. This option is ignored if "log_rotation_type" is
+          # not set to "size". (integer value)
+          #max_logfile_size_mb = 200
+
+          # Log rotation type. (string value)
+          # Possible values:
+          # interval - Rotate logs at predefined time intervals.
+          # size - Rotate logs once they reach a predefined size.
+          # none - Do not rotate log files.
+          #log_rotation_type = none
+
+          # Format string to use for log messages with context. Used by
+          # oslo_log.formatters.ContextFormatter (string value)
+          #logging_context_format_string = %(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [%(global_request_id)s %(request_id)s %(user_identity)s] %(instance)s%(message)s
+
+          # Format string to use for log messages when context is undefined. Used by
+          # oslo_log.formatters.ContextFormatter (string value)
+          #logging_default_format_string = %(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(instance)s%(message)s
+
+          # Additional data to append to log message when logging level for the message is
+          # DEBUG. Used by oslo_log.formatters.ContextFormatter (string value)
+          #logging_debug_format_suffix = %(funcName)s %(pathname)s:%(lineno)d
+
+          # Prefix each line of exception output with this format. Used by
+          # oslo_log.formatters.ContextFormatter (string value)
+          #logging_exception_prefix = %(asctime)s.%(msecs)03d %(process)d ERROR %(name)s %(instance)s
+
+          # Defines the format string for %(user_identity)s that is used in
+          # logging_context_format_string. Used by oslo_log.formatters.ContextFormatter
+          # (string value)
+          #logging_user_identity_format = %(user)s %(project)s %(domain)s %(system_scope)s %(user_domain)s %(project_domain)s
+
+          # List of package logging levels in logger=LEVEL pairs. This option is ignored
+          # if log_config_append is set. (list value)
+          #default_log_levels = amqp=WARN,boto=WARN,sqlalchemy=WARN,suds=INFO,oslo.messaging=INFO,oslo_messaging=INFO,iso8601=WARN,requests.packages.urllib3.connectionpool=WARN,urllib3.connectionpool=WARN,websocket=WARN,requests.packages.urllib3.util.retry=WARN,urllib3.util.retry=WARN,keystonemiddleware=WARN,routes.middleware=WARN,stevedore=WARN,taskflow=WARN,keystoneauth=WARN,oslo.cache=INFO,oslo_policy=INFO,dogpile.core.dogpile=INFO
+
+          # Enables or disables publication of error events. (boolean value)
+          #publish_errors = false
+
+          # The format for an instance that is passed with the log message. (string value)
+          #instance_format = "[instance: %(uuid)s] "
+
+          # The format for an instance UUID that is passed with the log message. (string
+          # value)
+          #instance_uuid_format = "[instance: %(uuid)s] "
+
+          # Interval, number of seconds, of log rate limiting. (integer value)
+          #rate_limit_interval = 0
+
+          # Maximum number of logged messages per rate_limit_interval. (integer value)
+          #rate_limit_burst = 0
+
+          # Log level name used by rate limiting. Logs with level greater or equal to
+          # rate_limit_except_level are not filtered. An empty string means that all
+          # levels are filtered. (string value)
+          # Possible values:
+          # CRITICAL - <No description provided>
+          # ERROR - <No description provided>
+          # INFO - <No description provided>
+          # WARNING - <No description provided>
+          # DEBUG - <No description provided>
+          # '' - <No description provided>
+          #rate_limit_except_level = CRITICAL
+
+          # Enables or disables fatal status of deprecations. (boolean value)
+          #fatal_deprecations = false
+
+          [api]
+          #
+          # Configuration options for sending notifications.
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Region name. (string value)
+          #region = RegionOne
+
+          # Masakari API Version. (string value)
+          #api_version = v1
+
+          # Interface of endpoint. (string value)
+          #api_interface = public
+
+          # Authentication URL (string value)
+          #auth_url = <None>
+
+          # Scope for system operations (string value)
+          #system_scope = <None>
+
+          # Domain ID to scope to (string value)
+          #domain_id = <None>
+
+          # Domain name to scope to (string value)
+          #domain_name = <None>
+
+          # Project ID to scope to (string value)
+          # Deprecated group/name - [api]/tenant_id
+          #project_id = <None>
+
+          # Project name to scope to (string value)
+          # Deprecated group/name - [api]/tenant_name
+          #project_name = <None>
+
+          # Domain ID containing project (string value)
+          #project_domain_id = <None>
+
+          # Domain name containing project (string value)
+          #project_domain_name = <None>
+
+          # ID of the trust to use as a trustee use (string value)
+          #trust_id = <None>
+
+          # Optional domain ID to use with v3 and v2 parameters. It will be used for both
+          # the user and project domain in v3 and ignored in v2 authentication. (string
+          # value)
+          #default_domain_id = <None>
+
+          # Optional domain name to use with v3 API and v2 parameters. It will be used for
+          # both the user and project domain in v3 and ignored in v2 authentication.
+          # (string value)
+          #default_domain_name = <None>
+
+          # User id (string value)
+          #user_id = <None>
+
+          # Username (string value)
+          # Deprecated group/name - [api]/user_name
+          #username = <None>
+
+          # User's domain id (string value)
+          #user_domain_id = <None>
+
+          # User's domain name (string value)
+          #user_domain_name = <None>
+
+          # User's password (string value)
+          #password = <None>
+
+          [callback]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Number of retries when the notification processing is error. (integer value)
+          #retry_max = 12
+
+          # Trial interval of time of the notification processing is error(in seconds).
+          # (integer value)
+          #retry_interval = 10
+
+          [consul]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Addr for local consul agent in management datacenter. (string value)
+          #agent_manage = <None>
+
+          # Addr for local consul agent in tenant datacenter. (string value)
+          #agent_tenant = <None>
+
+          # Addr for local consul agent in storage datacenter. (string value)
+          #agent_storage = <None>
+
+          # Config file for consul health action matrix. (string value)
+          #matrix_config_file = <None>
+
+          [cors]
+
+          #
+          # From oslo.middleware
+          #
+
+          # Indicate whether this resource may be shared with the domain received in the
+          # requests "origin" header. Format: "<protocol>://<host>[:<port>]", no trailing
+          # slash. Example: https://horizon.example.com (list value)
+          #allowed_origin = <None>
+
+          # Indicate that the actual request can include user credentials (boolean value)
+          #allow_credentials = true
+
+          # Indicate which headers are safe to expose to the API. Defaults to HTTP Simple
+          # Headers. (list value)
+          #expose_headers =
+
+          # Maximum cache age of CORS preflight requests. (integer value)
+          #max_age = 3600
+
+          # Indicate which methods can be used during the actual request. (list value)
+          #allow_methods = OPTIONS,GET,HEAD,POST,PUT,DELETE,TRACE,PATCH
+
+          # Indicate which header field names may be used during the actual request. (list
+          # value)
+          #allow_headers =
+
+          [healthcheck]
+
+          #
+          # From oslo.middleware
+          #
+
+          # Show more detailed information as part of the response. Security note:
+          # Enabling this option may expose sensitive details about the service being
+          # monitored. Be sure to verify that it will not violate your security policies.
+          # (boolean value)
+          #detailed = false
+
+          # Additional backends that can perform health checks and report that information
+          # back as part of a request. (list value)
+          #backends =
+
+          # A list of network addresses to limit source ip allowed to access healthcheck
+          # information. Any request from ip outside of these network addresses are
+          # ignored. (list value)
+          #allowed_source_ranges =
+
+          # Ignore requests with proxy headers. (boolean value)
+          #ignore_proxied_requests = false
+
+          # Check the presence of a file to determine if an application is running on a
+          # port. Used by DisableByFileHealthcheck plugin. (string value)
+          #disable_by_file_path = <None>
+
+          # Check the presence of a file based on a port to determine if an application is
+          # running on a port. Expects a "port:path" list of strings. Used by
+          # DisableByFilesPortsHealthcheck plugin. (list value)
+          #disable_by_file_paths =
+
+          # Check the presence of files. Used by EnableByFilesHealthcheck plugin. (list
+          # value)
+          #enable_by_file_paths =
+
+          [host]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Driver that hostmonitor uses for monitoring hosts. (string value)
+          #monitoring_driver = default
+
+          # Monitoring interval(in seconds) of node status. (integer value)
+          #monitoring_interval = 60
+
+          #
+          # Monitoring probes to collect before making the decision to send Masakari
+          # notification about the node status. If and only if ``monitoring_samples``
+          # consecutive reports have the same status, will the Masakari notification
+          # be sent.
+          #  (integer value)
+          #monitoring_samples = 1
+
+          # Number of retries for send a notification in hostmonitor. (integer value)
+          #api_retry_max = 12
+
+          # Trial interval of time of the notification processing is error(in seconds).
+          # (integer value)
+          #api_retry_interval = 10
+
+          #
+          # Do not check whether the host is completely down.
+          #
+          # Possible values:
+          #
+          # * True: Do not check whether the host is completely down.
+          # * False: Do check whether the host is completely down.
+          #
+          # If ipmi RA is not set in pacemaker, this value should be set True.
+          #  (boolean value)
+          #disable_ipmi_check = false
+
+          # Only monitor pacemaker-remotes, ignore the status of full cluster members.
+          # (boolean value)
+          #restrict_to_remotes = false
+
+          # Timeout value(in seconds) of the ipmitool command. (integer value)
+          #ipmi_timeout = 5
+
+          # Number of ipmitool command retries. (integer value)
+          #ipmi_retry_max = 3
+
+          # Retry interval(in seconds) of the ipmitool command. (integer value)
+          #ipmi_retry_interval = 10
+
+          # Standby time(in seconds) until activate STONITH. (integer value)
+          #stonith_wait = 30
+
+          # Timeout value(in seconds) of the tcpdump command when monitors the corosync
+          # communication. (integer value)
+          #tcpdump_timeout = 5
+
+          #
+          # The name of interface that corosync is using for mutual communication
+          # between hosts.
+          # If there are multiple interfaces, specify them in comma-separated
+          # like 'enp0s3,enp0s8'.
+          # The number of interfaces you specify must be equal to the number of
+          # corosync_multicast_ports values and must be in correct order with relevant
+          # ports in corosync_multicast_ports.
+          #  (list value)
+          #corosync_multicast_interfaces = <None>
+
+          #
+          # The port numbers that corosync is using for mutual communication
+          # between hosts.
+          # If there are multiple port numbers, specify them in comma-separated
+          # like '5405,5406'.
+          # The number of port numbers you specify must be equal to the number of
+          # corosync_multicast_interfaces values and must be in correct order with
+          # relevant interfaces in corosync_multicast_interfaces.
+          #  (list value)
+          #corosync_multicast_ports = <None>
+
+          #
+          # Using this option, one can avoid systemd checks that would establish whether
+          # this hostmonitor is running alongside Corosync and Pacemaker (the ``cluster``
+          # stack) or Pacemaker Remote (the ``remote`` stack).
+          #
+          # The default (``autodetect``) ensures backward compatibility and means systemd
+          # is used to check the stack.
+          #  (string value)
+          # Possible values:
+          # autodetect - <No description provided>
+          # cluster - <No description provided>
+          # remote - <No description provided>
+          #pacemaker_node_type = autodetect
+
+          [introspectiveinstancemonitor]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          #
+          # Guest monitoring interval of VM status (in seconds).
+          # * The value should not be too low as there should not be false negative
+          # * for reporting QEMU_GUEST_AGENT failures
+          # * VM needs time to do powering-off.
+          # * guest_monitoring_interval should be greater than
+          # * the time to SHUTDOWN VM gracefully.
+          # * e.g. | 565da9ba-3c0c-4087-83ca | iim1 | ACTIVE | powering-off | Running
+          #  (integer value)
+          #guest_monitoring_interval = 10
+
+          # Guest monitoring timeout (in seconds). (integer value)
+          #guest_monitoring_timeout = 2
+
+          # Failure threshold before sending notification. (integer value)
+          #guest_monitoring_failure_threshold = 3
+
+          #
+          # * The file path of qemu guest agent sock.
+          # * Please use Python raw string notation as regular expressions.
+          #   e.g.  r'/var/lib/libvirt/qemu/org\.qemu\.guest_agent\..*\.instance-.*\.sock'
+          #  (string value)
+          #qemu_guest_agent_sock_path = /var/lib/libvirt/qemu/org\.qemu\.guest_agent\..*\.instance-.*\.sock
+
+          [kubernetes]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          #
+          # Options for identifying the nodes to monitor. Only nodes with node labels
+          # defined in this option are included in the monitor.
+          #
+          # Example value:
+          #
+          # monitoring_node_labels = "monitoring=true,compute-node=enabled,..."
+          #  (string value)
+          #monitoring_node_labels =
+
+          [libvirt]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Override the default libvirt URI. (string value)
+          #connection_uri = qemu:///system
+
+          [oslo_middleware]
+
+          #
+          # From oslo.middleware
+          #
+
+          # The maximum body size for each request, in bytes. (integer value)
+          #max_request_body_size = 114688
+
+          # Whether the application is behind a proxy or not. This determines if the
+          # middleware should parse the headers or not. (boolean value)
+          #enable_proxy_headers_parsing = false
+
+          # HTTP basic auth password file. (string value)
+          #http_basic_auth_user_file = /etc/htpasswd
+
+          [process]
+
+          #
+          # From masakarimonitors.conf
+          #
+
+          # Interval in seconds for checking a process. (integer value)
+          #check_interval = 5
+
+          # Number of retries when the failure of restarting a process. (integer value)
+          #restart_retries = 3
+
+          # Interval in seconds for restarting a process. (integer value)
+          #restart_interval = 5
+
+          # Number of retries for send a notification in processmonitor. (integer value)
+          #api_retry_max = 12
+
+          # Interval between re-sending a notification in processmonitor(in seconds).
+          # (integer value)
+          #api_retry_interval = 10
+
+          # The file path of process list. (string value)
+          #process_list_path = /etc/masakarimonitors/process_list.yaml
+
+   Masakari Monitors System Architecture
+       Masakari-monitors  provides  Virtual Machine High Availability (VMHA) service for OpenStack clouds by detecting the failure events such as VM unavail‐
+       ability, VM internal faults, provisioning process unavailability and nova-compute host failure. If it detect these events, it sends  notifications  to
+       the masakari-api which in turn, delegates them to masakari-engine for further processing via novaclient and nova.
+
+   Masakari Components
+       The Masakari components described below are those which actually process the notifications received from Masakari-monitors:
+
+       • DB: sql database for data storage for masakari, where all notifications received from monitors are getting stored.
+
+       • masakari-api: component that receives notification from Masakari-monitors and delegates to masakari-engine.
+
+       • masakari-engine: processes the notification request with the help of novaclient and nova.
+
+   Masakari Monitors Components
+       Below are Masakari-monitors’s key components.  [image]
+
+       • masakari-instancemonitor: Detects the failure of VM/instance.
+
+       • masakari-introspectiveinstancemonitor: Monitors the VMs, in order to detect, report and recover VMs from internal faults.
+
+       • masakari-processmonitor: Detects the failure of process listed in process_list.yaml configuration file.
+
+       • masakari-hostmonitor: Detects the nova-compute host failure.
+
+SEARCH
+       • Search Page <>: Search the contents of this document.
+
+       • OpenStack wide search <https://docs.openstack.org>: Search the wider set of OpenStack documentation, including forums.
+
+Author
+       Author name not set
+
+Copyright
+       2016, OpenStack Foundation
+
+21.0.0                                                                   Apr 01, 2026                                                    MASAKARI-MONITORS(1)

@@ -1,0 +1,800 @@
+JE(3)                 User Contributed Perl Documentation                JE(3)
+
+NAME
+     JE - Pure-Perl ECMAScript (JavaScript) Engine
+
+VERSION
+     Version 0.066 (alpha release)
+
+     The API is still subject to change. If you have the time and the
+     interest, please experiment with this module (or even lend a hand :-).
+     If you have any ideas for the API, or would like to help with
+     development, please e-mail the author.
+
+SYNOPSIS
+       use JE;
+
+       $j = new JE; # create a new global object
+
+       $j->eval('({"this": "that", "the": "other"}["this"])');
+       # returns "that"
+
+       $parsed = $j->parse('new Array(1,2,3)');
+
+       $rv = $parsed->execute; # returns a JE::Object::Array
+       $rv->value;             # returns a Perl array ref
+
+       $obj = $j->eval('new Object');
+       # create a new object
+
+       $foo = $j->{document}; # get property
+       $j->{document} = $obj; # set property
+       $j->{document} = {};   # gets converted to a JE::Object
+       $j->{document}{location}{href}; # autovivification
+
+       $j->method(alert => "text"); # invoke a method
+
+
+       # create global function from a Perl subroutine:
+       $j->new_function(print => sub { print @_, "\n" } );
+
+       $j->eval(<<'--end--');
+               function correct(s) {
+                       s = s.replace(/[EA]/g, function(s){
+                               return ['E','A'][+(s=='E')]
+                       })
+                       return s.charAt(0) +
+                              s.substring(1,4).toLowerCase() +
+                              s.substring(4)
+               }
+               print(correct("ECMAScript")) // :-)
+       --end--
+
+DESCRIPTION
+     JE, short for JavaScript::Engine (imaginative, isn't it?), is a pure-Perl
+     JavaScript engine. Here are some of its strengths:
+
+     -   Easy to install (no C compiler necessary*)
+
+     -   The parser can be extended/customised to support extra (or fewer)
+         language features (not yet complete)
+
+     -   All JavaScript datatypes can be manipulated directly from Perl (they
+         all have overloaded operators)
+
+     -   The JavaScript datatypes provide "TO_JSON" methods for compatibility
+         with JSON.pm.
+
+     JE's greatest weakness is that it's slow (well, what did you expect?).
+     It also uses and leaks lots of memory.  (There is an experimental
+     JE::Destroyer (q.v.) module that solves this if you load it first and
+     then call JE::Destroyer::destroy($j) on the JE object when you have
+     finished with it.)
+
+     * If you are using perl 5.9.3 or lower, then Tie::RefHash::Weak is
+     required. Recent versions of it require Variable::Magic, an XS module
+     (which requires a compiler of course), but version 0.02 of the former is
+     just pure Perl with no XS dependencies.
+
+     There is currently an experimental version of the run-time engine, which
+     is supposed to be faster, although it currently makes compilation slower.
+     (If you serialise the compiled code and use that, you should notice a
+     speed-up.) It will eventually replace the current one when it is
+     complete.  (It does not yet respect tainting or max_ops, or report line
+     numbers correctly.) You can activate it by setting to 1 the ridiculously
+     named YES_I_WANT_JE_TO_OPTIMISE environment variable, which is just a
+     temporary hack that will later be removed.
+
+USAGE
+   Simple Use
+     If you simply need to run a few JS functions from Perl, create a new JS
+     environment like this:
+
+       my $je = new JE;
+
+     If necessary, make Perl subroutines available to JavaScript:
+
+       $je->new_function(warn => sub { warn @_ });
+       $je->new_function(ok => \&Test::More::ok);
+
+     Then pass the JavaScript functions to "eval":
+
+       $je->eval(<<'___');
+
+       function foo() {
+           return 42
+       }
+       // etc.
+       ___
+
+       # or perhaps:
+       use File::Slurp;
+       $je->eval(scalar read_file 'functions.js');
+
+     Then you can access those function from Perl like this:
+
+       $return_val = $je->{foo}->();
+       $return_val = $je->eval('foo()');
+
+     The return value will be a special object that, when converted to a
+     string, boolean or number, will behave exactly as in JavaScript. You can
+     also use it as a hash, to access or modify its properties. (Array objects
+     can be used as arrays, too.) To call one of its JS methods, you should
+     use the "method" method: "$return_val->method('foo')". See JE::Types for
+     more information.
+
+   Custom Global Objects
+     To create a custom global object, you have to subclass JE. For instance,
+     if all you need to do is add a "self" property that refers to the global
+     object, then override the "new" method like this:
+
+       package JEx::WithSelf;
+       @ISA = 'JE';
+       sub new {
+           my $self = shift->SUPER::new(@_);
+           $self->{self} = $self;
+           return $self;
+       }
+
+   Using Perl Objects from JS
+     See "bind_class", below.
+
+   Writing Custom Data Types
+     See JE::Types.
+
+METHODS
+     See also "JE::Object", which this class inherits from, and "JE::Types".
+
+     $j = JE->new( %opts )
+         This class method constructs and returns a new JavaScript
+         environment, the JE object itself being the global object.
+
+         The (optional) options it can take are "max_ops" and "html_mode",
+         which correspond to the methods listed below.
+
+     $j->parse( $code, $filename, $first_line_no )
+         "parse" parses the code contained in $code and returns a parse tree
+         (a JE::Code object).
+
+         If the syntax is not valid, "undef" will be returned and $@ will
+         contain an error message. Otherwise $@ will be a null string.
+
+         The JE::Code class provides the method "execute" for executing the
+         pre-compiled syntax tree.
+
+         $filename and $first_line_no, which are both optional, will be stored
+         inside the JE::Code object and used for JS error messages. (See also
+         add_line_number in the JE::Code man page.)
+
+     $j->compile( STRING )
+         Just an alias for "parse".
+
+     $j->eval( $code, $filename, $lineno )
+         "eval" evaluates the JavaScript code contained in $code. E.g.:
+
+           $j->eval('[1,2,3]') # returns a JE::Object::Array which can be used as
+                               # an array ref
+
+         If $filename and $lineno are specified, they will be used in error
+         messages. $lineno is the number of the first line; it defaults to 1.
+
+         If an error occurs, "undef" will be returned and $@ will contain the
+         error message. If no error occurs, $@ will be a null string.
+
+         This is actually just a wrapper around "parse" and the "execute"
+         method of the JE::Code class.
+
+         If the JavaScript code evaluates to an lvalue, a JE::LValue object
+         will be returned. You can use this like any other return value (e.g.,
+         as an array ref if it points to a JS array). In addition, you can use
+         the "set" and "get" methods to set/get the value of the property to
+         which the lvalue refers. (See also JE::LValue.) E.g., this will
+         create a new object named "document":
+
+           $j->eval('this.document')->set({});
+
+         Note that I used "this.document" rather than just "document", since
+         the latter would throw an error if the variable did not exist.
+
+     $j->new_function($name, sub { ... })
+     $j->new_function(sub { ... })
+         This creates and returns a new function object. If $name is given, it
+         will become a property of the global object.
+
+         Use this to make a Perl subroutine accessible from JavaScript.
+
+         For more ways to create functions, see JE::Object::Function.
+
+         This is actually a method of JE::Object, so you can use it on any
+         object:
+
+           $j->{Math}->new_function(double => sub { 2 * shift });
+
+     $j->new_method($name, sub { ... })
+         This is just like "new_function", except that, when the function is
+         called, the subroutine's first argument (number 0) will be the object
+         with which the function is called. E.g.:
+
+           $j->eval('String.prototype')->new_method(
+                   reverse => sub { scalar reverse shift }
+           );
+           # ... then later ...
+           $j->eval(q[ 'a string'.reverse() ]); # returns 'gnirts a'
+
+     $j->max_ops
+     $j->max_ops( $new_value )
+         Use this to set the maximum number of operations that "eval" (or
+         JE::Code's "execute") will run before terminating. (You can use this
+         for runaway scripts.) The exact method of counting operations is
+         consistent from one run to another, but is not guaranteed to be
+         consistent between versions of JE. In the current implementation, an
+         operation means an expression or sub-expression, so a simple "return"
+         statement with no arguments is not counted.
+
+         With no arguments, this method returns the current value.
+
+         As shorthand, you can pass "max_ops => $foo" to the constructor.
+
+         If the number of operations is exceeded, then "eval" will return
+         undef and set $@ to a 'max_ops (xxx) exceeded.
+
+     $j->html_mode
+     $j->html_mode( $new_value )
+         Use this to turn on 'HTML mode', in which HTML comment delimiters are
+         treated much like "//". "new_value" is a boolean. Since this violates
+         ECMAScript, it is off by  default.
+
+         With no arguments, this method returns the current value.
+
+         As shorthand, you can pass "html_mode => 1" to the constructor.
+
+     $j->upgrade( @values )
+         This method upgrades the value or values given to it. See "UPGRADING
+         VALUES" in JE::Types for more detail.
+
+         If you pass it more than one argument in scalar context, it returns
+         the number of arguments--but that is subject to change, so don't do
+         that.
+
+     $j->undefined
+         Returns the JavaScript undefined value.
+
+     $j->null
+         Returns the JavaScript null value.
+
+     $j->true
+         Returns the JavaScript true value.
+
+     $j->false
+         Returns the JavaScript false value.
+
+     $j->bind_class( LIST )
+         (This method can create a potential security hole. Please see "BUGS",
+         below.)
+
+   Synopsis
+      $j->bind_class(
+          package => 'Net::FTP',
+          name    => 'FTP', # if different from package
+          constructor => 'new', # or sub { Net::FTP->new(@_) }
+
+          methods => [ 'login','get','put' ],
+          # OR:
+          methods => {
+              log_me_in => 'login', # or sub { shift->login(@_) }
+              chicken_out => 'quit',
+          }
+          static_methods => {
+              # etc. etc. etc.
+          }
+          to_primitive => \&to_primitive # or a method name
+          to_number    => \&to_number
+          to_string    => \&to_string
+
+          props => [ 'status' ],
+          # OR:
+          props => {
+              status => {
+                  fetch => sub { 'this var never changes' }
+                  store => sub { system 'say -vHysterical hah hah' }
+              },
+              # OR:
+              status => \&fetch_store # or method name
+          },
+          static_props => { ... }
+
+          hash  => 1, # Perl obj can be used as a hash
+          array => 1, # or as an array
+          # OR (not yet implemented):
+          hash  => 'namedItem', # method name or code ref
+          array => 'item',       # likewise
+          # OR (not yet implemented):
+          hash => {
+              fetch => 'namedItem',
+              store => sub { shift->{+shift} = shift },
+          },
+          array => {
+              fetch => 'item',
+              store => sub { shift->[shift] = shift },
+          },
+
+          isa => 'Object',
+          # OR:
+          isa => $j->{Object}{prototype},
+      );
+
+      # OR:
+
+      $j->bind_class(
+          package => 'Net::FTP',
+          wrapper => sub { new JE_Proxy_for_Net_FTP @_ }
+      );
+
+   Description
+     (Some of this is random order, and probably needs to be rearranged.)
+
+     This method binds a Perl class to JavaScript. LIST is a hash-style list
+     of key/value pairs. The keys, listed below, are all optional except for
+     "package" or "name"--you must specify at least one of the two.
+
+     Whenever it says you can pass a method name to a particular option, and
+     that method is expected to return a value (i.e., this does not apply to
+     "props => { property_name => { store => 'method' } }"), you may append a
+     colon and a data type (such as ':String') to the method name, to indicate
+     to what JavaScript type to convert the return value. Actually, this is
+     the name of a JS function to which the return value will be passed, so
+     'String' has to be capitalised. This also means than you can use
+     'method:eval' to evaluate the return value of 'method' as JavaScript
+     code. One exception to this is that the special string ':null' indicates
+     that Perl's "undef" should become JS's "null", but other values will be
+     converted the default way. This is useful, for instance, if a method
+     should return an object or "null", from JavaScript's point of view. This
+     ':' feature does not stop you from using double colons in method names,
+     so you can write 'Package::method:null' if you like, and rest assured
+     that it will split on the last colon. Furthermore, just 'Package::method'
+     will also work.  It won't split it at all.
+
+     package
+         The name of the Perl class. If this is omitted, "name" will be used
+         instead.
+
+     name
+         The name the class will have in JavaScript. This is used by
+         "Object.prototype.toString" and as the name of the constructor. If
+         omitted, "package" will be used.
+
+     constructor => 'method_name'
+     constructor => sub { ... }
+         If "constructor" is given a string, the constructor will treat it as
+         the name of a class method of "package".
+
+         If it is a coderef, it will be used as the constructor.
+
+         If this is omitted, the constructor will raise an error when called.
+         If there is already a constructor with the same name, however, it
+         will be left as it is (though methods will still be added to its
+         prototype object). This allows two Perl classes to be bound to a
+         single JavaScript class:
+
+          $j->bind_class( name => 'Foo', package => 'Class::One', methods => ... );
+          $j->bind_class( name => 'Foo', package => 'Class::Two' );
+
+     methods => [ ... ]
+     methods => { ... }
+         If an array ref is supplied, the named methods will be bound to
+         JavaScript functions of the same names.
+
+         If a hash ref is used, the keys will be the names of the methods from
+         JavaScript's point of view. The values can be either the names of the
+         Perl methods, or code references.
+
+     static_methods
+         Like "methods" but they will become methods of the constructor
+         itself, not of its "prototype" property.
+
+     to_primitive => sub { ... }
+     to_primitive => 'method_name'
+         When the object is converted to a primitive value in JavaScript, this
+         coderef or method will be called. The first argument passed will, of
+         course, be the object. The second argument will be the hint ('number'
+         or 'string') or will be omitted.
+
+         If to_primitive is omitted, the usual valueOf and toString methods
+         will be tried as with built-in JS objects, if the object does not
+         have overloaded string/boolean/number conversions. If the object has
+         even one of those three, then conversion to a primitive will be the
+         same as in Perl.
+
+         If "to_primitive => undef" is specified, primitivisation without a
+         hint (which happens with "<" and "==") will throw a TypeError.
+
+     to_number
+         If this is omitted, "to_primitive($obj, 'number')" will be used.  If
+         set to undef, a TypeError will be thrown whenever the object is
+         numified.
+
+     to_string
+         If this is omitted, "to_primitive($obj, 'string')" will be used.  If
+         set to undef, a TypeError will be thrown whenever the object is
+         strung.
+
+     props => [ ... ]
+     props => { ... }
+         Use this to add properties that will trigger the provided methods or
+         subroutines when accessed. These property definitions can also be
+         inherited by subclasses, as long as, when the subclass is registered
+         with "bind_class", the superclass is specified as a string (via
+         "isa", below).
+
+         If this is an array ref, its elements will be the names of the
+         properties.  When a property is retrieved, a method of the same name
+         is called. When a property is set, the same method is called, with
+         the new value as the argument.
+
+         If a hash ref is given, for each element, if the value is a simple
+         scalar, the property named by the key will trigger the method named
+         by the value.  If the value is a coderef, it will be called with the
+         object as its argument when the variable is read, and with the object
+         and the new value as its two arguments when the variable is set.  If
+         the value is a hash ref, the "fetch" and "store" keys will be
+         expected to be either coderefs or method names. If only "fetch" is
+         given, the property will be read-only. If only "store" is given, the
+         property will be write-only and will appear undefined when accessed.
+         (If neither is given, it will be a read-only undefined
+         property--really useful.)
+
+     static_props
+         Like "props" but they will become properties of the constructor
+         itself, not of its "prototype" property.
+
+     hash
+         If this option is present, then this indicates that the Perl object
+         can be used as a hash. An attempt to access a property not defined by
+         "props" or "methods" will result in the retrieval of a hash element
+         instead (unless the property name is a number and "array" is
+         specified as well).
+
+         The value you give this option should be one of the strings '1-way'
+         and '2-way' (also 1 and 2 for short).
+
+         If you specify '1-way', only properties corresponding to existing
+         hash elements will be linked to those elements; properties added to
+         the object from JavaScript will be JavaScript's own, and will not
+         affect the wrapped object. (Consider how node lists and collections
+         work in web browsers.)
+
+         If you specify '2-way', an attempt to create a property in JavaScript
+         will be reflected in the underlying object.
+
+         To do: Make this accept '1-way:String', etc.
+
+     array
+         This is just like "hash", but for arrays. This will also create a
+         property named 'length'.
+
+         To do: Make this accept '1-way:String', etc.
+
+     unwrap => 1
+         If you specify this and it's true, objects passed as arguments to the
+         methods or code refs specified above are 'unwrapped' if they are
+         proxies for Perl objects (see below). And null and undefined are
+         converted to "undef".
+
+         This is experimental right now. I might actually make this the
+         default.  Maybe this should provide more options for fine-tuning, or
+         maybe what is currently the default behaviour should be removed. If
+         anyone has any opinions on this, please e-mail the author.
+
+     isa => 'ClassName'
+     isa => $prototype_object
+         (Maybe this should be renamed 'super'.)
+
+         The name of the superclass. 'Object' is the default. To make this new
+         class's prototype object have no prototype, specify "undef". Instead
+         of specifying the name of the superclass, you can provide the
+         superclass's prototype object.
+
+         If you specify a name, a constructor function by that name must
+         already exist, or an exception will be thrown. (I supposed I could
+         make JE smart enough to defer retrieving the prototype object until
+         the superclass is registered. Well, maybe later.)
+
+     wrapper => sub { ... }
+         If "wrapper" is specified, all other arguments will be ignored except
+         for "package" (or "name" if "package" is not present).
+
+         When an object of the Perl class in question is 'upgraded,' this
+         subroutine will be called with the global object as its first
+         argument and the object to be 'wrapped' as the second. The subroutine
+         is expected to return an object compatible with the interface
+         described in JE::Types.
+
+         If "wrapper" is supplied, no constructor will be created.
+
+     After a class has been bound, objects of the Perl class will, when passed
+     to JavaScript (or the "upgrade" method), appear as instances of the
+     corresponding JS class. Actually, they are 'wrapped up' in a proxy object
+     (a JE::Object::Proxy object), that provides the interface that JS
+     operators require (see JE::Types). If the object is passed back to Perl,
+     it is the proxy, not the original object that is returned. The proxy's
+     "value" method will return the original object. But, if the "unwrap"
+     option above is used when a class is bound, the original Perl object will
+     be passed to any methods or properties belonging to that class. This
+     behaviour is still subject to change. See "unwrap", above.
+
+     Note that, if you pass a Perl object to JavaScript before binding its
+     class, JavaScript's reference to it (if any) will remain as it is, and
+     will not be wrapped up inside a proxy object.
+
+     To use Perl's overloading within JavaScript, well...er, you don't have to
+     do anything. If the object has "", "0+" or "bool" overloading, that will
+     automatically be detected and used.
+
+     $j->new_parser
+         This returns a parser object (see JE::Parser) which allows you to
+         customise the way statements are parsed and executed (only partially
+         implemented).
+
+     $j->prototype_for( $class_name )
+     $j->prototype_for( $class_name, $new_val )
+         Mostly for internal use, this method is used to store/retrieve the
+         prototype objects used by JS's built-in data types. The class name
+         should be 'String', 'Number', etc., but you can actually store
+         anything you like in here. :-)
+
+TAINTING
+     If a piece of JS code is tainted, you can still run it, but any strings
+     or numbers returned, assigned or passed as arguments by the tainted code
+     will be tainted (even if it did not originated from within the code).
+     E.g.,
+
+       use Taint::Util;
+       taint($code = "String.length");
+       $foo = 0 + new JE  ->eval($code);  # $foo is now tainted
+
+     This does not apply to string or number objects, but, if the code created
+     the object, then its internal value will be tainted, because it created
+     the object by passing a simple string or number argument to a
+     constructor.
+
+IMPLEMENTATION NOTES
+     Apart from items listed under "BUGS", below, JE follows the ECMAScript v3
+     specification. There are cases in which ECMAScript leaves the precise
+     semantics to the discretion of the implementation. Here is the behaviour
+     in such cases:
+
+     •   The global "parseInt" can interpret its first argument either as
+         decimal or octal if it begins with a 0 not followed by 'x', and the
+         second argument is omitted. JE uses decimal.
+
+     •   Array.prototype.toLocaleString uses ',' as the separator.
+
+     The spec. states that, whenever it (the spec.), say to throw a
+     SyntaxError, an implementation may provide other behaviour instead. Here
+     are some instances of this:
+
+     •   "return" may be used outside a function. It's like an 'exit'
+         statement, but it can return a value:
+
+           var thing = eval('return "foo"; this = statement(is,not) + executed')
+
+     •   "break" and "continue" may be used outside of loops. In which case
+         they act like "return" without arguments.
+
+     •   Reserved words (except "case" and "break") can be used as identifiers
+         when there is no ambiguity.
+
+     •   Regular expression syntax that is not valid ECMAScript in general
+         follows Perl's behaviour. (See JE::Object::RegExp for the
+         exceptions.)
+
+     JE also supports the "escape" and "unescape" global functions (not part
+     of ECMAScript proper, but in the appendix).
+
+BUGS
+     To report bugs, please e-mail the author.
+
+   Bona Fide Bugs
+     •   "bind_class" has a security hole: An object method’s corresponding
+         Function object can be applied to any Perl object or class from
+         within JS.  (E.g., if you have allowed a Foo object's "wibbleton"
+         method to be called from JS, then a Bar object's method of the same
+         name can be, too.)
+
+         Fixing this is a bit complicated. If anyone would like to help,
+         please let me know. (The problem is that the same code would be
+         repeated a dozen times in "bind_class"'s closures--a maintenance
+         nightmare likely to result in more security bugs. Is there any way to
+         eliminate all those closures?)
+
+     •   The JE::Scope class, which has an "AUTOLOAD" sub that delegates
+         methods to the global object, does not yet implement the "can"
+         method, so if you call $scope->can('to_string') you will get a false
+         return value, even though scope objects can "to_string".
+
+     •   "hasOwnProperty" does not work properly with arrays and arguments
+         objects.
+
+     •   Sometimes line numbers reported in error messages are off. E.g., in
+         the following code--
+
+           foo(
+               (4))
+
+         --, if "foo" is not a function, line 2 will be reported instead of
+         line 1.
+
+     •   Currently, [:blahblahblah:]-style character classes don’t work if
+         followed by a character class escape (\s, \d, etc.) within the class.
+         "/[[:alpha:]\d]/" is interpreted as "/[\[:alph]\d\]/".
+
+     •   If, in perl 5.8.x, you call the "value" method of a JE::Object that
+         has a custom fetch subroutine for one of its enumerable properties
+         that throws an exception, you'll get an 'Attempt to free unreferenced
+         scalar' warning.
+
+     •   On Solaris in perl 5.10.0, the Date class can cause an 'Out of
+         memory' error which I find totally inexplicable. Patches welcome. (I
+         don't have Solaris, so I can't experiment with it.)
+
+     •   Case-tolerant regular expressions allow a single character to match
+         multiple characters, and vice versa, in those cases where a
+         character's uppercase equivalent is more than one character; e.g.,
+         "/ss/" can match the double S ligature. This is contrary to the
+         ECMAScript spec. See the source code of JE::Object::RegExp for more
+         details.
+
+     •   Currently any assignment that causes an error will result in the
+         'Cannot assign to a non-lvalue' error message, even if it was for a
+         different cause. For instance, a custom "fetch" routine might die.
+
+     •   The parser doesn’t currently support Unicode escape sequences in a
+         regular expression literal’s flags. It currently passes them through
+         verbatim to the RegExp constructor, which then croaks.
+
+     •   Under perl 5.8.8, the following produces a double free; something I
+         need to look into:
+
+           "".new JE  ->eval(q| Function('foo','return[a]')() | )
+
+     •   The "var" statement currently evaluates the rhs before the lhs, which
+         is wrong. This affects the following, which should return 5, but
+         returns undefined:
+
+           with(o={x:1})var x = (delete x,5); return o.x
+
+     •   Currently if a try-(catch)-finally statement’s "try" and "catch"
+         blocks don't return anything, the return value is taken from the
+         "finally" block.  This is incorrect. There should be no return value.
+         In other words, this should return 3:
+
+           eval(' 3; try{}finally{5} ')
+
+     •   Compound assignment operators (+=, etc.) currently get the value of
+         the rhs first, which is wrong. The following should produce "1b", but
+         gives "2b":
+
+           a = 1;  a += (a=2,"b")
+
+     •   Serialisation of RegExp objects with Data::Dump::Streamer is
+         currently broken (and has been since 0.022).
+
+   Limitations
+     •   JE is not necessarily IEEE 754-compliant. It depends on the OS. For
+         this reason the Number.MIN_VALUE and Number.MAX_VALUE properties may
+         not have the same values as ECMAScript, and sometimes rounding (via
+         "toPrecision", etc.) goes the wrong way.
+
+     •   A Perl subroutine called from JavaScript can sneak past a "finally"
+         block and avoid triggering it:
+
+           $j = new JE;
+           $j->new_function(outta_here => sub { last outta });
+           outta: {
+               $j->eval('
+                   try { x = 1; outta_here() }
+                   finally { x = 2 }
+               ');
+           }
+           print $j->{x}, "\n";
+
+     •   NaN and Infinity do not work properly on some Windows compilers.
+         32-bit ActivePerl seems not to work, but I have been told 64-bit is
+         OK.  Strawberry Perl works fine, which is what most people are using.
+
+   Incompatibilities with ECMAScript...
+     ...that are probably due to typos in the spec.
+
+     •   In a try-catch-finally statement, if the 'try' block throws an error
+         and the 'catch' and 'finally' blocks exit normally--i.e., not as a
+         result of throw/return/continue/break--, the error originally thrown
+         within the 'try' block is supposed to be propagated, according to the
+         spec. JE does not re-throw the error. (This is consistent with other
+         ECMAScript implementations.)
+
+         I believe there is a typo in the spec. in clause 12.14, in the
+         'TryStatement : try Block Catch Finally' algorithm. Step 5 should
+         probably read 'Let C = Result(4),' rather than 'If Result(4).type is
+         not normal, Let C = Result(4).'
+
+     •   If the expression between the two colons in a for(;;) loop header is
+         omitted, the expression before the first colon is not supposed to be
+         evaluated. JE does evaluate it, regardless of whether the expression
+         between the two colons is present.
+
+         I think this is also a typo in the spec. In the first algorithm in
+         clause 12.6.3, step 1 should probably read 'If ExpressionNoIn is not
+         present, go to step 4,' rather than 'If the first Expression is not
+         present, go to step 4.'
+
+     •   The "setTime" method of a Date object does what one would expect (it
+         sets the number of milliseconds stored in the Date object and returns
+         that number).  According to the obfuscated definition in the
+         ECMAScript specification, it should always set it to NaN and return
+         NaN.
+
+         I think I've found yet another typo in the spec. In clause 15.9.5.27,
+         Result(1)' and and Result(2)' are probably supposed to be Result(2)'
+         and Result(3)', respectively.
+
+PREREQUISITES
+     perl 5.8.4 or higher
+
+     Scalar::Util 1.14 or higher
+
+     Exporter 5.57 or higher
+
+     Tie::RefHash::Weak, for perl versions earlier than 5.9.4
+
+     The TimeDate distribution (more precisely, Time::Zone and Date::Parse)
+
+     Encode 2.08 or higher
+
+     Note: JE will probably end up with Unicode::Collate in the list of
+     dependencies.
+
+AUTHOR, COPYRIGHT & LICENSE
+     Copyright (C) 2007-14 Father Chrysostomos <sprout [at] cpan [dot] org>
+
+     This program is free software; you may redistribute it and/or modify it
+     under the same terms as perl.
+
+     Some of the code was derived from Data::Float, which is copyrighted (C)
+     2006, 2007, 2008 by Andrew Main (Zefram).
+
+ACKNOWLEDGEMENTS
+     Some of the
+
+     Thanks to Max Maischein, Kevin Cameron, Chia-liang Kao and Damyan Ivanov
+     for their contributions,
+
+     to Andy Armstrong, Yair Lenga, Alex Robinson, Christian Forster, Imre
+     Rad, Craig Mackenna and Toby Inkster for their suggestions,
+
+     and to the CPAN Testers for their helpful reports.
+
+SEE ALSO
+     The other JE man pages, especially the following (the rest are listed on
+     the JE::Types page):
+
+     JE::Destroyer
+     JE::Types
+     JE::Object
+     JE::Object::Function
+     JE::LValue
+     JE::Scope
+     JE::Code
+     JE::Parser
+
+     ECMAScript Language Specification (ECMA-262)
+
+         <http://www.ecma-international.org/publications/files/ecma-st/ECMA-262.pdf>
+
+     JavaScript.pm, JavaScript::SpiderMonkey and JavaScript::Lite--all
+     interfaces to Mozilla's open-source SpiderMonkey JavaScript engine.
+
+     JavaScript::V8
+
+     WWW::Mechanize::Plugin::JavaScript
+
+perl v5.42.3                      2014-10-20                             JE(3)

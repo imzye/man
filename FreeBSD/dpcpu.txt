@@ -1,0 +1,120 @@
+DPCPU(9)               FreeBSD Kernel Developer's Manual              DPCPU(9)
+
+NAME
+     dpcpu – Kernel Dynamic Per-CPU Memory Allocator
+
+SYNOPSIS
+     #include <sys/pcpu.h>
+
+   Per-CPU Variable Definition and Declaration
+     DPCPU_DEFINE(type, name);
+
+     DPCPU_DEFINE_STATIC(type, name);
+
+     DPCPU_DECLARE(type, name);
+
+   Current CPU Accessor Functions
+     DPCPU_PTR(name);
+
+     DPCPU_GET(name);
+
+     DPCPU_SET(name, value);
+
+   Named CPU Accessor Functions
+     DPCPU_ID_PTR(cpu, name);
+
+     DPCPU_ID_GET(cpu, name);
+
+     DPCPU_ID_SET(cpu, name, value);
+
+DESCRIPTION
+     dpcpu instantiates one instance of a global variable with each CPU in the
+     system.  Dynamically allocated per-CPU variables are defined using
+     DPCPU_DEFINE(), which defines a variable of name name and type type.
+     Arbitrary C types may be used, including structures and arrays.  If no
+     initialization is provided, then each per-CPU instance of the variable
+     will be zero-filled (i.e., as though allocated in BSS):
+
+         DPCPU_DEFINE(int, foo_int);
+
+     Values may also be initialized statically with the definition, causing
+     each per-CPU instance to be initialized with the value:
+
+         DPCPU_DEFINE(int, foo_int) = 1;
+
+     Values that can be defined as static must use DPCPU_DEFINE_STATIC():
+
+         DPCPU_DEFINE_STATIC(int, foo_int);
+
+     DPCPU_DECLARE() produces a declaration of the per-CPU variable suitable
+     for use in header files.
+
+     The current CPU's variable instance can be accessed via DPCPU_PTR (which
+     returns a pointer to the per-CPU instance), DPCPU_GET (which retrieves
+     the value of the per-CPU instance), and DPCPU_SET (which sets the value
+     of the per-CPU instance).
+
+     Instances of variables associated with specific CPUs can be accessed via
+     the DPCPU_ID_PTR, DPCPU_ID_GET, and DPGPU_ID_SET accessor functions,
+     which accept an additional CPU ID argument, cpu.
+
+   Synchronization
+     In addition to the ordinary synchronization concerns associated with
+     global variables, which may imply the use of atomic(9), mutex(9), or
+     other kernel synchronization primitives, it is further the case that
+     thread migration could dynamically change the instance of a variable
+     being accessed by a thread between operations.  This requires additional
+     care when reasoning about and protecting per-CPU variables.
+
+     For example, it may be desirable to protect access using
+     critical_section(9) to prevent both preemption and migration during use.
+     Alternatively, it may be desirable to cache the CPU ID at the start of a
+     sequence of accesses, using suitable synchronization to make non-atomic
+     sequences safe in the presence of migration.
+
+         DPCPU_DEFINE_STATIC(int, foo_int);
+         DPCPU_DEFINE_STATIC(struct mutex, foo_lock);
+
+         void
+         foo_int_increment(void)
+         {
+             int cpu, value;
+
+             /* Safe as atomic access. */
+             atomic_add_int(DPCPU_PTR(foo_int), 1);
+
+             /*
+              * Protect with a critical section, which prevents preemption
+              * and migration.  However, access to instances from remote CPUs
+              * is not safe, as critical sections prevent concurrent access
+              * only from the current CPU.
+              */
+             critical_enter();
+             value = DPCPU_GET(foo_int);
+             value++;
+             DPCPU_SET(foo_int, value);
+             critical_exit();
+
+             /*
+              * Protect with a per-CPU mutex, tolerating migration, but
+              * potentially accessing the variable from multiple CPUs if
+              * migration occurs after reading curcpu.  Remote access to a
+              * per-CPU variable is safe as long as the correct mutex is
+              * acquired.
+              */
+             cpu = curcpu;
+             mtx_lock(DPCPU_ID_PTR(cpu, foo_lock));
+             value = DPCPU_ID_GET(cpu, foo_int);
+             value++;
+             DPCPU_ID_SET(cpu, foo_int);
+             mtx_unlock(DPCPU_ID_PTR(cpu, foo_lock));
+         }
+
+SEE ALSO
+     atomic(9), critical_enter(9), mutex(9)
+
+HISTORY
+     dpcpu was first introduced by Jeff Roberson in FreeBSD 8.0.  This manual
+     page was written by Robert N. M. Watson.
+
+FreeBSD 13.1-RELEASE-p2          July 5, 2018          FreeBSD 13.1-RELEASE-p2

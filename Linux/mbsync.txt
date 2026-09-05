@@ -1,0 +1,672 @@
+mbsync(1)                   General Commands Manual                  mbsync(1)
+
+NAME
+       mbsync - synchronize IMAP4 and Maildir mailboxes
+
+SYNOPSIS
+       mbsync [options ...] {{channel[:box[{,|\n}...]]|group} ...|-a}
+
+DESCRIPTION
+       mbsync is a command line application which synchronizes mailboxes; cur‐
+       rently Maildir and IMAP4 mailboxes are supported.  New  messages,  mes‐
+       sage deletions and flag changes can be propagated both ways; the opera‐
+       tion set can be selected in a fine-grained manner.
+       Synchronization is based on unique message identifiers  (UIDs),  so  no
+       identification  conflicts  can  occur (unlike with some other mail syn‐
+       chronizers).  OTOH, mbsync is susceptible to UID validity changes  (but
+       will  recover  just  fine if the change is unfounded).  Synchronization
+       state is kept in one local text file per mailbox pair; these files  are
+       protected against concurrent mbsync processes.  Mailboxes can be safely
+       modified while mbsync operates (see INHERENT PROBLEMS below for a minor
+       exception).  Multiple replicas of each mailbox can be maintained.
+
+OPTIONS
+       -c, --config file
+              Read  configuration from file.  By default, the configuration is
+              read from ~/.mbsyncrc.
+
+       -a, --all
+              Select all configured channels. Any channel/group specifications
+              on the command line are ignored.
+
+       -l, --list
+              Don't  synchronize  anything,  but  list  all  mailboxes  in the
+              selected channels and exit.
+
+       -C[f][n], --create[-far|-near]
+              Override any Create options from the config file. See below.
+
+       -R[f][n], --remove[-far|-near]
+              Override any Remove options from the config file. See below.
+
+       -X[f][n], --expunge[-far|-near]
+              Override any Expunge options from the config file. See below.
+
+       {-n|-N|-d|-f|-0|-F}, {--new|--renew|--delete|--flags|--noop|--full}
+       {-L|-H}[n][N][d][f], {--pull|--push}[-new|-renew|-delete|-flags]
+
+              Override any Sync options from the config file. See below.
+
+       -h, --help
+              Display a summary of command line options.
+
+       -v, --version
+              Display version information.
+
+       -V, --verbose
+              Enable verbose mode, which displays what is currently happening.
+
+       -D[C][d|D][m][M][n|N][s]],              --debug[-crash|-driver|-driver-
+       all|-maildir|-main|-net|-net-all|-sync]
+              Enable debugging categories:
+                  C, crash - use built-in crash handler
+                  d, driver - print driver calls (metadata only)
+                  D, driver-all - print driver calls (including messages)
+                  m, maildir - print maildir debug info
+                  M, main - print main debug info
+                  n, net - print network traffic (protocol only)
+                  N, net-all - print network traffic (including payloads)
+                  s, sync - print synchronization debug info
+              All  categories  except  crash  implictly  enable  verbose mode.
+              Without category specification, all  categories  except  net-all
+              are enabled.
+
+       -q, --quiet
+              Suppress  progress  counters  (this  is implicit if stdout is no
+              TTY, or any debugging categories are enabled) and  notices.   If
+              specified twice, suppress warning messages as well.
+
+CONFIGURATION
+       The  configuration  file  is mandatory; mbsync will not run without it.
+       Lines starting with a hash  mark  (#)  are  comments  and  are  ignored
+       entirely.   Configuration  items  are  keywords followed by one or more
+       arguments; arguments containing  spaces  must  be  enclosed  in  double
+       quotes ("), and literal double quotes and backslashes (\) must be back‐
+       slash-escaped.  All keywords (including those used  as  arguments)  are
+       case-insensitive.   Bash-like  home directory expansion using the tilde
+       (~) is supported in all options which represent local paths.  There are
+       a  few  global  options, the others apply to particular sections.  Sec‐
+       tions begin with a section-starting keyword and are  terminated  by  an
+       empty  line  or  end  of file.  Every section defines an object with an
+       identifier unique within that object class.
+
+       There are two basic  object  classes:  Stores  and  Channels.  A  Store
+       defines  a collection of mailboxes; basically a folder, either local or
+       remote.  A Channel connects two Stores, describing the way the two  are
+       synchronized.
+       There are two auxiliary object classes: Accounts and Groups. An Account
+       describes the connection part of network Stores, so  server  configura‐
+       tions  can be shared between multiple Stores. A Group aggregates multi‐
+       ple Channels to save typing on the command line.
+
+       File system locations (in particular, Path and Inbox) use  the  Store's
+       internal  path separators, which may be slashes, periods, etc., or even
+       combinations thereof.
+       Mailbox names, OTOH, always use canonical path  separators,  which  are
+       Unix-like forward slashes.
+
+   All Stores
+       These options can be used in all supported Store types.
+       In  this context, the term "remote" describes the second Store within a
+       Channel, and not necessarily a remote server.
+       The special mailbox INBOX exists in every Store; its physical  location
+       in the file system is Store type specific.
+
+       Path path
+              The  location  of  the  Store in the (server's) file system.  If
+              this is no absolute path, the reference point is Store type spe‐
+              cific.   This string is prepended to the mailbox names addressed
+              in this Store, but is not  considered  part  of  them;  this  is
+              important for Patterns and Create in the Channels section.  Note
+              that you must append a slash if you want to  specify  an  entire
+              directory.  (Default: none)
+
+       MaxSize size[k|m][b]
+              Messages  larger  than  size  will have only a small placeholder
+              message propagated into this Store. To propagate the  full  mes‐
+              sage,  it  must  be  flagged  in  either Store; that can be done
+              retroactively, in which case the ReNew  operation  needs  to  be
+              executed  instead of New.  This is useful for avoiding download‐
+              ing messages with large attachments  unless  they  are  actually
+              needed.   Caveat: Setting a size limit on a Store you never read
+              directly (which is typically the case for servers) is not recom‐
+              mended,  as you may never notice that affected messages were not
+              propagated to it.
+              K and M can be appended to the size  to  specify  KiBytes  resp.
+              MeBytes  instead  of  bytes.  B is accepted but superfluous.  If
+              size is 0, the maximum message size is unlimited.  (Default: 0)
+
+       MapInbox mailbox
+              Create a virtual mailbox (relative to Path)  which  aliases  the
+              INBOX.  Makes sense in conjunction with Patterns in the Channels
+              section, though with a Maildir near side, you probably  want  to
+              place  Inbox  under Path instead.  This virtual mailbox does not
+              support subfolders.
+
+       Flatten delim
+              Flatten the hierarchy within  this  Store  by  substituting  the
+              canonical  hierarchy delimiter / with delim.  This can be useful
+              when the MUA used to access the Store provides  suboptimal  han‐
+              dling  of  hierarchical  mailboxes, as is the case with Mutt.  A
+              common choice for the delimiter is ..
+              Note that flattened sub-folders of the INBOX always end up under
+              Path, including the "INBOXdelim" prefix.
+
+       Trash mailbox
+              Specifies  a mailbox (relative to Path) to copy deleted messages
+              to prior to expunging.  See RECOMMENDATIONS and  INHERENT  PROB‐
+              LEMS below.  (Default: none)
+
+       TrashNewOnly yes|no
+              When trashing, copy only not yet propagated messages. This makes
+              sense if the remote Store has a Trash as well (with TrashNewOnly
+              no).  (Default: no)
+
+       TrashRemoteNew yes|no
+              When  expunging  the  remote Store, copy not yet propagated mes‐
+              sages to this Store's Trash. When using this, the  remote  Store
+              does  not  need  an  own  Trash  at  all,  yet  all messages are
+              archived.  (Default: no)
+
+   Maildir Stores
+       The reference point for relative Paths is the  current  working  direc‐
+       tory.
+
+       As mbsync needs UIDs, but no standardized UID storage scheme exists for
+       Maildir, mbsync supports two schemes, each with its pros and cons.
+       The native scheme is stolen from the latest Maildir patches to c-client
+       and  is therefore compatible with pine. The UID validity is stored in a
+       file named .uidvalidity; the UIDs are encoded in the file names of  the
+       messages.
+       The  alternative  scheme is based on the UID mapping used by isync ver‐
+       sions 0.8 and 0.9.x. The invariant parts of the file names of the  mes‐
+       sages  are used as keys into a Berkeley database named .isyncuidmap.db,
+       which holds the UID validity as well.
+       The native scheme is faster, more space efficient, endianness  indepen‐
+       dent and "human readable", but will be disrupted if a message is copied
+       from another mailbox without getting a new file name; this would result
+       in  duplicated  UIDs  sooner  or  later, which in turn results in a UID
+       validity change, making synchronization fail.  The  alternative  scheme
+       would fail if a MUA changed a message's file name in a part mbsync con‐
+       siders invariant; this would be interpreted as a message deletion and a
+       new message, resulting in unnecessary traffic.
+       Mutt is known to work fine with both schemes.
+       Use mdconvert to convert mailboxes from one scheme to the other.
+
+       MaildirStore name
+              Define the Maildir Store name, opening a section for its parame‐
+              ters.
+
+       AltMap yes|no
+              Use the alternative UID storage scheme  for  mailboxes  in  this
+              Store.   This  does  not affect mailboxes that do already have a
+              UID storage scheme; use mdconvert to change it.  See RECOMMENDA‐
+              TIONS below.  (Default: no)
+
+       Inbox path
+              The  location of the INBOX. This is not relative to Path, but it
+              is allowed to  place  the  INBOX  inside  the  Path.   (Default:
+              ~/Maildir)
+
+       InfoDelimiter delim
+              The  character  used  to delimit the info field from a message's
+              basename.  The Maildir standard defines this to  be  the  colon,
+              but   this   is  incompatible  with  DOS/Windows  file  systems.
+              (Default: the value of FieldDelimiter)
+
+       SubFolders Verbatim|Maildir++|Legacy
+              The on-disk folder naming style used for hierarchical mailboxes.
+              This option has no effect when Flatten is used.
+              Suppose  mailboxes  with  the canonical paths top/sub/subsub and
+              INBOX/sub/subsub, the styles will yield  the  following  on-disk
+              paths:
+              Verbatim - Path/top/sub/subsub and Inbox/sub/subsub (this is the
+              style you probably want to use)
+              Maildir++ - Inbox/.top.sub.subsub and  Inbox/..sub.subsub  (this
+              style is compatible with Courier and Dovecot - but note that the
+              mailbox metadata format is not compatible).  Note that  attempts
+              to set Path are rejected in this mode.
+              Legacy  -  Path/top/.sub/.subsub and Inbox/.sub/.subsub (this is
+              mbsync's historical style)
+              (Default: unset; will error out  when  sub-folders  are  encoun‐
+              tered)
+
+   IMAP4 Accounts
+       IMAPAccount name
+              Define the IMAP4 Account name, opening a section for its parame‐
+              ters.
+
+       Host host
+              Specify the DNS name or IP address of the IMAP server.
+              If Tunnel is used, this setting is needed only if SSLType is not
+              None  and  CertificateFile  is  not used, in which case the host
+              name is used for certificate subject verification.
+
+       Port port
+              Specify the TCP port number of the IMAP server.   (Default:  143
+              for IMAP, 993 for IMAPS)
+              If Tunnel is used, this setting is ignored.
+
+       Timeout timeout
+              Specify the connect and data timeout for the IMAP server in sec‐
+              onds.  Zero means unlimited.  (Default: 20)
+
+       User username
+              Specify the login name on the IMAP server.
+
+       UserCmd [+]command
+              Specify a shell command to obtain a user rather than  specifying
+              a  user  directly.  This  allows  you  to script retrieving user
+              names.
+              The command must produce exactly one line on stdout; the  trail‐
+              ing  newline  is optional.  Prepend + to the command to indicate
+              that it produces TTY output (e.g., a prompt); failure to  do  so
+              will  merely  produce  messier  output.   Remember to backslash-
+              escape double quotes and backslashes embedded into the command.
+
+       Pass password
+              Specify the password for username on the IMAP server.  Note that
+              this  option is not required.  If neither a password nor a pass‐
+              word command is specified in the configuration file, mbsync will
+              prompt you for a password.
+
+       PassCmd [+]command
+              Specify  a shell command to obtain a password rather than speci‐
+              fying a password directly. This allows you to use password files
+              and agents.
+              See UserCmd above for details.
+
+       UseKeychain yes|no
+              Whether  to  use  the  macOS  Keychain  to  obtain the password.
+              (Default: no)
+
+              The neccessary keychain item can be created this way:
+
+                     security add-internet-password -r imap -s Host -a User -w
+                     password [ -T /path/to/mbsync ]
+
+       Tunnel command
+              Specify  a  command to run to establish a connection rather than
+              opening a TCP socket.  This allows you to run  an  IMAP  session
+              over an SSH tunnel, for example.
+
+       AuthMechs type ...
+              The  list  of acceptable authentication mechanisms.  In addition
+              to the mechanisms listed in the SASL registry (link below),  the
+              legacy IMAP LOGIN mechanism is known.  The wildcard * represents
+              all mechanisms that are deemed secure  enough  for  the  current
+              SSLType setting.  The actually used mechanism is the most secure
+              choice from the intersection of this list, the list supplied  by
+              the server, and the installed SASL modules.  (Default: *)
+
+       SSLType {None|STARTTLS|IMAPS}
+              Select the connection security/encryption method:
+              None  - no security.  This is the default when Tunnel is set, as
+              tunnels are usually secure.
+              STARTTLS - security is established via  the  STARTTLS  extension
+              after connecting the regular IMAP port 143. Most servers support
+              this, so it is the default (unless a tunnel is used).
+              IMAPS - security is established by starting SSL/TLS  negotiation
+              right after connecting the secure IMAP port 993.
+
+       SSLVersions [SSLv3] [TLSv1] [TLSv1.1] [TLSv1.2] [TLSv1.3]
+              Select  the  acceptable SSL/TLS versions.  Use old versions only
+              when the server has problems with newer ones.  (Default: [TLSv1]
+              [TLSv1.1] [TLSv1.2] [TLSv1.3]).
+
+       SystemCertificates yes|no
+              Whether the system's default CA (certificate authority) certifi‐
+              cate store should be used to verify  certificate  trust  chains.
+              Disable this if you want to trust only hand-picked certificates.
+              (Default: yes)
+
+       CertificateFile path
+              File containing additional X.509  certificates  used  to  verify
+              server identities.  It may contain two types of certificates:
+
+              Host   These  certificates are matched only against the received
+                     server certificate itself.  They are always trusted,  re‐
+                     gardless  of validity.  A typical use case would be forc‐
+                     ing acceptance of an expired certificate.
+                     These certificates may be obtained using the  mbsync-get-
+                     cert  tool; make sure to verify their fingerprints before
+                     trusting them, or transfer them securely from  the  serv‐
+                     er's  network (if it can be trusted beyond the server it‐
+                     self).
+
+              CA     These certificates are used as trust anchors when  build‐
+                     ing  the  certificate  chain for the received server cer‐
+                     tificate.  They are used to  supplant  or  supersede  the
+                     system's trust store, depending on the SystemCertificates
+                     setting; it is not necessary and not recommended to spec‐
+                     ify  the  system's  trust  store  itself here.  The trust
+                     chains are fully validated.
+
+       ClientCertificate path
+              File containing a client certificate  to  send  to  the  server.
+              ClientKey should also be specified.
+              Note  that  client  certificate  verification is usually not re‐
+              quired, so it is unlikely that you need this option.
+
+       ClientKey path
+              File containing the private key corresponding to  ClientCertifi‐
+              cate.
+
+       CipherString string
+              Specify  OpenSSL  cipher string for connections secured with TLS
+              up to version 1.2 (but not 1.3 and above).  The  format  is  de‐
+              scribed  in  ciphers(1).   (Default: empty, which implies system
+              wide policy).
+
+       PipelineDepth depth
+              Maximum number of IMAP commands which can be  simultaneously  in
+              flight.   Setting this to 1 disables pipelining.  This is mostly
+              a debugging option, but may also be used to limit average  band‐
+              width  consumption  (GMail  may  require this if you have a very
+              fast connection), or to spare flaky servers  like  M$  Exchange.
+              (Default: unlimited)
+
+       DisableExtension[s] extension ...
+              Disable  the  use of specific IMAP extensions.  This can be used
+              to work around bugs in servers  (and  possibly  mbsync  itself).
+              (Default: empty)
+
+   IMAP Stores
+       The  reference point for relative Paths is whatever the server likes it
+       to be; probably the user's $HOME or $HOME/Mail on that server. The  lo‐
+       cation of INBOX is up to the server as well and is usually irrelevant.
+
+       IMAPStore name
+              Define  the  IMAP4 Store name, opening a section for its parame‐
+              ters.
+
+       Account account
+              Specify which IMAP4 Account to use. Instead of defining  an  Ac‐
+              count  and  referencing  it here, it is also possible to specify
+              all the Account options directly in the Store's section  -  this
+              makes sense if an Account is used for one Store only anyway.
+
+       UseNamespace yes|no
+              Selects  whether  the server's first "personal" NAMESPACE should
+              be prefixed to mailbox names. Disabling  this  makes  sense  for
+              some  broken IMAP servers.  This option is meaningless if a Path
+              was specified.  (Default: yes)
+
+       PathDelimiter delim
+              Specify the server's hierarchy delimiter.  (Default: taken  from
+              the server's first "personal" NAMESPACE)
+              Do  not  abuse  this to re-interpret the hierarchy.  Use Flatten
+              instead.
+
+       SubscribedOnly yes|no
+              Selects whether to synchronize  only  mailboxes  that  are  sub‐
+              scribed  to  on the IMAP server. In technical terms, if this op‐
+              tion is set, mbsync will use the IMAP command  LSUB  instead  of
+              LIST  to  look  for  mailboxes  in this Store.  This option make
+              sense only in conjunction with Patterns.  (Default: no)
+
+   Channels
+       Channel name
+              Define the Channel name, opening a section for its parameters.
+
+       {Far|Near} :store:[mailbox]
+              Specify the far resp. near side Store to be  connected  by  this
+              Channel.  If Patterns are specified, mailbox is interpreted as a
+              prefix which is not matched against the patterns, and  which  is
+              not  affected  by mailbox list overrides.  Otherwise, if mailbox
+              is omitted, INBOX is assumed.
+
+       Pattern[s] [!]pattern ...
+              Instead of synchronizing only one mailbox pair, synchronize  all
+              mailboxes  that  match the pattern(s). The mailbox names are the
+              same on the far and near  side.  Patterns  are  IMAP4  patterns,
+              i.e.,  *  matches anything and % matches anything up to the next
+              hierarchy delimiter. Prepending ! to a pattern makes it  an  ex‐
+              clusion. Multiple patterns can be specified (either by supplying
+              multiple arguments or by using Pattern  multiple  times);  later
+              matches take precedence.
+              Note that INBOX is not matched by wildcards, unless it lives un‐
+              der Path.
+              The mailbox list selected by Patterns can  be  overridden  by  a
+              mailbox  list  in  a channel reference (a Group specification or
+              the command line).
+              Example: "Patterns % !Trash"
+
+       MaxSize size[k|m][b]
+              Analogous to the homonymous option in the  Stores  section,  but
+              applies  equally  to Far and Near. Note that this actually modi‐
+              fies the Stores, so take care not to  provide  conflicting  set‐
+              tings if you use the Stores in multiple Channels.
+
+       MaxMessages count
+              Sets  the  maximum  number of messages to keep in each near side
+              mailbox.  This is useful for mailboxes where you keep a complete
+              archive on the server, but want to mirror only the last messages
+              (for instance, for mailing lists).  The messages that  were  the
+              first to arrive in the mailbox (independently of the actual date
+              of the message)  will  be  deleted  first.   Messages  that  are
+              flagged  (marked  as important) and (by default) unread messages
+              will not be automatically deleted.  If count is 0,  the  maximum
+              number of messages is unlimited (Default: 0).
+
+       ExpireUnread yes|no
+              Selects  whether  unread  messages should be affected by MaxMes‐
+              sages.  Normally, unread messages are considered  important  and
+              thus  never  expired.  This ensures that you never miss new mes‐
+              sages even after an extended absence.  However, if your  archive
+              contains  large  amounts  of unread messages by design, treating
+              them as important would practically defeat MaxMessages. In  this
+              case you need to enable this option.  (Default: no).
+
+       Sync {None|[Pull] [Push] [New] [ReNew] [Delete] [Flags]|All}
+              Select the synchronization operation(s) to perform:
+              Pull - propagate changes from far to near side.
+              Push - propagate changes from near to far side.
+              New - propagate newly appeared messages.
+              ReNew  - upgrade placeholders to full messages. Useful only with
+              a configured MaxSize.
+              Delete - propagate message deletions. This applies only to  mes‐
+              sages  that are actually gone, i.e., were expunged. The affected
+              messages in the remote Store are marked as deleted  only,  i.e.,
+              they won't be really deleted until that Store is expunged.
+              Flags  -  propagate flag changes. Note that Deleted/Trashed is a
+              flag as well; this is particularly interesting if you  use  mutt
+              with the maildir_trash option.
+              All  (--full  on  the command line) - all of the above.  This is
+              the global default.
+              None (--noop on the command line) -  don't  propagate  anything.
+              Useful if you want to expunge only.
+
+              Pull  and Push are direction flags, while New, ReNew, Delete and
+              Flags are type flags. The two flag classes make up a  two-dimen‐
+              sional matrix (a table). Its cells are the individual actions to
+              perform. There are two styles of asserting the cells:
+              In the first style, the flags select entire rows/colums  in  the
+              matrix.  Only the cells which are selected both horizontally and
+              vertically are asserted.  Specifying no flags from  a  class  is
+              like  specifying  all  flags  from  this  class.   For  example,
+              "Sync Pull New Flags"  will  propagate  new  messages  and  flag
+              changes  from  the  far side to the near side, "Sync New Delete"
+              will propagate message arrivals and  deletions  both  ways,  and
+              "Sync Push" will propagate all changes from the near side to the
+              far side.
+              In the second style, direction flags are concatenated with  type
+              flags; every compound flag immediately asserts a cell in the ma‐
+              trix. In addition to at least one compound flag, the  individual
+              flags  can  be  used as well, but as opposed to the first style,
+              they immediately assert all cells in their  respective  row/col‐
+              umn.  For example, "Sync PullNew PullDelete Push" will propagate
+              message arrivals and deletions from the far  side  to  the  near
+              side  and  any changes from the near side to the far side.  Note
+              that it is not allowed to  assert  a  cell  in  two  ways,  e.g.
+              "Sync PullNew Pull"  and "Sync PullNew Delete Push" induce error
+              messages.
+
+       Create {None|Far|Near|Both}
+              Automatically create missing mailboxes [on the  far/near  side].
+              Otherwise print an error message and skip that mailbox pair if a
+              mailbox and the corresponding sync state does not exist.  (Glob‐
+              al default: None)
+
+       Remove {None|Far|Near|Both}
+              Propagate  mailbox  deletions [to the far/near side].  Otherwise
+              print an error message and skip that mailbox pair if  a  mailbox
+              does not exist but the corresponding sync state does.
+              For MailDir mailboxes it is sufficient to delete the cur/ subdi‐
+              rectory to mark them as deleted. This ensures compatibility with
+              SyncState *.
+              Note that for safety, non-empty mailboxes are never deleted.
+              (Global default: None)
+
+       Expunge {None|Far|Near|Both}
+              Permanently  remove  all  messages [on the far/near side] marked
+              for deletion.   See  RECOMMENDATIONS  below.   (Global  default:
+              None)
+
+       CopyArrivalDate {yes|no}
+              Selects whether their arrival time should be propagated together
+              with the messages.  Enabling this makes sense in order  to  keep
+              the  time  stamp  based  message sorting intact.  Note that IMAP
+              does not guarantee that the time stamp (termed internal date) is
+              actually the arrival time, but it is usually close enough.  (De‐
+              fault: no)
+
+       Sync, Create, Remove, Expunge, MaxMessages, and CopyArrivalDate can  be
+       used  before  any section for a global effect.  The global settings are
+       overridden by Channel-specific options, which in turn are overridden by
+       command line switches.
+
+       SyncState {*|path}
+              Set  the location of this Channel's synchronization state files.
+              * means that the state should be saved in a file named  .mbsync‐
+              state  in  the  near side mailbox itself; this has the advantage
+              that you do not need to handle the state file separately if  you
+              delete  the  mailbox,  but it works only with Maildir mailboxes,
+              obviously.  Otherwise this is interpreted as a string to prepend
+              to the near side mailbox name to make up a complete path.
+              This option can be used outside any section for a global effect.
+              In this case the appended string is made  up  according  to  the
+              pattern :far-store:far-box_:near-store:near-box (see also Field‐
+              Delimiter below).
+              (Global default: ~/.mbsync/).
+
+   Groups
+       Group name [channel[:box[,...]]] ...
+              Define the Group name, opening a  section  for  its  parameters.
+              Note  that  even  though Groups have an own namespace, they will
+              "hide" Channels with the same name on the command line.
+              One or more Channels can be specified on the same line.
+              If you supply one or more boxes to a channel, they will be  used
+              instead  of  what  is  specified in the Channel's Patterns.  The
+              same can be done on the command line, except that there newlines
+              can be used as mailbox name separators as well.
+
+       Channel[s] channel[:box[,...]] ...
+              Add  the  specified  channels  to  the group. This option can be
+              specified multiple times within a Group.
+
+   Global Options
+       FSync yes|no
+              Selects whether mbsync performs forced  flushing,  which  deter‐
+              mines  the  level  of data safety after system crashes and power
+              outages.  Disabling it is reasonably safe for file systems which
+              are  mounted  with  data=ordered  mode.   Enabling  it is a wise
+              choice for file systems mounted with data=writeback, in particu‐
+              lar modern systems like ext4, btrfs and xfs. The performance im‐
+              pact on older file systems may be  disproportionate.   (Default:
+              yes)
+
+       FieldDelimiter delim
+              The character to use to delimit fields in the string appended to
+              a global SyncState.  mbsync prefers to use the colon,  but  this
+              is  incompatible  with DOS/Windows file systems.  This option is
+              meaningless for SyncState if the latter is *, obviously.  Howev‐
+              er,  it  also  determines the default of InfoDelimiter.  (Global
+              default: ; on Windows, : everywhere else)
+
+       BufferLimit size[k|m][b]
+              The per-Channel, per-direction instantaneous memory usage  above
+              which mbsync will refrain from using more memory. Note that this
+              is no absolute limit, as even a single message can consume  more
+              memory than this.  (Default: 10M)
+
+CONSOLE OUTPUT
+       If  mbsync's  output  is connected to a console, it will print progress
+       counters by default. The output will look like this:
+
+           C: 1/2  B: 3/4  F: +13/13 *23/42 #0/0  N: +0/7 *0/0 #0/0
+
+       This represents the cumulative progress over channels, boxes, and  mes‐
+       sages  affected  on  the  far and near side, respectively.  The message
+       counts represent added  messages,  messages  with  updated  flags,  and
+       trashed  messages,  respectively.   No attempt is made to calculate the
+       totals in advance, so they grow over time as more information is  gath‐
+       ered.
+
+RECOMMENDATIONS
+       Make  sure your IMAP server does not auto-expunge deleted messages - it
+       is slow, and semantically somewhat  questionable.  Specifically,  Gmail
+       needs to be configured not to do it.
+
+       By  default, mbsync will not delete any messages - deletions are propa‐
+       gated by marking the messages as deleted on the remote store.  Once you
+       have verified that your setup works, you will typically want to set Ex‐
+       punge to Both, so that deletions become effective.
+
+       mbsync's built-in trash functionality relies on mbsync  doing  the  ex‐
+       punging  of deleted messages. This is the case when it propagates dele‐
+       tions of previously propagated messages, and the trash is on the target
+       store (typically your IMAP server).
+       However, when you intend mbsync to trash messages which were not propa‐
+       gated yet, the MUA must mark the messages as deleted without  expunging
+       them  (e.g.,  Mutt's maildir_trash option). Note that most messages are
+       propagated a long time before they are deleted, so  this  is  a  corner
+       case  you  probably do not want to optimize for. This also implies that
+       the TrashNewOnly and TrashRemoteNew options are typically not very use‐
+       ful.
+
+       If your server supports auto-trashing (as Gmail does), it is probably a
+       good idea to rely on that instead of mbsync's trash functionality.   If
+       you  do that, and intend to synchronize the trash like other mailboxes,
+       you should not use mbsync's Trash option at all.
+
+       Use of the Trash option with M$ Exchange 2013 requires the use of  Dis‐
+       ableExtension MOVE due to a server bug.
+
+       When  using the more efficient default UID mapping scheme, it is impor‐
+       tant that the MUA renames files when moving them between Maildir  fold‐
+       ers.   Mutt  always  does that, while mu4e needs to be configured to do
+       it:
+           (setq mu4e-change-filenames-when-moving t)
+
+INHERENT PROBLEMS
+       Changes done after mbsync has retrieved the message list  will  not  be
+       synchronised until the next time mbsync is invoked.
+
+       Using  Trash  on IMAP Stores without the UIDPLUS extension (notably, M$
+       Exchange up to at least 2010) bears a race condition: messages will  be
+       lost if they are marked as deleted after the message list was retrieved
+       but before the mailbox is expunged.  There is no risk as  long  as  the
+       IMAP  mailbox  is  accessed  by only one client (including mbsync) at a
+       time.
+
+FILES
+       ~/.mbsyncrc
+              Default configuration file
+
+       ~/.mbsync/
+              Directory containing synchronization state files
+
+SEE ALSO
+       mdconvert(1), mutt(1), maildir(5)
+
+       Up to date information on mbsync can be found at http://isync.sf.net/
+
+       SASL mechanisms  are  listed  at  http://www.iana.org/assignments/sasl-
+       mechanisms/sasl-mechanisms.xhtml
+
+AUTHORS
+       Originally  written by Michael R. Elkins, rewritten and currently main‐
+       tained by Oswald Buddenhagen, contributions by Theodore Y. Ts'o.
+
+                                  2015 Mar 22                        mbsync(1)

@@ -1,0 +1,214 @@
+TakTuk::Pilot(3pm)                                           User Contributed Perl Documentation                                           TakTuk::Pilot(3pm)
+
+NAME
+       TakTuk::Pilot - Perl module that ease "taktuk(1)" execution and related I/O management
+
+SYNOPSIS
+         use TakTuk::Pilot;
+
+         our @line_counter;
+
+         sub output_callback(%) {
+             my %parameters = @_;
+             my $field = $parameters{fields};
+             my $rank = $field->{rank};
+             my $argument = $parameters{argument};
+
+             $argument->[$rank] = 1 unless defined($argument->[$rank]);
+             print "$field->{host}-$rank : ".
+                   "$argument->[$rank] > $field->{line}\n";
+             $argument->[$rank]++;
+         }
+
+         sub user_input_callback(%) {
+             my %parameters = @_;
+             my $taktuk = $parameters{taktuk};
+             my $descriptor = $parameters{filehandle};
+             my $buffer;
+
+             my $result = sysread($descriptor, $buffer, 1024);
+             warn "Read error $!" if not defined($result);
+             # basic parsing, we assume input is buffered on a line basis
+             chomp($buffer);
+
+             if (length($buffer)) {
+                 print "Executing $buffer\n";
+                 $taktuk->send_command("broadcast exec [ $buffer ]");
+             }
+             if (not $result) {
+                 print "Terminating\n";
+                 $taktuk->remove_descriptor(type=>'read',
+                                            filehandle=>$descriptor);
+                 $taktuk->send_termination();
+             }
+         }
+
+         die "This script requires as arguments hostnames to contact\n"
+             unless scalar(@ARGV);
+
+         my $taktuk = TakTuk::Pilot->new();
+         $taktuk->add_callback(callback=>\&output_callback, stream=>'output',
+                               argument=>\@line_counter,
+                               fields=>['host', 'rank', 'line']);
+         $taktuk->add_descriptor(type=>'read', filehandle=>\*STDIN,
+                                 callback=>\&user_input_callback);
+         $taktuk->run(command=>"taktuk -s -m ".join(" -m ", @ARGV));
+
+DESCRIPTION
+       The TakTuk::Pilot Perl module ease the use of TakTuk from within a Perl program (see taktuk(1) for a detailed description of TakTuk). It transparently
+       manages I/O exchanges as well as TakTuk data demultiplexing and decoding.
+
+CONSTRUCTOR
+       new()
+           Creates a new TakTuk object on which the following method can be called.
+
+METHODS
+       add_callback(%)
+           Adds  a  callback  function  associated  to  some  TakTuk  output  stream  to  the calling TakTuk object. This callback function will be called by
+           TakTuk::Pilot for each batch of output data incoming from the related stream. The hash passed as argument to this function call  may  contain  the
+           following fields:
+
+             callback => reference to the callback fonction (mandatory)
+             stream   => stream related to this callback, might be
+                         'default' (mandatory)
+             fields   => reference to an array of fields names relevant
+                         to the user
+             argument => scalar that should be passed to each callback
+                         function call
+
+           The callback function should accept a hash as argument. This hash will be populated with the following fields :
+
+             taktuk   => reference to the taktuk object calling this
+                         callback
+             argument => scalar given at callback addition or undef
+             stream   => stream on which output data came
+             fields   => reference to a hash containing a
+                         fieldname/value pair for each field requested
+                         upon callback addition
+
+       send_command($)
+           Sends  to  the  calling TakTuk object the command passed as argument. Note that if the TakTuk object is not running, this command will be buffered
+           and executed upon run.
+
+       send_termination()
+           Sends to the calling TakTuk object a termination command. As for "send_command", if the TakTuk object is not running, this command will be  issued
+           upon run.
+
+       run(%)
+           Runs TakTuk, executing pending commands and waiting for TakTuk output.  Note that this function is blocking: it waits for TakTuk outputs, possibly
+           calls  related  callback  functions  and  returns when TakTuk terminates. Thus, all TakTuk commands should be given either before calling "run" or
+           within a callback function.
+
+           This commands takes a hash as argument that may contain the following fields:
+
+             command => TakTuk command line to be executed
+             timeout => optional timeout on the wait for TakTuk output
+
+           Upon occurrence of the timeout (if one has been given), "run" will returns an "ETMOUT" error code. Note the in this case TakTuk execution will not
+           be terminated and should be resumed at some point by calling "continue".
+
+       continue()
+           Resumes a TakTuk execution interrupted by timeout occurrence.
+
+       add_descriptor(%)
+           Because the call to "run" is blocking, waiting for TakTuk output, it might be interesting to let the "TakTuk::Pilot" module monitor I/O occurrence
+           related to other file descriptors.  This is the intent of "add_descriptor". This function takes a hash as parameter in which the following  fields
+           might be defined:
+
+             type       => 'read', 'write' or 'exception', this is the
+                           type of I/O possibilities that should be
+                           monitored on the descriptor, as in select
+                           system call (mandatory).
+             filehandle => file descriptor to monitor (mandatory).
+             callback   => reference to the callback function that
+                           should be called when I/O is possible on the
+                           file descriptor.
+             argument   => optional scalar value that will be passed
+                           with each call to the callback function
+
+           The callback function should also accept a hash as an argument in which the following fields will be defined:
+
+             taktuk     => reference to the TakTuk object from which
+                           the function was called.
+             type       => type of I/O occurring (as in add_callback)
+             filehandle => the related file descriptor. Notice that the
+                           user is in charge of performing the I/O
+                           operation itself (sysread or syswrite).
+                           Notice also that, because of the use of a
+                           select in TakTuk::Pilot, the use of buffered
+                           I/O on this descriptor is strongly discouraged
+             argument   => the argument that was given to add_descriptor
+
+       remove_descriptor(%)
+           Function  that  should be called to remove from the TakTuk object a descriptor previously added with "add_descriptor". It takes a hash as argument
+           in which the following fields may be defined:
+
+             type       => type of I/O (see add_descriptor)
+             filehandle => file descriptor to remove
+
+       quiet() / verbose()
+           Change verbosity of "TakTuk::Pilot" on STDOUT (default is quiet). Should not be called when TakTuk is running.
+
+       create_session()
+           Call "setsid" in the TakTuk process created by "run". The main purpose of this call is to prevent  TakTuk  from  receiving  signals  sent  to  the
+           process group to which the pilot belong. Should not be called when TakTuk is running.
+
+       pid()
+           Returns the pid of the process spawned to run TakTuk.  Should only be called when TakTuk is running.
+
+       error_msg($)
+           Static  function.  Returns  a  character  string  that corresponds to the error code given as argument. The error code should be one of the values
+           returned by other "TakTuk::Pilot" functions ("add_callback", "send_command", "send_termination", ...).
+
+ERRORS
+       When an error occur in one of these functions, it returns a non nul numeric error code. This code can take one of the following values:
+
+       TakTuk::Pilot::EARGCM
+           Field 'command' is missing in a call to "run".
+
+       TakTuk::Pilot::EARGCB
+           Field 'callback' is missing in a call to "add_callback" or "add_descriptor".
+
+       TakTuk::Pilot::EARGFH
+           Field 'filehandle' is missing in a call to "add_descriptor" or "remove_descriptor".
+
+       TakTuk::Pilot::EARGTP
+           Field 'type' is missing in a call to "add_descriptor" or "remove_descriptor".
+
+       TakTuk::Pilot::ETMOUT
+           A timeout occurred in a call to "run".
+
+       TakTuk::Pilot::ETKTRN
+           TakTuk is alredy running but "run", "verbose" or "quiet" has been called.
+
+       TakTuk::Pilot::ETKTNR
+           TakTuk is not running but "continue" has been called.
+
+       TakTuk::Pilot::ESPIPE
+           A call to "pipe" failed in "TakTuk::Pilot" (the error should be in $!).
+
+       TakTuk::Pilot::ESFORK
+           A call to "fork" failed in "TakTuk::Pilot" (the error should be in $!).
+
+       TakTuk::Pilot::ESCLOS
+           A call to "close" failed in "TakTuk::Pilot" (the error should be in $!).
+
+       TakTuk::Pilot::ESELEC
+           A call to "select" failed in "TakTuk::Pilot" (the error should be in $!).
+
+       TakTuk::Pilot::ETPBUG
+           Internal bug detected in "TakTuk::Pilot".
+
+SEE ALSO
+       tatkuk(1), taktukcomm(3), TakTuk(3)
+
+AUTHOR
+       The original concept of TakTuk has been proposed by Cyrille Martin in his PhD thesis. People involved in this  work  include  Jacques  Briat,  Olivier
+       Richard, Thierry Gautier and Guillaume Huard.
+
+       The author of the version 3 (perl version) and current maintainer of the package is Guillaume Huard.
+
+COPYRIGHT
+       The "TakTuk" communication interface library is provided under the terms of the GNU General Public License version 2 or later.
+
+perl v5.40.1                                                              2025-09-30                                                       TakTuk::Pilot(3pm)

@@ -1,0 +1,380 @@
+PYTHON3-ABRT(5)                                                                                   python3-abrt                                                                                  PYTHON3-ABRT(5)
+
+NAME
+       python3-abrt - python3-abrt Documentation
+
+       High-level API for querying, creating and manipulating problems handled by ABRT in Python.
+
+       It  works  on top of low-level DBus or socket API provided by ABRT. Socket API serves only as a fallback option for systems without new DBus problem API as it can only handle the creation of new prob‐
+       lems.
+
+       This project lives in the abrt repository and is distributed under GPLv2 license.
+
+       Contents:
+
+USAGE EXAMPLES
+   Creating new problem
+          import problem
+
+          prob = problem.Runtime(
+                  reason='egg_error_message: assertion "error" failed',
+              )
+
+          prob.add_current_process_data()
+          prob.add_current_environment()
+          prob.save()
+
+   Creating problem for different executable
+          import problem
+
+          prob = problem.Selinux(reason='Front fell off')
+
+          prob.executable = '/usr/bin/time'
+
+          prob.save()
+
+   Adding custom data
+          import problem
+
+          prob = problem.Runtime(
+                  reason='Error getting devices:'
+                  'GDBus.Error:org.freedesktop.DBus.Error.UnknownMethod: '
+                  'No such interface `org.gnome.SettingsDaemon.Power` on object at path '
+                  '/org/gnome/SettingsDaemon/Power'
+              )
+
+          prob.add_current_process_data()
+          prob.custom_data = 'any'
+          prob['dict_access_example'] = 'works'
+
+          print(prob)
+          print('')
+
+          for key, value in prob.items():
+              print('{0}={1}'.format(key, value))
+
+          print('Identifier:', prob.save())
+
+   Querying problems
+          import problem
+
+          for prob in problem.list():
+              print(prob)
+              print(repr(prob.time))
+              if hasattr(prob, 'pid'):
+                  print(prob.pid)
+
+   Querying all problems
+       The list method used with auth=True parameter will try to authenticate via polkit to gain access to all problems on the system.
+
+       If there is no authentication agent running or authentication is unsuccessful, the list of problems which belong to current user is returned (same as returned by the list method).
+
+          import problem
+
+          for prob in problem.list(auth=True):
+              print(prob)
+              if hasattr(prob, 'username'):
+                  print('Problem belongs to {0}'.format(prob.username))
+
+   Editing existing problems
+          import problem
+
+          for prob in problem.list():
+              if prob.type == problem.JAVA:
+                  prob.delete()
+
+              if prob.type == problem.CCPP:
+                  if 'password' in prob.backtrace:
+                      del prob.backtrace
+                      prob.save()
+
+              if prob.type == problem.KERNELOOPS:
+                  prob.backtrace = prob.backtrace.replace(' ?', '')
+                  prob.save()
+
+   Watching for new problems
+          import problem
+          import logging
+
+          logging.basicConfig(level=logging.DEBUG)
+
+          def monitor(prob):
+              print(prob)
+              prob.delete()
+
+          pwatch = problem.get_problem_watcher()
+          pwatch.add_callback(monitor)
+
+          try:
+              pwatch.run()
+          except KeyboardInterrupt:
+              pwatch.quit()
+
+   Watching for new problems in a thread
+          from __future__ import print_function
+
+          import sys
+          import time
+          import problem
+          import threading
+
+          class ProblemWatchThread(threading.Thread):
+              def __init__(self):
+                  super(ProblemWatchThread, self).__init__()
+                  self.pwatch = problem.get_problem_watcher()
+                  self.pwatch.add_callback(self.handle)
+                  self.probcount = 0
+
+              def handle(self, prob):
+                  self.probcount += 1
+                  print('{0}: {1}'.format(self.probcount, prob))
+                  # prob.delete()
+
+              def run(self):
+                  self.pwatch.run()
+
+              def stop(self):
+                  self.pwatch.quit()
+
+          pwt = ProblemWatchThread()
+          pwt.start()
+
+          i = 0
+          print('Waiting for new problem to appear')
+          spinner = ['\\', '|', '/', '-']
+
+          try:
+              while True:
+                  time.sleep(0.1)
+                  print('{0}\r'.format(spinner[i]), end='')
+                  i += 1
+                  i = i % len(spinner)
+                  sys.stdout.flush()
+          except KeyboardInterrupt:
+              pwt.stop()
+
+          pwt.stop()
+
+   Getting bug numbers of problems reported to bugzilla
+          import problem
+
+          bugs = set()
+
+          for prob in problem.list():
+              if not hasattr(prob, 'reported_to'):
+                  continue
+
+              for line in prob.reported_to.splitlines():
+                  if line.startswith('Bugzilla:'):
+                      bug_num = int(line.split('=')[-1])
+                      bugs.add(bug_num)
+
+          print(bugs)
+
+STABLE API DOCUMENTATION
+       class problem.Problem(typ, reason, analyzer=None)
+              Base class for the other problem types.
+
+              No need to use this class directly, use one of the specific problem classes.
+
+              add_current_environment()
+                     Add environment of current process to this problem object
+
+              add_current_process_data()
+                     Add pid, gid and executable of current process to this problem object
+
+              chown()
+                     Assures ownership of a problem for the caller
+
+              delete()
+                     Delete this problem
+
+              prefetch_data()
+                     Prefetch possible data fields of this problem
+
+              save() Create this problem or update modified data
+
+                     Create or update the project if some of its fields were modified.
+
+                     Return None in case of modification, identifier if new problem was created.
+
+       problem.get(identifier, auth=False)
+              Return problem object matching identifier
+
+              Return None in case the problem does not exist.  Use auth=True if authentication should be attempted.
+
+       problem.get_problem_watcher(auth=False)
+              Return ProblemWatcher object which can be used to attach callbacks called when new problem is created
+
+              Use auth=True if authentication should be attempted for new problem that doesn't belong to current user. If not set such a problem is ignored.
+
+       problem.list(auth=False)
+              Return the list of the problems
+
+              Use auth=True if authentication should be attempted.
+
+              If authentication via polkit fails, function behaves as if auth=False was specified (only users problems are returned).
+
+   Specific problem types
+       class problem.Ccpp(reason)
+              C, C++ problem
+
+       class problem.Java(reason)
+              Java problem
+
+       class problem.Kerneloops(reason)
+              Kerneloops problem
+
+       class problem.Python(reason)
+              Python problem
+
+       class problem.Python3(reason)
+              Python3 problem
+
+       class problem.Runtime(reason)
+              Runtime problem
+
+       class problem.Selinux(reason)
+              Selinux problem
+
+       class problem.Unknown(reason)
+              Unknown problem
+
+       class problem.Xorg(reason)
+              Xorg problem
+
+   ProblemWatcher
+       class problem.watch.ProblemWatcher(auth)
+              New problem signal handler attached to DBus signal
+
+              Use auth=True if authentication should be attempted for new problem that doesn't belong to current user. If not set such a problem is ignored.
+
+              add_callback(fun)
+                     Add callback to be called when new problem occurs.
+
+                     Each callback function receives Problem instance
+
+              quit() Stop event listener loop
+
+              run()  Start event listener loop
+
+PROBLEM OBJECT PROPERTIES
+       Currently, there is no strict specification of problem properties and you are free to add your own data as you see fit (log files, process data) provided you are planning to use them for reporting.
+
+       Mandatory properties required prior saving:
+
+                                                                ┌───────────┬──────────────────────────────────────────────────────┬─────────────────┐
+                                                                │Property   │ Meaning                                              │ Example         │
+                                                                ├───────────┼──────────────────────────────────────────────────────┼─────────────────┤
+                                                                │executable │ Executable path of the component  which  caused  the │ '/usr/bin/time' │
+                                                                │           │ problem.   Used by the server to determine component │                 │
+                                                                │           │ and package data.                                    │                 │
+                                                                └───────────┴──────────────────────────────────────────────────────┴─────────────────┘
+
+       Following properties are added by the server when new problem is created:
+
+                                                         ┌─────────────┬───────────────────────────────────────┬────────────────────────────────────────────┐
+                                                         │Property     │ Meaning                               │ Example                                    │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │component    │ Component which caused this problem.  │ 'time'                                     │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │hostname     │ Hostname of the affected machine.     │ 'fiasco'                                   │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │os_release   │ Operating system release string.      │ 'Fedora release 17 (Beefy Miracle)'        │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │uid          │ User ID                               │ 1000                                       │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │username     │                                       │ 'jeff'                                     │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │architecture │ Machine architecture string           │ 'x86_64'                                   │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │kernel       │ Kernel version string                 │ '3.6.6-1.fc17.x86_64'                      │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │package      │ Package string                        │ 'time-1.7-40.fc17.x86_64'                  │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │time         │ Time of the occurrence (unixtime)     │ datetime.datetime(2012, 12, 2, 16, 18, 41) │
+                                                         ├─────────────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+                                                         │count        │ Number of times this problem occurred │ 1                                          │
+                                                         └─────────────┴───────────────────────────────────────┴────────────────────────────────────────────┘
+
+       Parsed package data is also available:
+
+                                                                                   ┌────────────┬──────────────────────┬───────────┐
+                                                                                   │Property    │ Meaning              │ Example   │
+                                                                                   ├────────────┼──────────────────────┼───────────┤
+                                                                                   │pkg_name    │ Package name         │ 'time'    │
+                                                                                   ├────────────┼──────────────────────┼───────────┤
+                                                                                   │pkg_epoch   │ Package epoch        │ 0         │
+                                                                                   ├────────────┼──────────────────────┼───────────┤
+                                                                                   │pkg_version │ Package version      │ '1.7'     │
+                                                                                   ├────────────┼──────────────────────┼───────────┤
+                                                                                   │pkg_release │ Package release      │ '40.fc17' │
+                                                                                   ├────────────┼──────────────────────┼───────────┤
+                                                                                   │pkg_arch    │ Package architecture │ 'x86_64'  │
+                                                                                   └────────────┴──────────────────────┴───────────┘
+
+       Other common properties (presence differs based on problem type):
+
+                                    ┌─────────────────┬───────────────────────────────────────────┬──────────────────────────────────┬───────────────────────────────────────────┐
+                                    │Property         │ Meaning                                   │ Example                          │ Applicable                                │
+                                    └─────────────────┴───────────────────────────────────────────┴──────────────────────────────────┴───────────────────────────────────────────┘
+
+                                    │abrt_version     │ ABRT version string                       │ '2.0.18.84.g211c'                │ Crashes caught by ABRT                    │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │cgroup           │ cgroup (control  group)  information  for │ '9:perf_event:/\n8:blkio:/\n...' │ C/C++                                     │
+                                    │                 │ crashed process                           │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │core_backtrace   │ Machine  readable  backtrace with no pri‐ │                                  │ C/C++, Python, Ruby, Kerneloops           │
+                                    │                 │ vate data                                 │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │backtrace        │ Original backtrace or backtrace  produced │                                  │ C/C++  (after  retracing),  Python, Ruby, │
+                                    │                 │ by retracing process                      │                                  │ Xorg, Kerneloops                          │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │dso_list         │ List of dynamic libraries loaded  at  the │                                  │ C/C++, Python                             │
+                                    │                 │ time of crash                             │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │maps             │ Copy  of  /proc/<pid>/maps  file  of  the │                                  │ C/C++                                     │
+                                    │                 │ problem executable                        │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │cmdline          │ Copy of /proc/<pid>/cmdline file          │ '/usr/bin/gtk-builder-convert'   │ C/C++, Python, Ruby, Kerneloops           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │coredump         │ Coredump of the crashing process          │                                  │ C/C++                                     │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │environ          │ Runtime environment of the process        │                                  │ C/C++, Python                             │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │open_fds         │ List of file descriptors open at the time │                                  │ C/C++                                     │
+                                    │                 │ of crash                                  │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │pid              │ Process ID                                │ '42'                             │ C/C++, Python, Ruby                       │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │proc_pid_status  │ Copy of /proc/<pid>/status file           │                                  │ C/C++                                     │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │limits           │ Copy of /proc/<pid>/limits file           │                                  │ C/C++                                     │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │var_log_messages │ Part  of the /var/log/messages file which │                                  │ C/C++                                     │
+                                    │                 │ contains crash information                │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │suspend_stats    │ Copy of /sys/kernel/debug/suspend_stats   │                                  │ Kerneloops                                │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │reported_to      │ If the problem was already reported, this │                                  │ Reported problems                         │
+                                    │                 │ item  contains URLs of the services where │                                  │                                           │
+                                    │                 │ it was reported                           │                                  │                                           │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │event_log        │ ABRT event log                            │                                  │ Reported problems                         │
+                                    ├─────────────────┼───────────────────────────────────────────┼──────────────────────────────────┼───────────────────────────────────────────┤
+                                    │dmesg            │ Copy of dmesg                             │                                  │ Kerneloops                                │
+                                    └─────────────────┴───────────────────────────────────────────┴──────────────────────────────────┴───────────────────────────────────────────┘
+
+       • genindex
+
+       • modindex
+
+       • search
+
+AUTHOR
+       Richard Marko
+
+COPYRIGHT
+       2021, Richard Marko
+
+0.1                                                                                               Oct 05, 2021                                                                                  PYTHON3-ABRT(5)

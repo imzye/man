@@ -1,0 +1,1175 @@
+Log::Report(3)        User Contributed Perl Documentation       Log::Report(3)
+
+NAME
+     Log::Report - report a problem, with exceptions and translation support
+
+INHERITANCE
+      Log::Report
+        is an Exporter
+
+SYNOPSIS
+       # Invocation with 'mode' to get trace and verbose messages
+       use Log::Report mode => 'DEBUG';
+
+       # Usually invoked with a domain, which groups packages for translation
+       use Log::Report 'my-domain', %options;
+
+       # Interpolation syntax via String::Print
+       # First step to translations, once you need it.
+       print __x"my name is {name}", name => $n;  # print, so no exception
+       print __"Hello World\n";      # no interpolation, optional translation
+       print __x'Hello World';       # SYNTAX ERROR: quote is alternative for ::
+
+       # Functions replacing die/warn/carp, casting exceptions but not message
+       # objects and no translation support.
+       error "oops";                 # exception like die(), no translation
+       -f $config or panic "Help!";  # alert/error/fault/info/...more
+
+       # Combined exception, interpolation, and optional translation
+       error __x"Help!";             # __x() creates ::Message object
+       error __x('gettext msgid', param => $value, ...)
+           if $condition;
+
+       # Also non fatal "exceptions" find their way to dispatchers
+       info __x"started {pid}", pid => $$;   # translatable
+       debug "$i was here!";         # you probably do not want to translate debug
+       panic "arrghhh";              # like Carp::Confess
+
+       # Many destinations for an exception message (may exist in parallel)
+       dispatcher PERL => 'default', # see Log::Report::Dispatcher: use die/warn
+         reasons => 'NOTICE-';       # this dispatcher is already present at start
+
+       dispatcher SYSLOG => 'syslog' # also send to syslog,
+         charset => 'iso-8859-1',    # explicit character conversions
+         locale  => 'en_US';         # overrule user's locale
+
+       dispatcher close => 'default' # stop default die/warn dispatcher
+
+       # Fill-in values, like Locale::TextDomain and gettext
+       # See Log::Report::Message section DETAILS
+       fault __x"cannot allocate {size} bytes", size => $size;
+       fault "cannot allocate $size bytes";     # no translation, ok
+       fault __x"cannot allocate $size bytes";  # not translatable, wrong
+
+       # Output (optionally with translation) depending on count
+       # Leading and trailing whitespace stay magically outside translation
+       # tables.  @files in scalar context.  Special parameter with _
+       print __xn"found one file\n", "found {_count} files", @files;
+
+       # Borrow from an other text-domain (see Log::Report::Message)
+       print __x(+"errors in {line}", _domain => 'global', line => $line);
+
+       # catch errors (implements hidden eval/die)
+       try { error };
+       if($@) {...}      # $@ isa Log::Report::Dispatcher::Try
+       if(my $exception = $@->wasFatal)         # ::Exception object
+
+       # Language translations at the output component
+       # Translation management via Log::Report::Lexicon
+       use POSIX::1003::Locale qw/setlocale LC_ALL/;
+       setlocale(LC_ALL, 'nl_NL');
+       info __"Hello World!";      # in Dutch, if translation table found
+
+       # Exception classes, see Log::Report::Exception
+       try { error __x"something", _tags => 'parsing,schema' };
+       if($@->wasFatal->taggedWith('parsing')) ...
+
+DESCRIPTION
+     Get messages to users and logs.  "Log::Report" combines three tasks which
+     are closely related in one:
+
+     1. logging (like Log::Log4Perl and syslog), and
+     2. exceptions (like 'error' and 'info'), with
+     3. translations (like "gettext" and Locale::TextDomain)
+
+     You do not need to use this module for all three reasons: pick what you
+     need now, maybe extend the usage later.  Read more about how and why in
+     the "DETAILS" section, below.  Especially, you should read about the
+     REASON parameter.
+
+     Also, you can study this module swiftly via the article published in the
+     German Perl "$foo-magazine".  English version:
+     <https://perl.overmeer.net/log-report/papers/201306-PerlMagazine-article-en.html>
+
+FUNCTIONS
+   Report production and configuration
+     dispatcher( <$type, $name, %options>|<$command, @names> )
+         The "dispatcher" function controls access to dispatchers: the
+         back-ends which process messages, do the logging.  Dispatchers are
+         global entities, addressed by a symbolic $name.  Please read
+         Log::Report::Dispatcher as well.
+
+         The "Log::Report" suite has its own dispatcher types, but also
+         connects to external dispatching frameworks.  Each need some (minor)
+         conversions, especially with respect to translation of REASONS of the
+         reports into log-levels as the back-end understands.
+
+         [1.10] When you open a dispatcher with a $name which is already in
+         use, that existing dispatcher gets closed.  Except when you have
+         given an 'dispatcher "do-not-reopen"' earlier, in which case the
+         first object stays alive, and the second attempt ignored. [1.11] The
+         automatically created default dispatcher will get replaced, even when
+         this option is given, by another dispatcher which is named 'default'.
+
+         The %options are a mixture of parameters needed for the Log::Report
+         dispatcher wrapper and the settings of the back-end.  See
+         Log::Report::Dispatcher, the documentation for the back-end specific
+         wrappers, and the back-ends for more details.
+
+         Implemented COMMANDs are "close", "find", "list", "disable",
+         "enable", "mode", "filter", "needs", "active-try", and
+         "do-not-reopen".
+
+         Most commands are followed by a LIST of dispatcher @names to be
+         addressed.  For "mode" see section "Run modes"; it requires a MODE
+         argument before the LIST of NAMEs.  Non-existing names will be
+         ignored. When "ALL" is specified, then all existing dispatchers will
+         get addressed.  For "filter" see "Filters" in
+         Log::Report::Dispatcher; it requires a CODE reference before the
+         @names of the dispatchers which will have the it applied (defaults to
+         all).
+
+         With "needs", you only provide a REASON: it will return the list of
+         dispatchers which need to be called in case of a message with the
+         REASON is triggered.  The "active-try" [1.09] returns the closest
+         surrounding exception catcher, a Log::Report::Dispatcher::Try object.
+
+         For both the creation as COMMANDs version of this method, all objects
+         involved are returned as LIST, non-existing ones skipped.  In SCALAR
+         context with only one name, the one object is returned.
+
+         » example: play with dispatchers
+
+           dispatcher Log::Dispatcher::File => mylog =>,
+             accept   => 'MISTAKE-',    # for wrapper
+             locale   => 'pt_BR',       # other language
+             filename => 'logfile';     # for back-end
+
+           dispatcher close => 'mylog';  # cleanup
+           my $obj = dispatcher find => 'mylog';
+           my @obj = dispatcher 'list';
+           dispatcher disable => 'syslog';
+           dispatcher enable => 'mylog', 'syslog'; # more at a time
+           dispatcher mode => 'DEBUG', 'mylog';
+           dispatcher mode => 'DEBUG', 'ALL';
+           my $catcher = dispatcher 'active-try';
+           dispatcher 'do-not-reopen';
+
+           my @need_info = dispatcher needs => 'INFO';
+           if(dispatcher needs => 'INFO') ...      # anyone needs INFO
+
+           # Getopt::Long integration: see Log::Report::Dispatcher::mode()
+           dispatcher PERL => 'default', mode => 'DEBUG', accept => 'ALL'
+              if $debug;
+
+     report( [\%options], $reason, $message|<$text,%params>, )
+         The "report" function is sending (for some $reason) a $message to be
+         displayed or logged (by a `dispatcher').  This function is the core
+         for error(), info() etc functions, which are nicer names for this
+         exception throwing: better use those short names.
+
+         The optional %options are listed below.  Quite differently from other
+         functions and methods, they have to be passed in a HASH as first
+         parameter.
+
+         The $reason is a string like 'ERROR' (for function error()).  The
+         $message is a Log::Report::Message object (which is created with the
+         special translation syntax like __x()).
+
+         The message may also be a plain piece of $text, or a
+         Log::Report::Exception object. The %params can be used to influence
+         the dispatchers, like real message objects can.
+
+         This function returns the LIST of dispatchers which accepted the
+         $message.  When empty, no back-end has accepted it so the $message
+         was "lost".  Even when no back-end needs the message, the program
+         will still exit when there is a $reason to die().
+
+          -Option  --Default
+           errno     $! or 1
+           is_fatal  <depends on reason>
+           locale    undef
+           location  undef
+           stack     undef
+           to        undef
+
+         errno => INTEGER
+           When the $reason includes the error text (See "Run modes"), you can
+           overrule the error code kept in $!.  In other cases, the return
+           code defaults to 1 (historical UNIX behavior). When the message
+           $reason (combined with the run-mode) is severe enough to stop the
+           program, this value as return code of the program.  The use of this
+           option itself will not trigger an die().
+
+         is_fatal => BOOLEAN
+           Some logged exceptions are fatal, other aren't.  The default
+           usually is correct. However, you may want an error to be caught
+           (usually with try()), redispatch it to syslog, but without it
+           killing the main program.
+
+         locale => $locale
+           Use this specific $locale, in stead of the user's preference.
+
+         location => $location
+           When defined, this location is used in the display.  Otherwise, it
+           is determined automatically if needed.  An empty string will
+           disable any attempt to display this line.
+
+         stack => \@trace
+           When defined, that data is used to display the call stack.
+           Otherwise, it is collected via caller() if needed.
+
+         to => $name|\@names
+           Sent the $message only to the named dispatchers.  Ignore unknown
+           @names.  Still, the dispatcher needs to be enabled and accept the
+           $reason.
+
+         » example: for use of report()
+
+           # long syntax example
+           report TRACE => "start processing now";
+           report INFO  => '500: ' . __'Internal Server Error';
+
+           # explicit dispatcher, no translation
+           report {to => 'syslog'}, NOTICE => "started process $$";
+           notice "started process $$", _to => 'syslog';   # same
+
+           # short syntax examples
+           trace "start processing now";
+           warning  __x'Disk {percent%.2f}% full', percent => $p
+               if $p > 97;
+
+           # error message, overruled to be printed in Brazilian
+           report {locale => 'pt_BR'},
+                 WARNING => "do this at home!";
+
+     try(CODE, %options)
+         Execute the "CODE" while blocking all dispatchers as long as it is
+         running.  The exceptions which occur while running the "CODE" are
+         caught until it has finished.  When there where no fatal errors, the
+         result of the "CODE" execution is returned.
+
+         After the "CODE" was tried, the $@ will contain a
+         Log::Report::Dispatcher::Try object, which contains the collected
+         messages.  Read that manual page to understand "try".
+
+         Run-time errors from Perl and die's, croak's and confess's within the
+         program (which shouldn't appear, but you never know) are collected
+         into an Log::Report::Message object, using Log::Report::Die.
+
+         The %options are passed to the constructor of the try-dispatcher, see
+         Log::Report::Dispatcher::Try::new().  For instance, you may like to
+         add "mode => 'DEBUG'", or "accept => 'ERROR-'".
+
+         Be warned that the parameter to "try" is a "CODE" reference.  This
+         means that you shall not use a comma after the block when there are
+         %options specified.  On the other hand, you shall use a semi-colon
+         after the block if there are no arguments.
+
+         Be warned that the "{}" are interpreted as subroutine, which means
+         that --for instance-- it has its own @_ parameter list.  The
+         manual-page of Try::Tiny lists a few more side-effects of this.
+
+         » example:
+
+           my $x = try { 3/$x };  # mind the ';' !!
+           if($@) {               # signals something went wrong
+
+           if(try {...}) {        # block ended normally, returns bool
+
+           try { ... }            # no comma!!
+              mode => 'DEBUG', accept => 'ERROR-';
+
+           try sub { ... },       # with comma, also \&function
+              mode => 'DEBUG', accept => 'ALL';
+
+           my $response = try { $ua->request($request) };
+           if(my $e = $@->wasFatal) ...
+
+   Abbreviations for report()
+     The following functions are all wrappers for calls to report(), and
+     available when "syntax is SHORT" (by default, see import()).  You cannot
+     specify additional options to influence the behavior of report(), which
+     are usually not needed anyway.
+
+     alert($message)
+         Short for "report ALERT => $message"
+
+     assert($message)
+         Short for "report ASSERT => $message"
+
+     error($message)
+         Short for "report ERROR => $message"
+
+     failure($message)
+         Short for "report FAILURE => $message"
+
+     fault($message)
+         Short for "report FAULT => $message"
+
+     info($message)
+         Short for "report INFO => $message"
+
+     mistake($message)
+         Short for "report MISTAKE => $message"
+
+     notice($message)
+         Short for "report NOTICE => $message"
+
+     panic($message)
+         Short for "report PANIC => $message"
+
+     trace($message)
+         Short for "report TRACE => $message"
+
+     warning($message)
+         Short for "report WARNING => $message"
+
+   Messages (optionally translatable)
+     Even when you do not support translations (yet) you may want to use
+     message objects to improve the logging feature. For instance, you get
+     very powerful interpolation from String::Print.
+
+     The language translations are initiate by limited set of functions which
+     contain two under-scores ("__") in their name.  Most of them return a
+     Log::Report::Message object.
+
+     Be warned(1) that -in general- its considered very bad practice to
+     combine multiple translations into one message: translating may also
+     affect the order of the translated components. Besides, when the person
+     which translates only sees smaller parts of the text, his (or her) job
+     becomes more complex.  So:
+
+       print __"Hello" . ', ' . __"World!";  # works, but to be avoided
+       print __"Hello, World!";              # preferred, complete sentence
+
+     The the former case, tricks with overloading used by the
+     Log::Report::Message objects will still make delayed translations work.
+
+     In normal situations, it is not a problem to translate interpolated
+     values:
+
+       print __"the color is {c}", c => __"red";
+
+     Be warned(2) that using "__'Hello'" will produce a syntax error like
+     "String found where operator expected at .... Can't find string
+     terminator "'" anywhere before EOF".  The first quote is the cause of the
+     complaint, but the second generates the error.  In the early days of
+     Perl, the single quote was used to separate package name from function
+     name, a role which was later replaced by a double-colon.  So "__'Hello'"
+     gets interpreted as "__::Hello '".  Then, there is a trailing single
+     quote which has no counterpart.
+
+     N__($msgid)
+         Label to indicate that the string is a text which will be translated
+         later.  The function itself does nothing.  See also N__w().
+
+         This no-op function is used as label to the xgettext program to build
+         the translation tables.
+
+         » example: how to use "N__()"
+
+           # add three msgids to the translation table
+           my @colors = (N__"red", N__"green", N__"blue");
+           my @colors = N__w "red green blue";   # same
+           print __ $colors[1];                  # translate green
+
+           # using __(), would work as well
+           my @colors = (__"red", __"green", __"blue");
+           print $colors[1];
+           # however: this will always create all Log::Report::Message objects,
+           # where maybe only one is used.
+
+     N__n($single_msgid, $plural_msgid)
+         Label to indicate that the two MSGIDs are related, the first as
+         single, the seconds as its plural.  Only used to find the text
+         fragments to be translated.  The function itself does nothing.
+
+         » example: how to use N__n()
+
+           my @save = N__n "save file", "save files";
+           my @save = (N__n "save file", "save files");
+           my @save = N__n("save file", "save files");
+
+           # be warned about SCALARs in prototype!
+           print __n @save, $nr_files;  # wrong!
+           print __n $save[0], $save[1], @files, %vars;
+
+     N__w($string)
+         This extension to the Locale::TextDomain syntax, is a combined "qw"
+         (list of quoted words) and N__() into a list of translatable words.
+
+         » example: of N__w()
+
+           my @colors = (N__"red", N__"green", N__"blue");
+           my @colors = N__w"red green blue";  # same
+           print __ $colors[1];
+
+     __($msgid)
+         This function (name is two under-score characters) will cause the
+         $msgid to be replaced by the translations when doing the actual
+         output.  Returned is a Log::Report::Message object, which will be
+         used in translation later.  Translating is invoked when the object
+         gets stringified.  When you have no translation tables, the $msgid
+         will be shown untranslated.
+
+         If you need options for Log::Report::Message::new() then use __x();
+         the prototype of this function does not permit parameters: it is a
+         prefix operator!
+
+         » example: how to use "__()"
+
+           print __"Hello World";      # translated into user's language
+           print __'Hello World';      # syntax error!
+           print __('Hello World');    # ok, translated
+           print __"Hello", " World";  # World not translated
+
+           my $s = __"Hello World";    # creates object, not yet translated
+           print ref $s;               # Log::Report::Message
+           print $s;                   # ok, translated
+           print $s->toString('fr');   # ok, forced into French
+
+     __n($msgid, $plural_msgid, $count, PAIRS)
+         It depends on the value of $count (and the selected language) which
+         text will be displayed.  When translations can not be performed, then
+         $msgid will be used when $count is 1, and PLURAL_MSGSID in other
+         cases.  However, some languages have more complex schemes than
+         English.
+
+         The "PAIRS" are options for Log::Report::Message::new() and variables
+         to be filled in.
+
+         » example: how to use "__n()"
+
+           print __n "one", "more", $a;
+           print __n("one", "more", $a), "\n";
+           print +(__n "one", "more", $a), "\n";
+
+           # new-lines are ignore at lookup, but printed.
+           print __n "one\n", "more\n", $a;
+
+           # count is in scalar context
+           # the value is also available as _count
+           print __n "found one\n", "found {_count}\n", @r;
+
+           # ARRAYs and HASHes are counted
+           print __n "one", "more", \@r;
+
+     __nx($msgid, $plural_msgid, $count, PAIRS)
+         It depends on the value of $count (and the selected language) which
+         text will be displayed.  See details in __n().  After translation,
+         the VARIABLES will be filled-in.
+
+         The "PAIRS" are options for Log::Report::Message::new() and variables
+         to be filled in.
+
+         » example: how to use "__nx()"
+
+           print __nx "one file", "{_count} files", $nr_files;
+           print __nx "one file", "{_count} files", @files;
+
+           local $" = ', ';
+           print __nx "one file: {f}", "{_count} files: {f}", @files, f => \@files;
+
+     __x($msgid, PAIRS)
+         Translate the $msgid and then interpolate the VARIABLES in that
+         string.  Of course, translation and interpolation is delayed as long
+         as possible.  Both OPTIONS and VARIABLES are key-value pairs.
+
+         The "PAIRS" are options for Log::Report::Message::new() and variables
+         to be filled in.
+
+         » example: how to use "__x()"
+
+         This is by far the most used message constructor.
+
+           print __x"Name {person.name}", person => $person_obj;
+           error __x"Too many options: max 5, got {count}", count => $c;
+           fault __x"Cannot open file {f}", f => $input_filename;
+
+     __xn($single_msgid, $plural_msgid, $count, $paurs)
+         Same as __nx(), because we have no preferred order for 'x' and 'n'.
+
+   Messages with Context
+     In Log::Report, the message context ("mgsctxt" in the PO-files --in the
+     translation tables) can be used in a very powerful way.  Read all about
+     it in Log::Report::Translator::Context
+
+     The msgctxt versions of the tranditional gettext infrastructure are far
+     less useful for Log::Report, because we can easily work with different
+     text domains within the same program.  That should avoid most of the
+     accidental translation conflicts between components of the code.
+
+     Just for compatibility with Locale::TextDomain and completeness, the 'p'
+     versions of above methods are supported.  See examples for these
+     functions in Locale::TextDomain.
+
+     Warnings: Functions "N__p()" and "N__np()" seem not to be usable in
+     reality, hence not implemented.  The script xgettext-perl and
+     Log::Report::Extract::PerlPPI (both in the Log::Report::Lexicon
+     distribution) do not yet support these functions.
+
+     __np($msgctxt, $msgid, $plural, count)
+
+
+     __npx($msgctxt, $msgid, $plural, count, PAIRS)
+
+
+     __p($msgctxt, $msgid)
+
+
+     __px($msgctxt, $msgid, PAIRS)
+
+
+   Configuration
+     default_dispatcher_mode()
+         [1.46] Returns the default run mode.
+
+     $obj->import( [$level,][$domain,] %options )
+         The import is automatically called when the package is compiled.  For
+         all packages but one in your distribution, it will only contain the
+         name of the $domain.
+
+         For one package, the import list may additionally contain textdomain
+         configuration %options.  These %options are used for all packages
+         which use the same $domain.  These are alternatives:
+
+           # Do not use variables in the %*config!  They are not yet initialized
+           # when Log::Report->import is run!!!
+           use Log::Report 'my-domain', %config, %domain_config;
+
+           use Log::Report 'my-domain', %config;
+           textdomain 'my-domain', %domain_config;   # vars allowed
+
+         The latter syntax has major advantages, when the configuration of the
+         domain is determined at run-time.  It is probably also easier to
+         understand.
+
+         See Log::Report::Domain::configure(), for the list of %options for
+         the domain configuration.  Here, we only list the options which are
+         related to the normal import behavior.
+
+         The export $level is a plus (+) followed by a number, for instance
+         +1, to indicate to on which caller level we need to work.  This is
+         used in Log::Report::Optional.  It defaults to '0': my direct caller.
+
+          -Option       --Default
+           import         undef
+           message_class  Log::Report::Message
+           mode           'NORMAL'
+           syntax         'SHORT'
+
+         import => $function|\@functions
+           [0.998] When not specified, the "syntax" option determines the list
+           of @functions which are being exported.  With this option, the
+           "syntax" option is ignored and only the specified @functions are
+           imported.
+
+         message_class => CLASS
+           [1.08] Use a more powerful message object class, for instance
+           because your messages need extra attributes.  The provided CLASS
+           must extend Log::Report::Message
+
+         mode => LEVEL
+           This sets the default mode for all created dispatchers.  You can
+           also selectively change the output mode, like
+             dispatcher PERL => 'default', mode => 3
+
+         syntax => 'REPORT'|'SHORT'|'LONG'
+           The SHORT syntax will add the report abbreviations (like function
+           error()) to your name-space.  Otherwise, each message must be
+           produced with report(). "LONG" is an alternative to "REPORT": both
+           do not pollute your namespace with the useful abbrev functions.
+
+         » example: of import
+
+           use Log::Report mode => 3;      # '3' or 'DEBUG', no domain given
+
+           use Log::Report 'my-domain';    # in each package producing messages
+
+           use Log::Report 'my-domain',    # in one package, top of distr
+             mode            => 'VERBOSE',
+             syntax          => 'REPORT',  # report ERROR, not error()
+             translator      => Log::Report::Translator::POT->new(
+                lexicon => '/home/mine/locale', # translation tables
+             ),
+             native_language => 'nl_NL';   # untranslated msgs are Dutch
+
+           use Log::Report import => 'try';     # or ARRAY of functions
+
+     textdomain( <[$name],$config>|<$name, 'DELETE'|'EXISTS'>|$domain )
+         [1.00] Without CONFIGuration, this returns the Log::Report::Domain
+         object which administers the $domain, by default the domain effective
+         in the scope of the package.
+
+         A very special case is ""DELETE"", which will remove the domain
+         configuration. [1.20] ""EXISTS"" will check for existence: when it
+         exists, it will be returned, but a domain will not be automagically
+         created.
+
+         [1.20] You may also pass a pre-configured domain.
+
+   Reasons
+     $class->needs( $reason, [$reasons] )
+         Returns "true" when the reporter needs any of the $reasons, when any
+         of the active dispatchers is collecting messages in the specified
+         level.  This is useful when the processing of data for the message is
+         relatively expensive, but for instance only required in debug mode.
+
+         » example:
+
+           if(Log::Report->needs('TRACE'))
+           {  my @args = ...expensive calculation...;
+              trace "your options are: @args";
+           }
+
+DETAILS
+   Introduction
+     Getting messages to users and logs. The distincting concept of this
+     module, is that three tasks which are strongly related are merged into
+     one simple syntax.  The three tasks:
+
+     •   produce some text on a certain condition,
+
+     •   translate it to the proper language, and
+
+     •   deliver it in some way to a user.
+
+     Text messages in Perl are produced by commands like "print", "die",
+     "warn", "carp", or "croak".  But where is that output directed to?
+     Translations is hard.  There is no clean exception mechanism.
+
+     Besides, the "print"/"warn"/"die" together produce only three different
+     output "levels" with a message.  Think of the variation syslog offers:
+     more than 7 levels.  Many people manually implement their own tricks to
+     get additional levels, like verbose and debug flags.  Log::Report offers
+     that variety.
+
+     The (optional) translations use the beautiful syntax defined by
+     Locale::TextDomain, with some own extensions (of course).  A very
+     important difference is that translations are delayed till the delivery
+     step: until a dispatcher actually writes your message into a file, sends
+     it to syslog, or shows it on the screen.  This means that the pop-up in
+     the graphical interface of the user may show the text in the language of
+     the user --say Chinese in utf8--, but at the same time syslog may write
+     the latin1 English version of the same message.
+
+     Lightweight Log::Report::Optional
+
+     When you want to use Log::Report features as cheap as possible, you may
+     use Log::Report::Optional in your module.  In this case, your module can
+     use error() and "__x()" with very little cost: they will not build
+     internal objects and support translations.  It's fast and few
+     dependencies.
+
+     The beauty is, then when the main program which uses module does initiate
+     the full Log::Report functionality, then your module will also switch to
+     full support mode.
+
+     Background ideas
+
+     The following ideas are the base of this implementation:
+
+     •   simplification
+
+         Handling errors and warnings is probably the most labor-intensive
+         task for a programmer: when programs are written correctly, up-to
+         three-quarters of the code is related to testing, reporting, and
+         handling (problem) conditions.  Simplifying the way to create
+         reports, simplifies programming and maintenance.
+
+     •   multiple dispatchers
+
+         It is not the location where the (for instance) error occurs which
+         determines what will happen with the text, but the main application
+         which uses the the complaining module has control.  Messages have a
+         reason.  Based on the `reason' classification, they can get ignored,
+         send to one or multiple dispatchers, like Log::Dispatch,
+         Log::Log4perl, or UNIX syslog.
+
+     •   delayed translations
+
+         The background ideas are that of Locale::TextDomain, based on
+         gettext().  However, in the "Log::Report" infrastructure,
+         translations are postponed until the text is dispatched to a screen
+         or log-file; the same report can be sent to syslog in (for instance)
+         English and to the user interface in Dutch.
+
+     •   context sensitive
+
+         Using contexts, you can set-up how to translate or rewrite messages,
+         to improve messages.  A typical problem is whether to use gender in
+         text (use 'his' or 'her'): you can set a gender in a context, and the
+         use translation tables to pick the right one.
+
+   Error handling models
+     There are two approaches to handling errors and warnings.  In the first
+     approach, as produced by "die", "warn" and the "carp" family of commands,
+     the program handles the problem immediately on the location where the
+     problem appears.  In the second approach, an exception is thrown on the
+     spot where the problem is created, and then somewhere else in the program
+     the condition is handled.
+
+     The implementation of exceptions in Perl5 is done with a eval-die pair:
+     on the spot where the problem occurs, "die" is called.  But, because of
+     the execution of that routine is placed within an "eval", the program as
+     a whole will not die, just the execution of a part of the program will
+     seize.  However, what if the condition which caused the routine to die is
+     solvable on a higher level?  Or what if the user of the code doesn't
+     bother that a part fails, because it has implemented alternatives for
+     that situation?  Exception handling is quite clumsy in Perl5.
+
+     The "Log::Report" set of distributions let modules concentrate on the
+     program flow, and let the main program decide on the report handling
+     model.  The infrastructure to translate messages into multiple languages,
+     whether to create exceptions or carp/die, to collect longer explanations
+     with the messages, to log to mail or syslog, and so on, is decided in
+     pluggable back-ends.
+
+     The Reason for the report
+
+     Traditionally, perl has a very simple view on error reports: you either
+     have a warning or an error.  However, it would be much clearer for user's
+     and module-using applications, when a distinction is made between various
+     causes.  For instance, a configuration error is quite different from a
+     disk-full situation.  In "Log::Report", the produced reports in the code
+     tell what is wrong.  The main application defines loggers, which
+     interpret the cause into (syslog) levels.
+
+     Defined by "Log::Report" are
+
+     •   trace (debug, program)
+
+         The message will be used when some logger has debugging enabled.  The
+         messages show steps taken by the program, which are of interest by
+         the developers and maintainers of the code, but not for end-users.
+
+     •   assert (program)
+
+         Shows an unexpected condition, but continues to run.  When you want
+         the program to abort in such situation, that use "panic".
+
+     •   info (verbose, program)
+
+         These messages show larger steps in the execution of the program.
+         Experienced users of the program usually do not want to see all these
+         intermediate steps.  Most programs will display info messages (and
+         higher) when some "verbose" flag is given on the command-line.
+
+     •   notice (program)
+
+         An user may need to be aware of the program's accidental smart
+         behavior, for instance, that it initializes a lasting "Desktop"
+         directory in your home directory.  Notices should be sparse.
+
+     •   warning (program)
+
+         The program encountered some problems, but was able to work around it
+         by smart behavior.  For instance, the program does not understand a
+         line from a log-file, but simply skips the line.
+
+     •   mistake (user)
+
+         When a user does something wrong, but what is correctable by smart
+         behavior of the program.  For instance, in some configuration file,
+         you can fill-in "yes" or "no", but the user wrote "yeah".  The
+         program interprets this as "yes", producing a mistake message as
+         warning.
+
+         It is much nicer to tell someone that he/she made a mistake, than to
+         call that an error.
+
+     •   error (user)
+
+         The user did something wrong, which is not automatically correctable
+         or the program is not willing to correct it automatically for reasons
+         of code quality.  For instance, an unknown option flag is given on
+         the command-line.  These are configuration issues, and have no useful
+         value in $!.  The program will be stopped, usually before taken off.
+
+     •   fault (system)
+
+         The program encountered a situation where it has no work-around.  For
+         instance, a file cannot be opened to be written.  The cause of that
+         problem can be some user error (i.e. wrong filename), or external
+         (you accidentally removed a directory yesterday).  In any case, the
+         $! ($ERRNO) variable is set here.
+
+     •   alert (system)
+
+         Some external cause disturbs the execution of the program, but the
+         program stays alive and will try to continue operation.  For
+         instance, the connection to the database is lost.  After a few
+         attempts, the database can be reached and the program continues as if
+         nothing happened.  The cause is external, so $! is set.  Usually, a
+         system administrator needs to be informed about the problem.
+
+     •   failure (system)
+
+         Some external cause makes it impossible for this program to continue.
+         $! is set, and usually the system administrator wants to be informed.
+         The program will die.
+
+         The difference with "fault" is subtile and not always clear.  A fault
+         reports an error returned by an operating system call, where the
+         failure would report an operational problem, like a failing mount.
+
+     •   panic (program)
+
+         All above report classes are expected: some predictable situation is
+         encountered, and therefore a message is produced.  However, programs
+         often do some internal checking.  Of course, these conditions should
+         never be triggered, but if they do... then we can only stop.
+
+         For instance, in an OO perl module, the base class requires all
+         sub-classes to implement a certain method.  The base class will
+         produce a stub method with triggers a panic when called.  The
+         non-dieing version of this test "assert".
+
+     Debugging or being "verbose" are run-time behaviors, and have nothing
+     directly to do with the type of message which is produced.  These two are
+     modes which can be set on the dispatchers: one dispatcher may be more
+     verbose that some other.
+
+     On purpose, we do not use the terms "die" or "fatal", because the
+     dispatcher can be configured what to do in cause of which condition.  For
+     instance, it may decide to stop execution on warnings as well.
+
+     The terms "carp" and "croak" are avoided, because the program cause
+     versus user cause distinction (warn vs carp) is reflected in the use of
+     different reasons.  There is no need for "confess" and "croak" either,
+     because the dispatcher can be configured to produce stack-trace
+     information (for a limited sub-set of dispatchers)
+
+     Report level comparison
+
+     Various frameworks used with perl programs define different labels to
+     indicate the reason for the message to be produced.
+
+       Perl5 Log::Dispatch Syslog Log4Perl Log::Report
+       print   0,debug     debug  debug    trace
+       print   0,debug     debug  debug    assert
+       print   1,info      info   info     info
+       warn\n  2,notice    notice info     notice
+       warn    3,warning   warn   warn     mistake
+       carp    3,warning   warn   warn     warning
+       die\n   4,error     err    error    error
+       die     5,critical  crit   fatal    fault
+       croak   6,alert     alert  fatal    alert
+       croak   7,emergency emerg  fatal    failure
+       confess 7,emergency emerg  fatal    panic
+
+     Run modes
+
+     The run-mode change which messages are passed to a dispatcher, the
+     verbosity.  It takes a different angle than the dispatch filters: the
+     mode changes behavioral aspects of the messages, which are described in
+     detail in "Processing the message" in Log::Report::Dispatcher.  However,
+     it should behave as you expect: the DEBUG mode shows more than the
+     VERBOSE mode, and both show more than the NORMAL mode.
+
+     » Example: extract run mode from Getopt::Long
+
+     The GetOptions() function will count the number of "v" options on the
+     command-line when a "+" is after the option name.
+
+       use Log::Report;
+       use Getopt::Long qw(:config no_ignore_case bundling);
+
+       my $mode;    # defaults to NORMAL
+       GetOptions 'v+'        => \$mode,
+                  'verbose=i' => \$mode,
+                  'mode=s'    => \$mode
+           or exit 1;
+
+       dispatcher 'PERL', 'default', mode => $mode;
+
+     Now, "-vv" will set $mode to 2, as will "--verbose 2" and "--verbose=2"
+     and "--mode=ASSERT".  Of course, you do not need to provide all these
+     options to the user: make a choice.
+
+     » Example: the mode of a dispatcher
+
+       my $mode = dispatcher(find => 'myname')->mode;
+
+     » Example: run-time change mode of a dispatcher
+
+     To change the running mode of the dispatcher, you can do
+
+       dispatcher mode => DEBUG => 'myname';
+
+     However, be warned that this does not change the types of messages
+     accepted by the dispatcher!  So: probably you will not receive the trace,
+     assert, and info messages after all.  So, probably you need to replace
+     the dispatcher with a new one with the same name:
+
+       dispatcher FILE => 'myname', to => ..., mode => 'DEBUG';
+
+     This may reopen connections (depends on the actual dispatcher), which
+     might be not what you wish to happened.  In that case, you must take the
+     following approach:
+
+       # at the start of your program, overrule the default 'NOTICE-' !!
+       dispatcher FILE => 'myname', to => ..., accept => 'ALL';
+
+       # now it works
+       dispatcher mode => DEBUG => 'myname';    # debugging on
+       ...
+       dispatcher mode => NORMAL => 'myname';   # debugging off
+
+     Of course, this comes with a small overall performance penalty.
+
+     Exceptions
+
+     The simple view on live says: you 're dead when you die.  However, more
+     complex situations try to revive the dead.  Typically, the "die" is
+     considered a terminating exception, but not terminating the whole
+     program, but only some logical block.  Of course, a wrapper round that
+     block must decide what to do with these emerging problems.
+
+     Java-like languages do not "die" but throw exceptions which contain the
+     information about what went wrong.  Perl modules like "Exception::Class"
+     simulate this.  It's a hassle to create exception class objects for each
+     emerging problem, and the same amount of work to walk through all the
+     options.
+
+     Log::Report follows a simpler scheme.  Fatal messages will "die", which
+     is caught with "eval", just the Perl way (used invisible to you).
+     However, the wrapper gets its hands on the message as the user has
+     specified it: untranslated, with all unprocessed parameters still at
+     hand.
+
+       try { fault __x "cannot open file {file}", file => $fn };
+       if($@)                         # is Log::Report::Dispatcher::Try
+       {   my $cause = $@->wasFatal;  # is Log::Report::Exception
+           $cause->throw if $cause->message->msgid =~ m/ open /;
+           # all other problems ignored
+       }
+
+     See Log::Report::Dispatcher::Try and Log::Report::Exception.
+
+   Interpolation via formats
+     Interpolation via formats is optional.
+
+     In shown examples, you see "__x()" everywhere.  Using that function is
+     required when you wish to use translations (later in your project), but
+     also has many other benefits.  The functions "__x" and friends create a
+     Log::Report::Message object.
+
+     Continue reading:
+
+     •   "Why use format strings?" in Log::Report::Message
+
+     •   "Messages with plural forms" in Log::Report::Message
+
+     •   "Interpolation with String::Print" in Log::Report::Message
+
+     •   "Automatic parameters" in Log::Report::Message
+
+     Translation
+
+     Translating is optional.
+
+     Distribution Log::Report::Lexicon handles translations.  It will help you
+     manage all __x() (and friends) format strings in GNU's PO file format
+     (https://www.gnu.org/software/gettext/manual/html_node/PO-Files.html)
+
+     With Log::Report::Template, you can use Log::Report with translations in
+     various website template systems.
+
+     Then, Dancer2::Plugin::LogReport brings Log::Report with exceptions and
+     translations to the Dancer2 web framework.
+
+   Compared to other solutions in Perl
+     Some notes on differences between the Log::Report approach and other Perl
+     concepts.
+
+     die/warn/Carp
+
+     Perl's built-in exception system is very primitive: "die" and "warn".
+     Most programming languages provide a much more detailed exception
+     mechanism.
+
+     A typical perl program can look like this:
+
+       my $dir = '/etc';
+
+       File::Spec->file_name is_absolute($dir)
+           or die "ERROR: directory name must be absolute.\n";
+
+       -d $dir
+           or die "ERROR: what platform are you on?";
+
+       until(opendir DIR, $dir)
+       {   warn "ERROR: cannot read system directory $dir: $!";
+           sleep 60;
+       }
+
+       print "Processing directory $dir\n"
+           if $verbose;
+
+       while(defined(my $file = readdir DIR))
+       {   if($file =~ m/\.bak$/)
+           {   warn "WARNING: found backup file $dir/$f\n";
+               next;
+           }
+
+           die "ERROR: file $dir/$file is binary"
+               if $debug && -B "$dir/$file";
+
+           print "DEBUG: processing file $dir/$file\n"
+               if $debug;
+
+           open my $fh, "<:encoding(UTF-8)", "$dir/$file"
+               or die "ERROR: cannot read from $dir/$f: $!";
+
+           $fh->close
+               or croak "ERROR: read errors in $dir/$file: $!";
+       }
+
+     Where "die", "warn", and "print" are used for various tasks.  With
+     "Log::Report", you would write
+
+       use Log::Report;
+
+       # can be left-out when there is no debug/verbose
+       dispatcher PERL => 'default', mode => 'DEBUG';
+
+       my $dir = '/etc';
+
+       File::Spec->file_name is_absolute($dir)
+           or mistake "directory name must be absolute";
+
+       -d $dir
+           or panic "what platform are you on?";
+
+       until(opendir DIR, $dir)
+       {   alert "cannot read system directory $dir";
+           sleep 60;
+       }
+
+       info "Processing directory $dir";
+
+       while(defined(my $file = readdir DIR))
+       {   if($file =~ m/\.bak$/)
+           {   notice "found backup file $dir/$f";
+               next;
+           }
+
+           assert "file $dir/$file is binary"
+               if -B "$dir/$file";
+
+           trace "processing file $dir/$file";
+
+           unless(open my $fh, "<:encoding(UTF-8)", "$dir/$file")
+           {   error "no permission to read from $dir/$f" if $!==ENOPERM;
+               fault "unable to read from $dir/$f";  # or better
+           }
+
+           $fh->close
+               or failure "read errors in $dir/$file";
+       }
+
+     A lot of things are quite visibly different, and there are a few smaller
+     changes.  There is no need for a new-line after the text of the message.
+     When applicable (error about system problem), then the $! is added
+     automatically.
+
+     Log::Dispatch and Log::Log4perl
+
+     The two major logging frameworks for Perl are Log::Dispatch and
+     Log::Log4perl; both provide a pluggable logging interface.
+
+     Both frameworks do not have (gettext or maketext) language translation
+     support, which has various consequences.  When you wish for to report in
+     some other language, it must be translated before the logging function is
+     called.   This may mean that an error message is produced in Chinese, and
+     therefore also ends-up in the syslog file in Chinese.  When this is not
+     your language, you have a problem.
+
+     Log::Report translates only in the back-end, which means that the user
+     may get the message in Chinese, but you get your report in your beloved
+     Dutch.  When no dispatcher needs to report the message, then no time is
+     lost in translating.
+
+     With both logging frameworks, you use terminology comparable to syslog:
+     the module programmer determines the seriousness of the error message,
+     not the application which integrates multiple modules.  This is the way
+     perl programs usually work, but often the cause for inconsequent user
+     interaction.
+
+     Locale::gettext and Locate::TextDomain
+
+     Both on GNU gettext based implementations can be used as translation
+     frameworks.  Locale::TextDomain syntax is supported, with quite some
+     extensions. Read the excellent documentation of Locale::TextDomain.  Only
+     the tried access via "$__" and "%__" are not supported.
+
+     The main difference with these modules is the moment when the translation
+     takes place.  In Locale::TextDomain, an "__x()" will result in an
+     immediate translation request via gettext().  "Log::Report"'s version of
+     "__x()" will only capture what needs to be translated in an object.  When
+     the object is used in a print statement, only then the translation will
+     take place.  This is needed to offer ways to send different translations
+     of the message to different destinations.
+
+     To be able to postpone translation, objects are returned which stringify
+     into the translated text.
+
+DIAGNOSTICS
+     Error: a message object is reported with more parameters.
+         Cast by report()
+
+     Error: even length parameter list for __x at $where
+         Cast by "__x()"
+
+     Error: message_class $class does not extend $base
+         Cast by import()
+
+     Error: no domain for configuration options in $fn line $line
+         Cast by import()
+
+     Error: odd length parameter list with '$msg'.
+         Cast by report()
+
+     Error: odd length parameter list with object '$msg'.
+         Cast by report()
+
+     Error: only one dispatcher name accepted in SCALAR context.
+         In SCALAR context, only one dispatcher name accepted The dispatcher()
+         method returns the Log::Report::Dispatcher objects which it has
+         accessed.  When multiple names where given, it wishes to return a
+         LIST of objects, not the count of them.  Cast by dispatcher()
+
+     Error: syntax flag must be either SHORT or REPORT, not `$flag' in $fn
+     line $line
+         Cast by import()
+
+     Error: textdomain `$domain' for translator not defined
+         Cast by import()
+
+     Error: the 'filter' sub-command needs a CODE reference.
+         Cast by dispatcher()
+
+     Error: the 'needs' sub-command parameter '$need' is not a reason.
+         Cast by dispatcher()
+
+     Error: token '$token' not recognized as reason.
+         Cast by report()
+
+     Error: translator must be a $pkg object for $domain
+         Cast by import()
+
+SEE ALSO
+     This module is part of Log-Report version 1.46, built on June 16, 2026.
+     Website: http://perl.overmeer.net/CPAN/
+
+LICENSE
+     For contributors see file ChangeLog.
+
+     This software is copyright (c) 2007-2026 by Mark Overmeer.
+
+     This is free software; you can redistribute it and/or modify it under the
+     same terms as the Perl 5 programming language system itself.
+
+perl v5.42.3                      2026-06-16                    Log::Report(3)

@@ -1,0 +1,340 @@
+Test::Spec::Mocks(3pm)                                       User Contributed Perl Documentation                                       Test::Spec::Mocks(3pm)
+
+NAME
+       Test::Spec::Mocks - Object Simulation Plugin for Test::Spec
+
+SYNOPSIS
+         use Test::Spec;
+         use base qw(Test::Spec);
+
+         use My::RSS::Tool;    # this is what we're testing
+         use LWP::UserAgent;
+
+         describe "RSS tool" => sub {
+           it "should fetch and parse an RSS feed" => sub {
+             my $xml = load_rss_fixture();
+             LWP::Simple->expects('get')->returns($xml);
+
+             # calls LWP::Simple::get, but returns our $xml instead
+             my @stories = My::RSS::Tool->run;
+
+             is_deeply(\@stories, load_stories_fixture());
+           };
+         };
+
+DESCRIPTION
+       Test::Spec::Mocks is a plugin for Test::Spec that provides mocking and stubbing of objects, individual methods and plain subroutines on both object
+       instances and classes. This module is inspired by and heavily borrows from Mocha, a library for the Ruby programming language. Mocha itself is
+       inspired by JMock.
+
+       Mock objects provide a way to simulate the behavior of real objects, while providing consistent, repeatable results. This is very useful when you need
+       to test a function whose results are dependent upon an external factor that is normally uncontrollable (like the time of day). Mocks also allow you to
+       test your code in isolation, a tenet of unit testing.
+
+       There are many other reasons why mock objects might come in handy. See the Mock objects <http://en.wikipedia.org/wiki/Mock_object> article at
+       Wikipedia for lots more examples and more in-depth coverage of the philosophy behind object mocking.
+
+   Ecosystem
+       Test::Spec::Mocks is currently only usable from within tests built with the Test::Spec BDD framework.
+
+   Terminology
+       Familiarize yourself with these terms:
+
+       •   Stub object
+
+           A  stub  object  is  an  object  created  specifically  to  return canned responses for a specific set of methods. These are created with the stub
+           function.
+
+       •   Mock object
+
+           Mock objects are similar to stub objects, but are programmed with both prepared responses and expectations for how they will  be  called.  If  the
+           expectations are not met, they raise an exception to indicate that the test failed. Mock objects are created with the mock function.
+
+       •   Stubbed method
+
+           Stubbed  methods  temporarily replace existing methods on a class or object instance. This is useful when you only want to override a subset of an
+           object or class's behavior. For example, you might want to override the "do" method of a DBI handle so it doesn't make changes to  your  database,
+           but still need the handle to respond as usual to the "quote" method.  You'll stub methods using the stubs method.
+
+       •   Mocked method
+
+           If  you've been reading up to this point, this will be no surprise.  Mocked methods are just like stubbed methods, but they come with expectations
+           that will raise an exception if not met. For example, you can mock a "save" method on an object to ensure  it  is  called  by  the  code  you  are
+           testing, while preventing the data from actually being committed to disk in your test. Use the expects method to create mock methods.
+
+       •   "stub", "mock"
+
+           Depending on context, these can refer to stubbed objects and methods, or mocked objects and methods, respectively.
+
+   Using stub objects (anonymous stubs)
+       Sometimes  the  code  you're testing requires that you pass it an object that conforms to a specific interface. For example, you are testing a console
+       prompting library, but you don't want to require a real person to stand by, waiting to type answers into the console. The library requires  an  object
+       that returns a string when the "read_line" method is called.
+
+       You could create a class specifically for returning test console input. But why do that? You can create a stub object in one line:
+
+         describe "An Asker" => sub {
+           my $asker = Asker->new;
+
+           it "returns true when a yes_or_no question is answered 'yes'" => sub {
+             my $console_stub = stub(read_line => "yes");
+             # $console_stub->read_line returns "yes"
+             ok( $asker->yes_or_no($console_stub, "Am I awesome?") );
+           };
+
+           it "returns false when a yes_or_no question is answered 'no'" => sub {
+             my $console_stub = stub(read_line => "no");
+             ok( ! $asker->yes_or_no($console_stub, "Am I second best?") );
+           };
+         };
+
+       Stubs can also take subroutine references.  This is useful when the behavior you need to mimic is a little more complex.
+
+         it "keeps asking until it gets an answer" => sub {
+           my @answers = (undef, "yes");
+           my $console_stub = stub(read_line => sub { shift @answers });
+           # when console_stub is called the first time, it returns undef
+           # the second time returns "yes"
+           ok( $asker->yes_or_no($console_stub, "Do I smell nice?") );
+         };
+
+   Using mock objects
+       If  you  want  to take your tests one step further, you can use mock objects instead of stub objects. Mocks ensure the methods you expect to be called
+       actually are called. If they aren't, the mock will raise an exception which causes your test to fail.
+
+       In this example, we are testing that "read_line" is called once and only once (the default for mocks).
+
+         it "returns true when a yes_or_no question is answered 'yes'" => sub {
+           my $console_mock = mock();
+           $console_mock->expects('read_line')
+                        ->returns("yes");
+           # $console_mock->read_line returns "yes"
+           ok( $asker->yes_or_no($console_mock, "Am I awesome?") );
+         };
+
+       If Asker's "yes_or_no" method doesn't call "read_line" on our mock exactly one time, the test would fail with a message like:
+
+         expected read_line to be called exactly 1 time, but it was called 0 times
+
+       You can specify how many times your mock should be called with "exactly":
+
+         it "keeps asking until it gets an answer" => sub {
+           my @answers = (undef, "yes");
+           my $console_mock = mock();
+           $console_mock->expects('read_line')
+                        ->returns(sub { shift @answers })
+                        ->exactly(2);
+           # when console_mock is called the first time, it returns undef
+           # the second time returns "yes"
+           ok( $asker->yes_or_no($console_mock, "Do I smell nice?") );
+         };
+
+       If you want something more flexible than "exactly", you can choose from "at_least", "at_most", "any_number" and others.  See  "EXPECTATION  ADJUSTMENT
+       METHODS".
+
+   Stubbing methods
+       Sometimes you want to override just a small subset of an object's behavior.
+
+         describe "The old audit system" => sub {
+           my $dbh;
+           before sub { $dbh = SomeExternalClass->get_dbh };
+
+           it "executes the expected sql" => sub {
+             my $sql;
+             $dbh->stubs(do => sub { $sql = shift; return 1 });
+
+             # $dbh->do("foo") now sets $sql to "foo"
+             # $dbh->quote still does what it normally would
+
+             audit_event($dbh, "server crash, oh noes!!");
+
+             like( $sql, qr/insert into audit_event.*'server crash, oh noes!!!'/ );
+           };
+         };
+
+       You can also stub class methods:
+
+         # 1977-05-26T14:11:55
+         my $event_datetime = DateTime->new(from_epoch => 0xdeafcab);
+
+         it "should tag each audit event with the current time" => sub {
+           DateTime->stubs('now' => sub { $event_datetime });
+           is( audit_timestamp(), '19770526.141155' );
+         };
+
+   Mocking methods
+       Mocked methods are to stubbed methods as mock objects are to stub objects.
+
+         it "executes the expected sql" => sub {
+           $dbh->expects('do')->returns(sub { $sql = shift; return 1 });
+
+           # $dbh->do("foo") now sets $sql to "foo"
+           # $dbh->quote still does what it normally would
+
+           audit_event($dbh, "server crash, oh noes!!");
+           like( $sql, qr/insert into audit_event.*'server crash, oh noes!!!'/ );
+
+           # if audit_event doesn't call $dbh->do exactly once, KABOOM!
+         };
+
+CONSTRUCTORS
+       stub()
+       stub($method_name => $result, ...)
+       stub($method_name => sub { $result }, ...)
+       stub({ $method_name => $result, ... })
+           Returns  a  new anonymous stub object. Takes a list of $method_name/$result pairs or a reference to a hash containing the same.  Each $method_name
+           listed is stubbed to return the associated value ($result); or if the value is a subroutine reference, it  is  stubbed  in-place  (the  subroutine
+           becomes the method).
+
+           Examples:
+
+             # A blank object with no methods.
+             # Gives a true response to ref() and blessed().
+             my $blank = stub();
+
+             # Static responses to width() and height():
+             my $rect = stub(width => 5, height => 5);
+
+             # Dynamic response to area():
+             my $radius = 1.0;
+             my $circle_stub = stub(area => sub { PI * $radius * $radius });
+
+           You can also stub more methods, just like with any other object:
+
+             my $rect = stub(width => 5, height => 5);
+             $rect->stubs(area => sub { my $self = shift; $self->width * $self->height });
+
+       $thing->stubs($method_name)
+       $thing->stubs($method_name => $result)
+       $thing->stubs($method_name => sub { $result })
+       $thing->stubs({ $method_name => $result })
+           Stubs one or more methods on an existing class or instance, $thing.
+
+           If passed only one (non-hash) argument, it is interpreted as a method name.  The return value of the stubbed method will be "undef".
+
+           Otherwise, the arguments are a list of $method_name and $result pairs, either as a flat list or as a hash reference. Each method is installed onto
+           $thing, and returns the specified result. If the result is a subroutine reference, it will be called for every invocation of the method.
+
+       mock()
+           Returns a new blank, anonymous mock object, suitable for mocking methods with expects().
+
+             my $rect = mock();
+             $rect->expects('area')->returns(100);
+
+       $thing->expects($method)
+           Installs  a  mock  method named $method onto the class or object $thing and returns an Test::Spec::Mocks::Expectation object, which you can use to
+           set the return value with "returns()" and other expectations. By default, the method is expected to be called at_least_once.
+
+           If the expectation is not met before the enclosing example completes, the mocked method will raise an exception that looks something like:
+
+             expected foo to be called exactly 1 time, but it was called 0 times
+
+EXPECTATION ADJUSTMENT METHODS
+       These are methods of the Test::Spec::Mocks::Expectation class, which you'll receive by calling "expects()" on a class or object instance.
+
+       returns( $result )
+       returns( @result )
+       returns( \&callback )
+           Configures the mocked method to return the specified result when called. If passed a subroutine reference, the subroutine will  be  executed  when
+           the method is called, and the result is the return value.
+
+             $rect->expects('height')->returns(5);
+             # $rect->height ==> 5
+
+             @points = ( [0,0], [1,0], [1,1], [1,0] );
+             $rect->expects('points')->returns(@points);
+             # (@p = $rect->points) ==> ( [0,0], [1,0], [1,1], [1,0] )
+             # ($p = $rect->points) ==> 4
+
+             @points = ( [0,0], [1,0], [1,1], [1,0] );
+             $rect->expects('next_point')->returns(sub { shift @points });
+             # $rect->next_point ==> [0,0]
+             # $rect->next_point ==> [1,0]
+             # ...
+
+       exactly($N)
+           Configures the mocked method so that it must be called exactly $N times.
+
+       never
+           Configures the mocked method so that it must never be called.
+
+       once
+           Configures the mocked method so that it must be called exactly one time.
+
+       at_least($N)
+           Configures the mocked method so that it must be called at least $N times.
+
+       at_least_once
+           Configures the mocked method so that it must be called at least 1 time.  This is just syntactic sugar for at_least(1).
+
+       at_most($N)
+           Configures the mocked method so that it must be called no more than $N times.
+
+       at_most_once
+           Configures the mocked method so that it must be called either zero or 1 times.
+
+       maybe
+           An alias for "at_most_once".
+
+       any_number
+           Configures the mocked method so that it can be called zero or more times.
+
+       times
+           A syntactic sugar no-op:
+
+             $io->expects('print')->exactly(3)->times;
+
+           This method is alpha and will probably change in a future release.
+
+       with(@arguments) / with_eq(@arguments)
+           Configures  the mocked method so that it must be called with arguments as specified. The arguments will be compared using the "eq" operator, so it
+           works for most scalar values with no problem. If you want to check objects here, they must be the exact same instance or  you  must  overload  the
+           "eq" operator to provide the behavior you desire.
+
+       with_deep(@arguments)
+           Similar  to  "with_eq"  except  the  arguments  are compared using Test::Deep: scalars are compared by value, arrays and hashes must have the same
+           elements and references must be blessed into the same class.
+
+               $cache->expects('set')
+                     ->with_deep($customer_id, { name => $customer_name });
+
+           Use Test::Deep's comparison functions for more flexibility:
+
+               use Test::Deep::NoTest ();
+               $s3->expects('put')
+                  ->with_deep('test-bucket', 'my-doc', Test::Deep::ignore());
+
+       raises($exception)
+           Configures the mocked method so that it raises $exception when called.
+
+OTHER EXPECTATION METHODS
+       verify
+           Allows you to verify manually that the expectation was met. If the expectation has not been met, the method dies with an error message  containing
+           specifics of the failure.  Returns true otherwise.
+
+       problems
+           If the expectation has not been met, returns a list of problem description strings. Otherwise, returns an empty list.
+
+KNOWN ISSUES
+       Memory leaks
+           Because  of the way the mock objects ("stubs", "stub", "expects", and "mock") are integrated into the Test::Spec runtime they will leak memory. It
+           is not recommended to use the Test::Spec mocks in any long-running program.
+
+           Patches welcome.
+
+SEE ALSO
+       There are other less sugary mocking systems for Perl, including Test::MockObject and Test::MockObject::Extends.
+
+       This module is a plugin for Test::Spec.  It is inspired by Mocha <http://mocha.rubyforge.org/>.
+
+       The Wikipedia article Mock object <http://en.wikipedia.org/wiki/Mock_object> is very informative.
+
+AUTHOR
+       Philip Garrett, <philip.garrett@icainformatics.com>
+
+COPYRIGHT & LICENSE
+       Copyright (c) 2011 by Informatics Corporation of America.
+
+       This program is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
+
+perl v5.34.0                                                              2022-06-28                                                   Test::Spec::Mocks(3pm)

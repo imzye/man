@@ -1,0 +1,104 @@
+MINI-INIT-ASM(1)                                                                               User Commands                                                                               MINI-INIT-ASM(1)
+
+NAME
+     mini-init-asm - tiny PID 1 init for containers (pure assembly)
+
+SYNOPSIS
+     mini-init-asm [-v|--verbose] [-V|--version] -- command [args...]
+
+DESCRIPTION
+     mini-init-asm  is  a tiny init intended for container entrypoints.  It spawns exactly one main child process in a new session and process group, forwards signals to the entire group, and reaps chil‐
+     dren.  It optionally supports subreaper mode and a simple restart-on-crash loop.
+
+     Upstream builds currently produce architecture-named binaries (mini-init-amd64 and mini-init-arm64).  Debian packaging typically installs the active architecture binary as mini-init-asm(1).
+
+OPTIONS
+     -v, --verbose
+            Enable verbose diagnostics on stderr.
+
+     -V, --version
+            Print version and exit.
+
+ENVIRONMENT
+     All numeric environment variables are parsed as non-negative decimal integers.  Invalid values are ignored (defaults apply).
+
+     EP_GRACE_SECONDS
+            Grace period (seconds) after the first shutdown signal (TERM/INT/HUP/QUIT) before escalating to SIGKILL.  Default: 10.
+
+     EP_SIGNALS
+            Comma-separated list of additional signals to monitor and forward.  Tokens are trimmed for surrounding spaces.
+
+            Supported named tokens: USR1, USR2, PIPE, WINCH, TTIN, TTOU, CONT, ALRM
+
+            Supported numeric tokens: decimal signal numbers 1..64 (SIGKILL and SIGSTOP are ignored).
+
+            Supported real-time tokens: RT1..RT30 (maps to SIGRTMIN+N), only if EP_SIGRTMIN and EP_SIGRTMAX are set and valid.
+
+            Unknown tokens are ignored with a warning in verbose mode.
+
+     EP_SIGRTMIN
+            Decimal runtime value of SIGRTMIN for the target libc environment.  Required to enable RT* tokens in EP_SIGNALS.
+
+     EP_SIGRTMAX
+            Decimal runtime value of SIGRTMAX for the target libc environment.  Required to enable RT* tokens in EP_SIGNALS.
+
+            Rationale: per signal(7), SIGRTMIN/SIGRTMAX can vary at runtime in some libcs (e.g. glibc with threads), so hard-coded RT numbering is unsafe.
+
+     EP_SUBREAPER
+            If set to 1, enable PR_SET_CHILD_SUBREAPER so that mini-init-asm adopts orphaned descendants.  The init still exits when the main child exits.  Default: 0.
+
+     EP_EXIT_CODE_BASE
+            Base exit code for signal deaths: exit_code = base + signal_number.  Default: 128 (shell-compatible).  Valid range: 0..255.
+
+     EP_RESTART_ENABLED
+            If set to 1, restart the child only if it died due to a signal and shutdown has not started.  Default: 0.
+
+     EP_MAX_RESTARTS
+            Maximum number of restarts when restart is enabled.  0 means unlimited.  Default: 0.
+
+     EP_RESTART_BACKOFF_SECONDS
+            Seconds to wait before restarting after a crash.  0 restarts immediately.  Default: 1.
+
+     EP_ARM64_FALLBACK
+            ARM64/QEMU workaround: if set to 1, skip the epoll/signalfd loop and use a simpler wait4-only path.  This mode primarily validates spawn and exit-code propagation.  Default: 0.
+
+SIGNAL FORWARDING
+     The child is started as a new session leader and process group leader.  When a signal is received, mini-init-asm forwards it to the entire child  process  group  via  kill(2)  with  a  negative  pid
+     (kill(-pgid, sig)).
+
+     On the first shutdown signal (TERM/INT/HUP/QUIT), a grace timer is armed; when it expires and the child group is still present, SIGKILL is sent to the group.
+
+EXIT STATUS
+     • If the child exits normally, mini-init-asm exits with the child exit status.
+
+     • If the child dies due to a signal, mini-init-asm exits with EP_EXIT_CODE_BASE + signal number.
+
+     • If mini-init-asm escalates to SIGKILL after the grace period, it exits as if the child died to SIGKILL.
+
+EXAMPLES
+     Run a command under the init:
+
+            mini-init-asm -- /bin/sh -c 'echo hello; sleep 5'
+
+     Forward an additional numeric signal (SIGTRAP=5):
+
+            EP_SIGNALS=5 mini-init-asm -- /bin/sh -c 'trap "echo got TRAP; exit 0" TRAP; sleep 1000'
+
+     Enable RT tokens (values must match the target libc runtime):
+
+            EP_SIGRTMIN=34 EP_SIGRTMAX=64 EP_SIGNALS=RT1,RT5 mini-init-asm -- /bin/sh -c 'sleep 1000'
+
+     Restart-on-crash with backoff:
+
+            EP_RESTART_ENABLED=1 EP_MAX_RESTARTS=5 EP_RESTART_BACKOFF_SECONDS=2 \
+              mini-init-asm -- ./your-app
+
+NOTES
+     • To discover SIGRTMIN/SIGRTMAX inside an image, one option is:
+
+       python3 -c 'import signal; print(signal.SIGRTMIN, signal.SIGRTMAX)'
+
+SEE ALSO
+     signal(7), signalfd(2), epoll(7), timerfd_create(2), prctl(2), kill(2), wait4(2)
+
+mini-init-asm 0.3.1                                                                              2026-01-11                                                                                MINI-INIT-ASM(1)

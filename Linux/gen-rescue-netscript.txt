@@ -1,0 +1,124 @@
+GEN-RESCUE-NETSCRIPT(1)                                                                        User Commands                                                                        GEN-RESCUE-NETSCRIPT(1)
+
+NAME
+     gen-rescue-netscript - generate a rescue system network configuration script
+
+SYNOPSIS
+     gen-rescue-netscript [--output PATH] [--efi] [--interface IFACE] [--prefer {ipv4,ipv6}]
+     gen-rescue-netscript -h
+
+DESCRIPTION
+     gen-rescue-netscript  generates  a shell script to configure a rescue system's network according to the current network configuration of the running system.  It inspects the network configuration of
+     the currently running system, via ip(8) (ip -json), and writes a standalone POSIX /bin/sh script to standard output that recreates that configuration.  It is intended for situations such as  booting
+     a rescue image that needs to bring a box back onto its usual network without relying on DHCP being available or desired at rescue time.
+
+     Only a single network interface is configured.  By default this is whichever interface currently carries the default route; see INTERFACE SELECTION below.
+
+     The  generated  script  is self-contained: it does not depend on gen-rescue-netscript or Python being available in the environment where it is later run, only a POSIX shell and ip(8).  It is safe to
+     re-run.  The values most likely to need hand-editing (the interface name, addresses, gateways, and nameservers) are exposed as shell variables near the top of the file rather than repeated as liter‐
+     als throughout.
+
+OPTIONS
+     --output PATH
+            Without --efi, writes the generated script to PATH instead of standard output; the file is created mode 0755.  With --efi, PATH is instead interpreted relative to the root of the  EFI  parti‐
+            tion (see EFI PARTITION DISCOVERY below) The default comes from the output key in the config file, or rescue-net/network.sh if that isn't set either; see CONFIG FILE .
+
+     --efi  Write  the  generated  script  onto  the partition whose filesystem label or GPT partition label is EFI, ESP, efi, esp, mounting it first if necessary.  See EFI PARTITION DISCOVERY below, and
+            --output above for where on it the script is written.
+
+     --interface
+            Configure IFACE instead of auto-detecting the interface via the default route; see INTERFACE SELECTION below.
+
+     --prefer
+            When IPv4 and IPv6 default routes name different interfaces, prefer the one belonging to FAMILY, either ipv4 or ipv6; see INTERFACE SELECTION below.  Default: ipv6.
+
+     -h, --help
+            Show a brief usage message and exit.
+
+INTERFACE SELECTION
+     The interface to configure is chosen in the following order:
+
+     1.  The --interface command-line option, if given.
+
+     2.  The interface key in /etc/gen-rescue-netscript.conf, if that file exists and sets it.
+
+     3.  Otherwise, whichever interface carries the default route is used.  Both the IPv4 and IPv6 default routes are considered.  If they name the same interface (or only one family has a default  route
+         at  all),  that  interface  is  used.  If they name different interfaces, the interface belonging to the preferred family is used instead —— see --prefer above and the prefer config key below ——
+         rather than refusing to guess.
+
+     gen-rescue-netscript still exits with an error, regardless of --prefer, if there is no default route in either family, or if a single family's default route alone already points at more than one in‐
+     terface (a conflict no family preference can resolve).
+
+CONFIG FILE
+     /etc/gen-rescue-netscript.conf is an optional ini-style file.  It currently supports a single section, [gen-rescue-netscript] and the following top-level keys:
+
+         interface: eth0
+         output: rescue-net/network.sh
+         prefer: ipv6
+         efi: True
+     These are taken as defaults and can be overridden from the command line.
+
+ADDRESS AND ROUTE FILTERING
+     Not every address and route reported by ip addr show and ip route show is reproduced in the generated script:
+
+     • IPv6 link-local addresses that match the interface's standard EUI-64-derived address (computed from its MAC address) are treated as the kernel's  auto-assigned  address  and  omitted.   Any  other
+       link-local address present is kept, on the assumption it was explicitly configured.
+
+     • IPv4 link-local addresses (169.254.0.0/16, zeroconf/APIPA) are always omitted.
+
+     • IPv6 SLAAC-derived global addresses are omitted, including privacy extension ("temporary") addresses,
+        since these regenerate on their own and should not be pinned as static.
+
+     • DHCP-obtained addresses are kept, pinned as static addresses in the generated script, with a comment noting where they came from.
+
+     • Routes with
+
+/ETC/RESOLV.CONF
+     The generated script also (re)writes /etc/resolv.conf.  The nameserver(s) it writes are determined at generation time, in this order:
+
+     1.  If systemd-resolved is in use, resolvectl(1) is queried for the resolver(s) currently in effect for the target interface (falling back to the global resolver if no per-link resolver is set).
+
+     2.  Otherwise,  whatever nameserver lines are already present in the current /etc/resolv.conf are used, ignoring loopback stub-resolver addresses (such as systemd-resolved's 127.0.0.53), which would
+         be meaningless outside the system they were captured on.
+
+     3.  If neither yields anything, 1.1.1.1 is used as a last-resort fallback.
+
+     If the current system's /etc/resolv.conf is a symlink (as is typical under systemd-resolved, e.g. pointing at /run/systemd/resolve/stub-resolv.conf), the generated script resolves  that  symlink  at
+     generation time and writes to the resolved target instead —— creating the containing directory first.
+
+EFI PARTITION DISCOVERY
+     With  --efi,  gen-rescue-netscript locates a partition whose filesystem label or GPT partition label is EFI , efi , ESP , or esp, via blkid(8): first by filesystem label and then by partition label,
+     using blkid.  Either match is treated as “the EFI partition”; If neither is found, gen-rescue-netscript exits with an error.
+
+     If the partition is already mounted, the script is written directly under its existing mountpoint, at the path described under --output above.  Otherwise the partition is mounted at a temporary  di‐
+     rectory, the script is written, and the partition is unmounted again before gen-rescue-netscript exits.
+
+GENERATED SCRIPT LAYOUT
+     The  generated  script begins with a comment block giving the generation timestamp, the generating host's FQDN, and the selected interface name.  A diagnostic comment block containing the plain-text
+     (non-JSON) output of ip addr show, ip route show, ip -6 route show, ip rule show, and ip -6 rule show at generation time is appended at the end of the file, for human reference.  This text is purely
+     informational and is never parsed or executed.
+
+     Between those two, the script defines shell variables for the values most likely to need hand-editing.  Lists are each a single space-separated  list  (e.g.   ADDR="192.0.2.10/24  2001:db8::10/64").
+     The script loops over those by the commands that follow.
+
+EXIT STATUS
+     0      Success.
+
+     1      An error occurred.
+
+     2      Invalid command-line arguments.
+
+FILES
+     /etc/gen-rescue-netscript.conf
+            Optional config file; see CONFIG FILE above.
+
+REQUIREMENTS
+     ip(8) with -json support (iproute2 ≥ 4.9, released 2017), With --efi, also blkid(8) and mount(8)/umount(8).  resolvectl(1) is used opportunistically if present; its absence is not an error.
+
+BUGS
+     Report bugs at the project's issue tracker.
+
+SEE ALSO
+     ip(8), ip-address(8), ip-route(8), ip-rule(8), resolvectl(1), blkid(8), mount(8), resolv.conf(5)
+
+gen-rescue-netscript 1.0.0                                                                       2026-07-17                                                                         GEN-RESCUE-NETSCRIPT(1)
